@@ -4,8 +4,8 @@ Training, self-play, and evaluation for the Mortal-based Riichi Mahjong stack.
 
 This repository was split from `keqing1` at commit `b714e5c` (initial split).
 The Workbench repository is `keqing-workbench`; runtime data shared between
-them lives in `KEQING_DATA_ROOT` (defaults to the sibling `keqing-data`
-directory).
+them lives in `KEQING_DATA_ROOT` (defaults to the shared `keqing-data`
+directory beside the project folder).
 
 ## Layout
 
