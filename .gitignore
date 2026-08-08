@@ -28,7 +28,8 @@ dataset_debug*/
 !/data/README.md
 
 # Third-party runtimes are vendored locally, not committed
-third_party/
+third_party/*
+!third_party/libriichi/
 
 # Rust build output
 rust/keqing_core/target/

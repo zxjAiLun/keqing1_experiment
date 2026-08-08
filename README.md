@@ -1,9 +1,9 @@
-# Keqing Mortal
+# Keqing1 Experiment (keqing-mortal)
 
 Training, self-play, and evaluation for the Mortal-based Riichi Mahjong stack.
 
 This repository was split from `keqing1` at commit `b714e5c` (initial split).
-The Workbench repository is `keqing-workbench`; runtime data shared between
+The Workbench repository is `keqing1-workbench`; runtime data shared between
 them lives in `KEQING_DATA_ROOT` (defaults to the shared `keqing-data`
 directory beside the project folder).
 
@@ -18,24 +18,29 @@ directory beside the project folder).
   is introduced until independent evolution demonstrates a real maintenance
   cost.
 - `rust/keqing_core/` — Rust core; `build.py` produces the `keqing_core`
-  wheel that the Workbench repo installs.
-- `third_party/Mortal/` — upstream Mortal runtime (git-ignored, copied from
-  the keqing1 workspace; `target/` build output excluded).
+  wheel that the Workbench repo consumes from `keqing-data/runtime/keqing_core`.
+- `third_party/Mortal/` — upstream Mortal runtime (git-ignored; `target/`
+  build output excluded).
+- `third_party/libriichi/` — Python shims for the compiled `riichi`
+  extension; the extension itself is built from the vendored Mortal crate.
 - `tests/` — training/core test suite (Mortal-adjacent plus `mahjong_env`).
 
 ## Quick start (Windows)
 
 ```powershell
-.\scripts\setup-dev.ps1          # venv + deps + keqing_core wheel + libriichi runtime
+.\scripts\setup-dev.ps1
 cd training
 python run_mortal_dqn_offline.py --help
 ```
 
-`scripts/setup-dev.sh` is the Linux equivalent.
+`scripts/setup-dev.ps1`:
 
-The setup script copies the compiled `libriichi`/`riichi` runtime bits from a
-reference environment (default: the sibling `keqing1` venv, `..\keqing1\.venv-win`)
-when they are missing; pass `-ReferenceVenv` to point elsewhere.
+1. creates the venv and installs Python dependencies;
+2. builds the `libriichi` runtime from the vendored Mortal crate (cargo);
+3. builds and installs the `keqing_core` wheel, then publishes a copy to
+   `KEQING_DATA_ROOT/runtime/keqing_core` for the Workbench repo.
+
+`scripts/setup-dev.sh` is the Linux equivalent (no wheel publish step yet).
 
 ## Known issue / backlog
 
