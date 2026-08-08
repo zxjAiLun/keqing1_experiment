@@ -31,6 +31,18 @@ Invoke-UvPip @("mahjong>=1.4.0", "numpy>=1.24", "riichienv==0.4.8", "torch>=2.11
 #    (riichi.pyd = third_party/Mortal/target/release/riichi.dll, package
 #    surface = third_party/libriichi shims).  Requires cargo on PATH.
 $env:PYO3_PYTHON = $VenvPython
+# D3 exploration needs the DecisionContext extension; apply the patch once.
+$NativeRoot = Join-Path $Repo "third_party\Mortal"
+$D3Patch = Join-Path $Repo "training\mortal\patches\libriichi_d3_decision_context.patch"
+$ContextSource = Join-Path $NativeRoot "libriichi\srcgent\defs.rs"
+if ((Test-Path $ContextSource) -and (Test-Path $D3Patch)) {
+    $hasDecisionContext = Select-String -LiteralPath $ContextSource -Pattern "pub struct DecisionContext" -Quiet
+    if (-not $hasDecisionContext) {
+        Write-Host "Applying D3 decision-context patch to the local Mortal checkout..."
+        git -C $NativeRoot apply --whitespace=nowarn -- $D3Patch
+        if ($LASTEXITCODE -ne 0) { throw "failed to apply D3 decision-context patch" }
+    }
+}
 cargo build --manifest-path (Join-Path $Repo "third_party\Mortal\Cargo.toml") -p libriichi --lib --release
 if ($LASTEXITCODE -ne 0) { throw "libriichi cargo build failed" }
 Copy-Item -LiteralPath (Join-Path $Repo "third_party\Mortal\target\release\riichi.dll") -Destination (Join-Path $Site "riichi.pyd") -Force

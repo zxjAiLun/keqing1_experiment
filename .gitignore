@@ -44,6 +44,7 @@ tmp/
 
 # Docs (generated/curated exceptions are added as needed)
 docs/**
+!docs/backlog_removed_rank_crosscheck.md
 
 # OS
 .DS_Store

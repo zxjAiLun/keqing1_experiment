@@ -6,6 +6,20 @@ $ErrorActionPreference = "Stop"
 $Repo = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $Repo
 
+$NativeRoot = Join-Path $Repo "third_party\Mortal"
+$D3Patch = Join-Path $Repo "training\mortal\patches\libriichi_d3_decision_context.patch"
+$ContextSource = Join-Path $NativeRoot "libriichi\srcgent\defs.rs"
+if ((Test-Path $ContextSource) -and (Test-Path $D3Patch)) {
+    $hasDecisionContext = Select-String -LiteralPath $ContextSource -Pattern "pub struct DecisionContext" -Quiet
+    if (-not $hasDecisionContext) {
+        Write-Host "Applying D3 decision-context patch to the local Mortal checkout..."
+        git -C $NativeRoot apply --whitespace=nowarn -- $D3Patch
+        if ($LASTEXITCODE -ne 0) {
+            throw "failed to apply D3 decision-context patch"
+        }
+    }
+}
+
 $Manifest = Join-Path $Repo "third_party\Mortal\Cargo.toml"
 $SourceDll = Join-Path $Repo "third_party\Mortal\target\release\riichi.dll"
 $TargetPyd = Join-Path $Repo "$Venv\Lib\site-packages\riichi.pyd"
