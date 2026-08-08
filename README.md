@@ -2,10 +2,13 @@
 
 Training, self-play, and evaluation for the Mortal-based Riichi Mahjong stack.
 
-This repository was split from `keqing1` at commit `b714e5c` (initial split).
-The Workbench repository is `keqing1-workbench`; runtime data shared between
-them lives in `KEQING_DATA_ROOT` (defaults to the shared `keqing-data`
-directory beside the project folder).
+This repository was split from `keqing1` at commit `b714e5c` (initial split)
+and carries the Mortal training lineage from `keqing1`
+`codex/mortal-training-next` @ `6ff580cb`, transferred at `74a3154`.
+That commit is the baseline for all training work; the old branch is a
+frozen reference. The Workbench repository is `keqing1-workbench`; runtime
+data shared between them lives in `KEQING_DATA_ROOT` (defaults to the shared
+`keqing-data` directory beside the project folder).
 
 ## Layout
 
