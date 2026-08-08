@@ -1,0 +1,5 @@
+# The D3 native decision-context patch is a frozen, SHA-provenanced artifact.
+# The authoritative smoke protocol records d3_native_patch_sha256 over the exact
+# LF bytes. core.autocrlf on Windows would materialize it as CRLF and change the
+# disk SHA, so it must always be checked out as LF.
+training/mortal/patches/libriichi_d3_decision_context.patch text eol=lf
