@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "keqing-mortal"
+version = "0.1.0"
+description = "Mortal-based riichi mahjong training, self-play, and evaluation."
+requires-python = ">=3.12"
+dependencies = [
+  "numpy>=1.24",
+  "riichienv==0.4.8",
+  "torch>=2.11.0",
+  "tensorboard>=2.20.0",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+python_files = [
+    "test_action_spec_aka_ankan.py",
+    "test_aka_consistency.py",
+    "test_import_boundary.py",
+    "test_legal_actions_comprehensive.py",
+    "test_legal_actions_rules.py",
+    "test_mortal_eval_metrics.py",
+    "test_mortal_objective.py",
+    "test_normal_progress.py",
+    "test_progress_oracle_rust.py",
+    "test_replay_aux_targets.py",
+    "test_replay_final_rank_targets.py",
+    "test_replay_hora_reconstruction.py",
+    "test_replay_state_reconstruction.py",
+    "test_replay_strict_legal.py",
+    "test_replay_tsumogiri_reconstruction.py",
+    "test_rust_hora_shape_parity.py",
+    "test_rust_legal_actions_parity.py",
+    "test_rust_state_core_parity.py",
+    "test_scoring_backend_boundary.py",
+    "test_tenhou_public_state_sync.py",
+]
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+    "ruff>=0.15.10",
+]

@@ -1,0 +1,27 @@
+[package]
+name = "keqing_core"
+version = "0.1.0"
+edition = "2021"
+description = "Keqing Mahjong AI core computation library"
+license = "AGPL-3.0-or-later"
+
+[lib]
+name = "_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies.pyo3]
+version = "0.22"
+features = ["extension-module"]
+
+[dependencies]
+flate2 = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
+half = "2.4"
+riichienv-core = "0.4.7"
+ctrlc = "3.4"
+
+[profile.release]
+opt-level = 3
+lto = true

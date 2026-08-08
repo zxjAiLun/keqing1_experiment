@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+.ipynb_checkpoints/
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+.venv-win/
+
+# Model checkpoints, training outputs, and datasets
+artifacts/
+*.npz
+*.ckpt
+*.pth
+*.onnx
+metrics.json
+dataset/
+dataset_debug*/
+
+# Repository-local mutable runtime data (keep only the layout guide in Git)
+/data/*
+!/data/README.md
+
+# Third-party runtimes are vendored locally, not committed
+third_party/
+
+# Rust build output
+rust/keqing_core/target/
+rust/keqing_core/.venv/
+
+# Logs, temp, and scratch
+logs/
+tmp/
+*.log
+*.tmp
+*.bak
+
+# Docs (generated/curated exceptions are added as needed)
+docs/**
+
+# OS
+.DS_Store
+Thumbs.db

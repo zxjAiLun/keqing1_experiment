@@ -1,0 +1,56 @@
+[control]
+version = 4
+state_file = "artifacts/experiments/model_pool_2026_07/V2_population_mixed_v4_warmstart_2026_07/mortal.pth"
+best_state_file = "artifacts/experiments/model_pool_2026_07/V2_population_mixed_v4_warmstart_2026_07/mortal_best.pth"
+tensorboard_dir = "artifacts/experiments/model_pool_2026_07/V2_population_mixed_v4_warmstart_2026_07/tb_mortal"
+device = "cuda:0"
+enable_amp = false
+batch_size = 512
+opt_step_every = 1
+save_every = 400
+
+[dataset]
+globs = []
+file_index = "artifacts/experiments/model_pool_2026_07/V2_population_mixed_v4_warmstart_2026_07/file_index.pth"
+file_batch_size = 15
+reserve_ratio = 0.0
+num_workers = 0
+player_names_files = []
+num_epochs = 2
+enable_augmentation = false
+augmented_first = false
+
+[env]
+gamma = 1.0
+pts = [6.0, 4.0, 2.0, 0.0]
+
+[reward]
+mode = "terminal_rank"
+
+[objective]
+mode = "behavior_action_mc"
+
+[resnet]
+conv_channels = 192
+num_blocks = 40
+
+[cql]
+min_q_weight = 5.0
+
+[aux]
+next_rank_weight = 0.2
+
+[freeze_bn]
+mortal = false
+
+[optim]
+eps = 1e-8
+betas = [0.9, 0.999]
+weight_decay = 0.1
+max_grad_norm = 0.0
+
+[optim.scheduler]
+peak = 1e-4
+final = 1e-4
+warm_up_steps = 0
+max_steps = 0

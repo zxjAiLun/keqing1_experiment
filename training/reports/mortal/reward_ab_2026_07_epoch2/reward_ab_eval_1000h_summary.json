@@ -1,0 +1,692 @@
+{
+  "schema": "keqing.mortal.reward_ab_eval_summary.v1",
+  "eval_root": "artifacts\\experiments\\model_pool_2026_07\\reward_ab_2026_07_epoch2\\eval_250h",
+  "expected_games_per_pair": 1000,
+  "run_count": 3,
+  "rank_points": [
+    90.0,
+    45.0,
+    0.0,
+    -135.0
+  ],
+  "source_checks": [
+    {
+      "run": "F_G_20260718",
+      "games": 1000,
+      "metrics": "artifacts\\experiments\\model_pool_2026_07\\reward_ab_2026_07_epoch2\\eval_250h\\F_G_20260718\\metrics.json",
+      "detailed_stats": "artifacts\\experiments\\model_pool_2026_07\\reward_ab_2026_07_epoch2\\eval_250h\\F_G_20260718\\detailed_stats.json",
+      "platform_accounts": true,
+      "seed_start": 921000,
+      "seed_key": 8192,
+      "device": "cuda",
+      "seat_mode": "random"
+    },
+    {
+      "run": "F_G_20260719",
+      "games": 1000,
+      "metrics": "artifacts\\experiments\\model_pool_2026_07\\reward_ab_2026_07_epoch2\\eval_250h\\F_G_20260719\\metrics.json",
+      "detailed_stats": "artifacts\\experiments\\model_pool_2026_07\\reward_ab_2026_07_epoch2\\eval_250h\\F_G_20260719\\detailed_stats.json",
+      "platform_accounts": true,
+      "seed_start": 921250,
+      "seed_key": 8192,
+      "device": "cuda",
+      "seat_mode": "random"
+    },
+    {
+      "run": "F_G_20260720",
+      "games": 1000,
+      "metrics": "artifacts\\experiments\\model_pool_2026_07\\reward_ab_2026_07_epoch2\\eval_250h\\F_G_20260720\\metrics.json",
+      "detailed_stats": "artifacts\\experiments\\model_pool_2026_07\\reward_ab_2026_07_epoch2\\eval_250h\\F_G_20260720\\detailed_stats.json",
+      "platform_accounts": true,
+      "seed_start": 921500,
+      "seed_key": 8192,
+      "device": "cuda",
+      "seat_mode": "random"
+    }
+  ],
+  "per_seed": [
+    {
+      "run": "F_G_20260718",
+      "seed": 20260718,
+      "models": {
+        "70k": {
+          "label": "70k",
+          "games": 1000,
+          "rounds": 10453,
+          "rank_counts": [
+            254,
+            225,
+            257,
+            264
+          ],
+          "avg_rank": 2.531,
+          "avg_rank_pt": -2.655,
+          "avg_score_delta": -358.2,
+          "agari_rate": 0.221850186549316,
+          "houjuu_rate": 0.1278101980292739,
+          "fuuro_rate": 0.28738161293408593,
+          "riichi_rate": 0.18817564335597436,
+          "ryukyoku_rate": 0.15067444752702575,
+          "tobi_rate": 0.08,
+          "agari": 2319,
+          "houjuu": 1336,
+          "fuuro": 3004,
+          "riichi": 1967
+        },
+        "ext_mortal": {
+          "label": "ext_mortal",
+          "games": 1000,
+          "rounds": 10453,
+          "rank_counts": [
+            268,
+            249,
+            240,
+            243
+          ],
+          "avg_rank": 2.458,
+          "avg_rank_pt": 2.52,
+          "avg_score_delta": 262.0,
+          "agari_rate": 0.21352721706687075,
+          "houjuu_rate": 0.1258012053955802,
+          "fuuro_rate": 0.28738161293408593,
+          "riichi_rate": 0.187984310724194,
+          "ryukyoku_rate": 0.15067444752702575,
+          "tobi_rate": 0.068,
+          "agari": 2232,
+          "houjuu": 1315,
+          "fuuro": 3004,
+          "riichi": 1965
+        },
+        "F_20260718": {
+          "label": "F_20260718",
+          "games": 1000,
+          "rounds": 10453,
+          "rank_counts": [
+            220,
+            264,
+            261,
+            255
+          ],
+          "avg_rank": 2.551,
+          "avg_rank_pt": -2.745,
+          "avg_score_delta": -508.9,
+          "agari_rate": 0.20883956758825217,
+          "houjuu_rate": 0.12714053381804266,
+          "fuuro_rate": 0.2643260308045537,
+          "riichi_rate": 0.20510858126853534,
+          "ryukyoku_rate": 0.15067444752702575,
+          "tobi_rate": 0.076,
+          "agari": 2183,
+          "houjuu": 1329,
+          "fuuro": 2763,
+          "riichi": 2144
+        },
+        "G_20260718": {
+          "label": "G_20260718",
+          "games": 1000,
+          "rounds": 10453,
+          "rank_counts": [
+            258,
+            262,
+            242,
+            238
+          ],
+          "avg_rank": 2.46,
+          "avg_rank_pt": 2.88,
+          "avg_score_delta": 605.1,
+          "agari_rate": 0.21094422653783604,
+          "houjuu_rate": 0.12273988328709462,
+          "fuuro_rate": 0.2689180139672821,
+          "riichi_rate": 0.1990816033674543,
+          "ryukyoku_rate": 0.15067444752702575,
+          "tobi_rate": 0.074,
+          "agari": 2205,
+          "houjuu": 1283,
+          "fuuro": 2811,
+          "riichi": 2081
+        }
+      }
+    },
+    {
+      "run": "F_G_20260719",
+      "seed": 20260719,
+      "models": {
+        "70k": {
+          "label": "70k",
+          "games": 1000,
+          "rounds": 10682,
+          "rank_counts": [
+            262,
+            263,
+            223,
+            252
+          ],
+          "avg_rank": 2.465,
+          "avg_rank_pt": 1.395,
+          "avg_score_delta": 521.8,
+          "agari_rate": 0.22243025650627224,
+          "houjuu_rate": 0.12507021157086687,
+          "fuuro_rate": 0.2990076764650814,
+          "riichi_rate": 0.1832990076764651,
+          "ryukyoku_rate": 0.16775884665792923,
+          "tobi_rate": 0.07,
+          "agari": 2376,
+          "houjuu": 1336,
+          "fuuro": 3194,
+          "riichi": 1958
+        },
+        "ext_mortal": {
+          "label": "ext_mortal",
+          "games": 1000,
+          "rounds": 10682,
+          "rank_counts": [
+            269,
+            238,
+            250,
+            243
+          ],
+          "avg_rank": 2.467,
+          "avg_rank_pt": 2.115,
+          "avg_score_delta": 122.2,
+          "agari_rate": 0.21175809773450666,
+          "houjuu_rate": 0.127129750982962,
+          "fuuro_rate": 0.2871185171316233,
+          "riichi_rate": 0.19668601385508333,
+          "ryukyoku_rate": 0.16775884665792923,
+          "tobi_rate": 0.071,
+          "agari": 2262,
+          "houjuu": 1358,
+          "fuuro": 3067,
+          "riichi": 2101
+        },
+        "F_20260719": {
+          "label": "F_20260719",
+          "games": 1000,
+          "rounds": 10682,
+          "rank_counts": [
+            224,
+            268,
+            257,
+            251
+          ],
+          "avg_rank": 2.535,
+          "avg_rank_pt": -1.665,
+          "avg_score_delta": -329.4,
+          "agari_rate": 0.20314547837483618,
+          "houjuu_rate": 0.12048305560756413,
+          "fuuro_rate": 0.2437745740498034,
+          "riichi_rate": 0.1963115521437933,
+          "ryukyoku_rate": 0.16775884665792923,
+          "tobi_rate": 0.065,
+          "agari": 2170,
+          "houjuu": 1287,
+          "fuuro": 2604,
+          "riichi": 2097
+        },
+        "G_20260719": {
+          "label": "G_20260719",
+          "games": 1000,
+          "rounds": 10682,
+          "rank_counts": [
+            245,
+            231,
+            270,
+            254
+          ],
+          "avg_rank": 2.533,
+          "avg_rank_pt": -1.845,
+          "avg_score_delta": -314.6,
+          "agari_rate": 0.20071147725145103,
+          "houjuu_rate": 0.11945328590151658,
+          "fuuro_rate": 0.24648942145665606,
+          "riichi_rate": 0.1817075454034825,
+          "ryukyoku_rate": 0.16775884665792923,
+          "tobi_rate": 0.072,
+          "agari": 2144,
+          "houjuu": 1276,
+          "fuuro": 2633,
+          "riichi": 1941
+        }
+      }
+    },
+    {
+      "run": "F_G_20260720",
+      "seed": 20260720,
+      "models": {
+        "70k": {
+          "label": "70k",
+          "games": 1000,
+          "rounds": 10633,
+          "rank_counts": [
+            245,
+            242,
+            249,
+            264
+          ],
+          "avg_rank": 2.532,
+          "avg_rank_pt": -2.7,
+          "avg_score_delta": -428.2,
+          "agari_rate": 0.21809461111633593,
+          "houjuu_rate": 0.13091319477099594,
+          "fuuro_rate": 0.3014201072133923,
+          "riichi_rate": 0.18179253268127527,
+          "ryukyoku_rate": 0.16100818207467318,
+          "tobi_rate": 0.079,
+          "agari": 2319,
+          "houjuu": 1392,
+          "fuuro": 3205,
+          "riichi": 1933
+        },
+        "ext_mortal": {
+          "label": "ext_mortal",
+          "games": 1000,
+          "rounds": 10633,
+          "rank_counts": [
+            279,
+            271,
+            246,
+            204
+          ],
+          "avg_rank": 2.375,
+          "avg_rank_pt": 9.765,
+          "avg_score_delta": 1514.3,
+          "agari_rate": 0.22260885921188753,
+          "houjuu_rate": 0.11755854415498919,
+          "fuuro_rate": 0.2925797046929371,
+          "riichi_rate": 0.19364243393209818,
+          "ryukyoku_rate": 0.16100818207467318,
+          "tobi_rate": 0.051,
+          "agari": 2367,
+          "houjuu": 1250,
+          "fuuro": 3111,
+          "riichi": 2059
+        },
+        "F_20260720": {
+          "label": "F_20260720",
+          "games": 1000,
+          "rounds": 10633,
+          "rank_counts": [
+            240,
+            241,
+            252,
+            267
+          ],
+          "avg_rank": 2.546,
+          "avg_rank_pt": -3.6,
+          "avg_score_delta": -451.0,
+          "agari_rate": 0.20022571240477757,
+          "houjuu_rate": 0.11793473149628515,
+          "fuuro_rate": 0.2400075237468259,
+          "riichi_rate": 0.18959842001316657,
+          "ryukyoku_rate": 0.16100818207467318,
+          "tobi_rate": 0.061,
+          "agari": 2129,
+          "houjuu": 1254,
+          "fuuro": 2552,
+          "riichi": 2016
+        },
+        "G_20260720": {
+          "label": "G_20260720",
+          "games": 1000,
+          "rounds": 10633,
+          "rank_counts": [
+            236,
+            246,
+            253,
+            265
+          ],
+          "avg_rank": 2.547,
+          "avg_rank_pt": -3.465,
+          "avg_score_delta": -635.1,
+          "agari_rate": 0.20304711746449733,
+          "houjuu_rate": 0.12432991629831656,
+          "fuuro_rate": 0.25082290980908495,
+          "riichi_rate": 0.18818771748330668,
+          "ryukyoku_rate": 0.16100818207467318,
+          "tobi_rate": 0.073,
+          "agari": 2159,
+          "houjuu": 1322,
+          "fuuro": 2667,
+          "riichi": 2001
+        }
+      }
+    }
+  ],
+  "pairwise": [
+    {
+      "run": "F_G_20260718",
+      "seed": 20260718,
+      "F_avg_rank": 2.551,
+      "G_avg_rank": 2.46,
+      "F_avg_rank_pt": -2.745,
+      "G_avg_rank_pt": 2.88,
+      "G_minus_F_avg_rank_pt": 5.625,
+      "G_minus_F_avg_rank": -0.09100000000000019,
+      "G_minus_F_agari_pp": 0.21046589495838652,
+      "G_minus_F_houjuu_pp": -0.44006505309480415,
+      "G_minus_F_fuuro_pp": 0.4591983162728408,
+      "G_minus_F_riichi_pp": -0.6026977901081032
+    },
+    {
+      "run": "F_G_20260719",
+      "seed": 20260719,
+      "F_avg_rank": 2.535,
+      "G_avg_rank": 2.533,
+      "F_avg_rank_pt": -1.665,
+      "G_avg_rank_pt": -1.845,
+      "G_minus_F_avg_rank_pt": -0.17999999999999994,
+      "G_minus_F_avg_rank": -0.002000000000000224,
+      "G_minus_F_agari_pp": -0.24340011233851544,
+      "G_minus_F_houjuu_pp": -0.10297697060475536,
+      "G_minus_F_fuuro_pp": 0.2714847406852655,
+      "G_minus_F_riichi_pp": -1.4604006740310815
+    },
+    {
+      "run": "F_G_20260720",
+      "seed": 20260720,
+      "F_avg_rank": 2.546,
+      "G_avg_rank": 2.547,
+      "F_avg_rank_pt": -3.6,
+      "G_avg_rank_pt": -3.465,
+      "G_minus_F_avg_rank_pt": 0.13500000000000023,
+      "G_minus_F_avg_rank": 0.001000000000000334,
+      "G_minus_F_agari_pp": 0.2821405059719756,
+      "G_minus_F_houjuu_pp": 0.6395184802031412,
+      "G_minus_F_fuuro_pp": 1.0815386062259043,
+      "G_minus_F_riichi_pp": -0.1410702529859892
+    }
+  ],
+  "paired_per_seed": [
+    {
+      "run": "F_G_20260718",
+      "seed": 20260718,
+      "paired": {
+        "label": "F_G_20260718",
+        "games": 1000,
+        "mean_delta_pt": 5.625,
+        "median_delta_pt": 45.0,
+        "mean_delta_rank": 0.091,
+        "g_ahead_rate": 0.512,
+        "tie_rate": 0.0,
+        "delta_pt_bootstrap_95ci": [
+          -2.835,
+          13.905
+        ],
+        "delta_rank_bootstrap_95ci": [
+          -0.017,
+          0.204
+        ],
+        "g_ahead_bootstrap_95ci": [
+          0.482,
+          0.544
+        ],
+        "f_rank_counts": [
+          220,
+          264,
+          261,
+          255
+        ],
+        "g_rank_counts": [
+          258,
+          262,
+          242,
+          238
+        ],
+        "rank_rate_diff_pp": [
+          3.8,
+          -0.2,
+          -1.9,
+          -1.7
+        ],
+        "bootstrap_reps": 5000,
+        "cluster": "hanchan"
+      }
+    },
+    {
+      "run": "F_G_20260719",
+      "seed": 20260719,
+      "paired": {
+        "label": "F_G_20260719",
+        "games": 1000,
+        "mean_delta_pt": -0.18,
+        "median_delta_pt": -45.0,
+        "mean_delta_rank": 0.002,
+        "g_ahead_rate": 0.496,
+        "tie_rate": 0.0,
+        "delta_pt_bootstrap_95ci": [
+          -8.73,
+          8.235
+        ],
+        "delta_rank_bootstrap_95ci": [
+          -0.111,
+          0.117
+        ],
+        "g_ahead_bootstrap_95ci": [
+          0.464,
+          0.527
+        ],
+        "f_rank_counts": [
+          224,
+          268,
+          257,
+          251
+        ],
+        "g_rank_counts": [
+          245,
+          231,
+          270,
+          254
+        ],
+        "rank_rate_diff_pp": [
+          2.1,
+          -3.7,
+          1.3,
+          0.3
+        ],
+        "bootstrap_reps": 5000,
+        "cluster": "hanchan"
+      }
+    },
+    {
+      "run": "F_G_20260720",
+      "seed": 20260720,
+      "paired": {
+        "label": "F_G_20260720",
+        "games": 1000,
+        "mean_delta_pt": 0.135,
+        "median_delta_pt": 45.0,
+        "mean_delta_rank": -0.001,
+        "g_ahead_rate": 0.512,
+        "tie_rate": 0.0,
+        "delta_pt_bootstrap_95ci": [
+          -8.37,
+          8.91
+        ],
+        "delta_rank_bootstrap_95ci": [
+          -0.117,
+          0.112
+        ],
+        "g_ahead_bootstrap_95ci": [
+          0.481,
+          0.544
+        ],
+        "f_rank_counts": [
+          240,
+          241,
+          252,
+          267
+        ],
+        "g_rank_counts": [
+          236,
+          246,
+          253,
+          265
+        ],
+        "rank_rate_diff_pp": [
+          -0.4,
+          0.5,
+          0.1,
+          -0.2
+        ],
+        "bootstrap_reps": 5000,
+        "cluster": "hanchan"
+      }
+    }
+  ],
+  "pooled_paired": {
+    "label": "pooled_hanchans",
+    "games": 3000,
+    "mean_delta_pt": 1.86,
+    "median_delta_pt": 45.0,
+    "mean_delta_rank": 0.030666666666666665,
+    "g_ahead_rate": 0.5066666666666667,
+    "tie_rate": 0.0,
+    "delta_pt_bootstrap_95ci": [
+      -3.165375,
+      6.855
+    ],
+    "delta_rank_bootstrap_95ci": [
+      -0.03333333333333333,
+      0.09567499999999987
+    ],
+    "g_ahead_bootstrap_95ci": [
+      0.4886666666666667,
+      0.5246666666666666
+    ],
+    "f_rank_counts": [
+      684,
+      773,
+      770,
+      773
+    ],
+    "g_rank_counts": [
+      739,
+      739,
+      765,
+      757
+    ],
+    "rank_rate_diff_pp": [
+      1.8333333333333333,
+      -1.1333333333333333,
+      -0.16666666666666666,
+      -0.5333333333333333
+    ],
+    "bootstrap_reps": 5000,
+    "cluster": "hanchan"
+  },
+  "recipe_seed_summary": {
+    "training_seed_count": 3,
+    "seed_mean_delta_pt": [
+      5.625,
+      -0.18,
+      0.135
+    ],
+    "non_tie_seed_mean_delta_pt": [
+      5.625,
+      -0.18,
+      0.135
+    ],
+    "mean_of_seed_means_delta_pt": 1.86,
+    "median_of_seed_means_delta_pt": 0.135,
+    "positive_seed_count": 2,
+    "non_tie_seed_count": 3,
+    "tie_seed_count": 0,
+    "seed_direction_sign_test_one_sided_p": 0.5,
+    "interpretation": "sign test excludes seed-level deltas within eps of zero; n is the number of non-tied training seeds, not hanchans"
+  },
+  "pooled": {
+    "70k": {
+      "label": "70k",
+      "runs": 3,
+      "games": 3000,
+      "rounds": 31768,
+      "rank_counts": [
+        761,
+        730,
+        729,
+        780
+      ],
+      "avg_rank": 2.509333333333333,
+      "avg_rank_pt": -1.32,
+      "avg_score_delta": -88.20000000000002,
+      "agari_rate": 0.22078821455552758,
+      "houjuu_rate": 0.127927474187862,
+      "fuuro_rate": 0.2959896751447998,
+      "riichi_rate": 0.18439939561823218,
+      "ryukyoku_rate": 0.1598778645177537,
+      "tobi_rate": 0.07633333333333334
+    },
+    "F": {
+      "label": "F",
+      "runs": 3,
+      "games": 3000,
+      "rounds": 31768,
+      "rank_counts": [
+        684,
+        773,
+        770,
+        773
+      ],
+      "avg_rank": 2.544,
+      "avg_rank_pt": -2.67,
+      "avg_score_delta": -429.76666666666665,
+      "agari_rate": 0.204041803072274,
+      "houjuu_rate": 0.12182070007554772,
+      "fuuro_rate": 0.24927600100730293,
+      "riichi_rate": 0.19695920423067237,
+      "ryukyoku_rate": 0.1598778645177537,
+      "tobi_rate": 0.06733333333333333
+    },
+    "G": {
+      "label": "G",
+      "runs": 3,
+      "games": 3000,
+      "rounds": 31768,
+      "rank_counts": [
+        739,
+        739,
+        765,
+        757
+      ],
+      "avg_rank": 2.513333333333333,
+      "avg_rank_pt": -0.81,
+      "avg_score_delta": -114.86666666666666,
+      "agari_rate": 0.20486023671619238,
+      "houjuu_rate": 0.12216696046335936,
+      "fuuro_rate": 0.25531981868546966,
+      "riichi_rate": 0.1895933014354067,
+      "ryukyoku_rate": 0.1598778645177537,
+      "tobi_rate": 0.073
+    },
+    "ext_mortal": {
+      "label": "ext_mortal",
+      "runs": 3,
+      "games": 3000,
+      "rounds": 31768,
+      "rank_counts": [
+        816,
+        758,
+        736,
+        690
+      ],
+      "avg_rank": 2.433333333333333,
+      "avg_rank_pt": 4.8,
+      "avg_score_delta": 632.8333333333334,
+      "agari_rate": 0.21597204734323847,
+      "houjuu_rate": 0.12348904558045833,
+      "fuuro_rate": 0.28903298917149334,
+      "riichi_rate": 0.19280407957693277,
+      "ryukyoku_rate": 0.1598778645177537,
+      "tobi_rate": 0.06333333333333334
+    }
+  },
+  "interpretation": {
+    "scope": "1000 hanchans per matched seed pair; paired screening evaluation",
+    "favorable_G_pairs_by_avg_rank_pt": 2,
+    "pair_count": 3,
+    "pooled_paired_delta_pt_ci": [
+      -3.165375,
+      6.855
+    ]
+  }
+}
