@@ -16,13 +16,23 @@ from training.mortal.run_d3_exploration_production_2026_08 import (
 )
 from training.mortal.d3_production_contract import (
     AMP,
+    AUTHORITATIVE_SMOKE_PROJECT_COMMIT,
+    D3_SEMANTIC_PATHS,
+    EXPECTED_BRANCH,
     GAMES,
+    LEGACY_TRAINING_SOURCE_COMMIT,
+    MIGRATION_CONTENT_COMMIT,
     NATIVE_BATCH_GAMES,
+    PRODUCTION_IMPLEMENTATION_PATHS,
     SEED_END_EXCLUSIVE,
     SEED_KEY,
     SEED_START,
+    TRAINING_TRANSFER_ANCHOR,
     ContractError,
+    _project_lineage_facts,
     assert_empty_output,
+    implementation_manifest,
+    project_lineage,
     validate_authoritative_smoke_protocol,
 )
 
@@ -191,3 +201,114 @@ def test_event_audit_rejects_missing_independently_eligible_event() -> None:
     result = audit_event_records([], {context: snapshot})
     assert result["passed"] is False
     assert result["missing_event_count"] == 1
+
+
+def test_lineage_constants_target_migrated_repo_identity() -> None:
+    assert EXPECTED_BRANCH == "main"
+    assert TRAINING_TRANSFER_ANCHOR == "74a3154d0c543b805a75e679ab93c74f2afbefaf"
+    assert MIGRATION_CONTENT_COMMIT == "8e3b58f50c08c3c9ad795ea63c1af44e3b5ed11b"
+    assert LEGACY_TRAINING_SOURCE_COMMIT == "6ff580cb"
+    assert AUTHORITATIVE_SMOKE_PROJECT_COMMIT == "7eb48f1310e917cfb2f1f45445e546b4e92d1a89"
+    assert TRAINING_TRANSFER_ANCHOR != AUTHORITATIVE_SMOKE_PROJECT_COMMIT
+
+
+def test_lineage_paths_use_training_mortal_layout() -> None:
+    assert all(p.startswith("training/mortal/") for p in D3_SEMANTIC_PATHS)
+    assert all(p.startswith("training/mortal/") for p in PRODUCTION_IMPLEMENTATION_PATHS)
+    assert "training/mortal/d3_exploration_engine.py" in D3_SEMANTIC_PATHS
+    assert "training/mortal/patches/libriichi_d3_decision_context.patch" in D3_SEMANTIC_PATHS
+    assert "scripts/mortal/" not in "".join(PRODUCTION_IMPLEMENTATION_PATHS)
+
+
+def test_implementation_manifest_resolves_new_paths_without_contract_error() -> None:
+    manifest = implementation_manifest()
+    assert set(manifest) == set(PRODUCTION_IMPLEMENTATION_PATHS)
+    for relative, row in manifest.items():
+        assert relative.startswith("training/mortal/")
+        assert len(row["sha256"]) == 64
+
+
+def test_lineage_pass_case_requires_main_transfer_ancestor_and_clean() -> None:
+    result = _project_lineage_facts(
+        branch="main",
+        commit="a" * 40,
+        dirty_entries=[],
+        transfer_anchor_is_ancestor=True,
+        semantic_diff_paths=[],
+    )
+    assert result["passed"] is True
+    assert result["errors"] == []
+    assert result["transfer_anchor"] == TRAINING_TRANSFER_ANCHOR
+    assert result["authoritative_smoke_commit"] == AUTHORITATIVE_SMOKE_PROJECT_COMMIT
+    assert result["legacy_training_source_commit"] == LEGACY_TRAINING_SOURCE_COMMIT
+
+
+def test_lineage_rejects_non_main_branch() -> None:
+    result = _project_lineage_facts(
+        branch="codex/mortal-training-next",
+        commit="a" * 40,
+        dirty_entries=[],
+        transfer_anchor_is_ancestor=True,
+        semantic_diff_paths=[],
+    )
+    assert result["passed"] is False
+    assert any("branch must be main" in e for e in result["errors"])
+
+
+def test_lineage_rejects_missing_transfer_anchor_ancestry() -> None:
+    result = _project_lineage_facts(
+        branch="main",
+        commit="a" * 40,
+        dirty_entries=[],
+        transfer_anchor_is_ancestor=False,
+        semantic_diff_paths=[],
+    )
+    assert result["passed"] is False
+    assert any("transfer anchor" in e for e in result["errors"])
+
+
+def test_lineage_rejects_semantic_path_change_since_anchor() -> None:
+    result = _project_lineage_facts(
+        branch="main",
+        commit="a" * 40,
+        dirty_entries=[],
+        transfer_anchor_is_ancestor=True,
+        semantic_diff_paths=["training/mortal/d3_exploration_engine.py"],
+    )
+    assert result["passed"] is False
+    assert any("semantic paths changed" in e for e in result["errors"])
+
+
+def test_lineage_rejects_dirty_worktree() -> None:
+    result = _project_lineage_facts(
+        branch="main",
+        commit="a" * 40,
+        dirty_entries=[" M training/mortal/d3_production_contract.py"],
+        transfer_anchor_is_ancestor=True,
+        semantic_diff_paths=[],
+    )
+    assert result["passed"] is False
+    assert any("worktree is dirty" in e for e in result["errors"])
+
+
+def test_lineage_does_not_require_legacy_smoke_commit_as_git_ancestor() -> None:
+    result = _project_lineage_facts(
+        branch="main",
+        commit="a" * 40,
+        dirty_entries=[],
+        transfer_anchor_is_ancestor=True,
+        semantic_diff_paths=[],
+    )
+    assert result["passed"] is True
+    assert result["authoritative_smoke_commit"] == AUTHORITATIVE_SMOKE_PROJECT_COMMIT
+    assert result["authoritative_smoke_commit"] != result["transfer_anchor"]
+
+
+def test_migrated_repo_project_lineage_passes_on_main() -> None:
+    lineage = project_lineage()
+    assert lineage["branch"] == "main"
+    assert lineage["transfer_anchor_is_ancestor"] is True
+    assert lineage["semantic_diff_paths"] == []
+    assert lineage["authoritative_smoke_commit"] == AUTHORITATIVE_SMOKE_PROJECT_COMMIT
+    assert lineage["migration_content_commit"] == MIGRATION_CONTENT_COMMIT
+    assert lineage["legacy_training_source_commit"] == LEGACY_TRAINING_SOURCE_COMMIT

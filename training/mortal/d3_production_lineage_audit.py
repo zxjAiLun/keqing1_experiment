@@ -78,7 +78,8 @@ def _protocol_checks(protocol: dict[str, Any], run_dir: Path) -> dict[str, bool]
         or production_output.get("ignored") is True,
         "rank_points": fixed.get("rank_points") == list(RANK_POINTS),
         "project_clean": project.get("dirty") is False,
-        "project_branch": project.get("branch") == "codex/mortal-training-next",
+        "project_branch": project.get("branch") == "main",
+        "project_transfer_anchor": project.get("transfer_anchor_is_ancestor") is True,
         "project_semantic_unchanged": project.get("semantic_diff_paths") == [],
         "mortal_clean": native.get("dirty") is False,
         "mortal_commit": native.get("commit") == AUTHORITATIVE_MORTAL_COMMIT,
@@ -120,7 +121,7 @@ def _current_lineage_checks(protocol: dict[str, Any], mortal_root: Path) -> dict
     binary_exact = loaded_binary_sha == protocol.get("runtime", {}).get(
         "loaded_libriichi_sha256"
     ) == AUTHORITATIVE_NATIVE_BINARY_SHA256
-    patch_path = REPO_ROOT / "scripts/mortal/patches/libriichi_d3_decision_context.patch"
+    patch_path = REPO_ROOT / "training/mortal/patches/libriichi_d3_decision_context.patch"
     patch_sha = sha256_file(patch_path)
     patch_exact = patch_sha == protocol.get("d3_native_patch", {}).get(
         "sha256"

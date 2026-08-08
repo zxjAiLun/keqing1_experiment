@@ -67,7 +67,7 @@ def build_preflight(args: argparse.Namespace) -> dict[str, Any]:
     project = project_lineage(REPO_ROOT)
     native = mortal_lineage(args.mortal_root.resolve())
     runtime = _runtime_preflight()
-    patch_path = REPO_ROOT / "scripts/mortal/patches/libriichi_d3_decision_context.patch"
+    patch_path = REPO_ROOT / "training/mortal/patches/libriichi_d3_decision_context.patch"
     patch_sha = sha256_file(patch_path)
     ignored_artifacts = ignored_path_audit(
         {

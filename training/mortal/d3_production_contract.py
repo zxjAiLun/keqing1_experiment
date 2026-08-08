@@ -28,7 +28,7 @@ AMP = False
 RANK_POINTS = (90.0, 45.0, 0.0, -135.0)
 REQUIRED_LABELS = ("K0_70k", "V2_74000", "V3_74000", "ext_mortal")
 SMOKE_SEEDS = frozenset(range(1_799_000, 1_799_025))
-EXPECTED_BRANCH = "codex/mortal-training-next"
+EXPECTED_BRANCH = "main"
 CONFIRMATION_TOKEN = "D3_B250_1800000_1800249_SINGLE_SHOT"
 
 AUTHORITATIVE_SMOKE_PROJECT_COMMIT = "7eb48f1310e917cfb2f1f45445e546b4e92d1a89"
@@ -39,20 +39,29 @@ AUTHORITATIVE_NATIVE_PATCH_SHA256 = (
 AUTHORITATIVE_NATIVE_BINARY_SHA256 = (
     "19bb181eaa70d0ae90417a3bd22433f6ca08d7654602f865ff3bdb102b7d9914"
 )
+# Legacy training lineage that the new repo acknowledges but does not re-join
+# as Git ancestry. These record where the authoritative smoke actually ran and
+# where the frozen old training tip lived, so provenance survives the migration.
+# They are historical records only; they are never required to be Git
+# ancestors of the current keqing1_experiment/main HEAD.
+LEGACY_TRAINING_SOURCE_COMMIT = "6ff580cb"
+# Migration lineage in keqing1_experiment proper (real Git ancestry).
+MIGRATION_CONTENT_COMMIT = "8e3b58f50c08c3c9ad795ea63c1af44e3b5ed11b"
+TRAINING_TRANSFER_ANCHOR = "74a3154d0c543b805a75e679ab93c74f2afbefaf"
 D3_SEMANTIC_PATHS = (
-    "scripts/mortal/d3_exploration_engine.py",
-    "scripts/mortal/patches/libriichi_d3_decision_context.patch",
+    "training/mortal/d3_exploration_engine.py",
+    "training/mortal/patches/libriichi_d3_decision_context.patch",
 )
 PRODUCTION_IMPLEMENTATION_PATHS = (
-    "scripts/mortal/d3_production_contract.py",
-    "scripts/mortal/d3_production_preflight.py",
-    "scripts/mortal/run_d3_exploration_production_2026_08.py",
-    "scripts/mortal/d3_production_audit_core.py",
-    "scripts/mortal/d3_production_event_audit.py",
-    "scripts/mortal/d3_production_replay_audit.py",
-    "scripts/mortal/d3_production_lineage_audit.py",
-    "scripts/mortal/d3_production_report.py",
-    "scripts/mortal/audit_d3_exploration_production_2026_08.py",
+    "training/mortal/d3_production_contract.py",
+    "training/mortal/d3_production_preflight.py",
+    "training/mortal/run_d3_exploration_production_2026_08.py",
+    "training/mortal/d3_production_audit_core.py",
+    "training/mortal/d3_production_event_audit.py",
+    "training/mortal/d3_production_replay_audit.py",
+    "training/mortal/d3_production_lineage_audit.py",
+    "training/mortal/d3_production_report.py",
+    "training/mortal/audit_d3_exploration_production_2026_08.py",
 )
 DEFAULT_SMOKE_PROTOCOL = Path(
     "artifacts/experiments/model_pool_2026_07/"
@@ -289,13 +298,56 @@ def implementation_manifest(repo_root: Path = REPO_ROOT) -> dict[str, dict[str, 
     return manifest
 
 
+def _project_lineage_facts(
+    *,
+    branch: str,
+    commit: str,
+    dirty_entries: list[str],
+    transfer_anchor_is_ancestor: bool,
+    semantic_diff_paths: list[str],
+) -> dict[str, Any]:
+    """Pure lineage decision logic, isolated from git so tests can inject facts.
+
+    The authoritative smoke project commit (``AUTHORITATIVE_SMOKE_PROJECT_COMMIT``)
+    is deliberately NOT required to be a Git ancestor here: the experiment repo
+    inherited the old ``mortal-training-next`` mainline by content migration, not
+    by chaining the old commit SHAs. That commit is retained as historical
+    provenance (``authoritative_smoke_commit``) but the mechanically enforced
+    lineage is the new repo's transfer anchor.
+    """
+    errors: list[str] = []
+    if branch != EXPECTED_BRANCH:
+        errors.append(f"project branch must be {EXPECTED_BRANCH}, got {branch!r}")
+    if dirty_entries:
+        errors.append(f"project worktree is dirty: {dirty_entries[:20]}")
+    if not transfer_anchor_is_ancestor:
+        errors.append("current HEAD is not a descendant of the training transfer anchor")
+    if semantic_diff_paths:
+        errors.append(f"D3 semantic paths changed since transfer anchor: {semantic_diff_paths}")
+    return {
+        "branch": branch,
+        "commit": commit,
+        "dirty": bool(dirty_entries),
+        "dirty_entries": dirty_entries,
+        "transfer_anchor": TRAINING_TRANSFER_ANCHOR,
+        "transfer_anchor_is_ancestor": transfer_anchor_is_ancestor,
+        "legacy_training_source_commit": LEGACY_TRAINING_SOURCE_COMMIT,
+        "authoritative_smoke_commit": AUTHORITATIVE_SMOKE_PROJECT_COMMIT,
+        "migration_content_commit": MIGRATION_CONTENT_COMMIT,
+        "semantic_paths": list(D3_SEMANTIC_PATHS),
+        "semantic_diff_paths": semantic_diff_paths,
+        "errors": errors,
+        "passed": not errors,
+    }
+
+
 def project_lineage(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
     repo_root = repo_root.resolve()
     branch = git_text(repo_root, "branch", "--show-current")
     commit = git_text(repo_root, "rev-parse", "HEAD")
     dirty_entries = git_text(repo_root, "status", "--porcelain").splitlines()
-    ancestor = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", AUTHORITATIVE_SMOKE_PROJECT_COMMIT, "HEAD"],
+    transfer_anchor_is_ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", TRAINING_TRANSFER_ANCHOR, "HEAD"],
         cwd=repo_root,
         capture_output=True,
     ).returncode == 0
@@ -303,31 +355,17 @@ def project_lineage(repo_root: Path = REPO_ROOT) -> dict[str, Any]:
         repo_root,
         "diff",
         "--name-only",
-        AUTHORITATIVE_SMOKE_PROJECT_COMMIT,
+        TRAINING_TRANSFER_ANCHOR,
         "--",
         *D3_SEMANTIC_PATHS,
     ).splitlines()
-    errors: list[str] = []
-    if branch != EXPECTED_BRANCH:
-        errors.append(f"project branch must be {EXPECTED_BRANCH}, got {branch!r}")
-    if dirty_entries:
-        errors.append(f"project worktree is dirty: {dirty_entries[:20]}")
-    if not ancestor:
-        errors.append("current HEAD is not a descendant of authoritative smoke project commit")
-    if semantic_diff:
-        errors.append(f"D3 semantic paths changed since authoritative smoke: {semantic_diff}")
-    return {
-        "branch": branch,
-        "commit": commit,
-        "dirty": bool(dirty_entries),
-        "dirty_entries": dirty_entries,
-        "authoritative_smoke_commit": AUTHORITATIVE_SMOKE_PROJECT_COMMIT,
-        "authoritative_smoke_is_ancestor": ancestor,
-        "semantic_paths": list(D3_SEMANTIC_PATHS),
-        "semantic_diff_paths": semantic_diff,
-        "errors": errors,
-        "passed": not errors,
-    }
+    return _project_lineage_facts(
+        branch=branch,
+        commit=commit,
+        dirty_entries=dirty_entries,
+        transfer_anchor_is_ancestor=transfer_anchor_is_ancestor,
+        semantic_diff_paths=semantic_diff,
+    )
 
 
 def mortal_lineage(native_root: Path) -> dict[str, Any]:
