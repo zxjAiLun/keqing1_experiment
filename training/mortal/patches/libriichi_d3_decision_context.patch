@@ -1,0 +1,314 @@
+diff --git a/libriichi/src/agent/defs.rs b/libriichi/src/agent/defs.rs
+index 01568b6..820c9e0 100644
+--- a/libriichi/src/agent/defs.rs
++++ b/libriichi/src/agent/defs.rs
+@@ -7,6 +7,19 @@ use ndarray::prelude::*;
+ 
+ pub type InvisibleState = Array2<f32>;
+ 
++/// Stable per-decision context exposed only to engines that explicitly opt in.
++/// The ordinary BatchAgent API remains unchanged for existing engines.
++#[derive(Clone, Copy, Debug, Default)]
++pub struct DecisionContext {
++    pub generation_seed: u64,
++    pub seed_key: u64,
++    pub seat: u8,
++    pub kyoku_index: u64,
++    pub decision_index: u64,
++    pub own_riichi: bool,
++    pub exploration_allowed: bool,
++}
++
+ /// `react` provides various choices for input, the implementor may choose
+ /// one or many of them to produce the result.
+ ///
+@@ -50,6 +63,18 @@ pub trait BatchAgent {
+         invisible_state: Option<InvisibleState>,
+     ) -> Result<()>;
+ 
++    fn set_scene_with_context(
++        &mut self,
++        index: usize,
++        log: &[EventExt],
++        state: &PlayerState,
++        invisible_state: Option<InvisibleState>,
++        context: DecisionContext,
++    ) -> Result<()> {
++        let _ = context;
++        self.set_scene(index, log, state, invisible_state)
++    }
++
+     fn get_reaction(
+         &mut self,
+         index: usize,
+diff --git a/libriichi/src/agent/mod.rs b/libriichi/src/agent/mod.rs
+index 7a9ea7f..8c3fef4 100644
+--- a/libriichi/src/agent/mod.rs
++++ b/libriichi/src/agent/mod.rs
+@@ -8,7 +8,7 @@ mod tsumogiri;
+ 
+ pub use akochan::AkochanAgent;
+ pub use batchify::BatchifiedAgent;
+-pub use defs::{Agent, BatchAgent, InvisibleState};
++pub use defs::{Agent, BatchAgent, DecisionContext, InvisibleState};
+ pub use mjai_log::MjaiLogBatchAgent;
+ pub use mortal::MortalBatchAgent;
+ pub use py_agent::new_py_agent;
+diff --git a/libriichi/src/agent/mortal.rs b/libriichi/src/agent/mortal.rs
+index e1b14ee..b750378 100644
+--- a/libriichi/src/agent/mortal.rs
++++ b/libriichi/src/agent/mortal.rs
+@@ -1,4 +1,4 @@
+-use super::{BatchAgent, InvisibleState};
++use super::{BatchAgent, DecisionContext, InvisibleState};
+ use crate::consts::ACTION_SPACE;
+ use crate::mjai::{Event, EventExt, Metadata};
+ use crate::state::PlayerState;
+@@ -21,6 +21,7 @@ pub struct MortalBatchAgent {
+     version: u32,
+     enable_quick_eval: bool,
+     enable_rule_based_agari_guard: bool,
++    supports_decision_context: bool,
+     name: String,
+     player_ids: Vec<u8>,
+ 
+@@ -42,6 +43,7 @@ struct SyncFields {
+     states: Vec<Array2<f32>>,
+     invisible_states: Vec<Array2<f32>>,
+     masks: Vec<Array1<bool>>,
++    contexts: Vec<DecisionContext>,
+     action_idxs: Vec<usize>,
+     kan_action_idxs: Vec<Option<usize>>,
+ }
+@@ -50,28 +52,40 @@ impl MortalBatchAgent {
+     pub fn new(engine: PyObject, player_ids: &[u8]) -> Result<Self> {
+         ensure!(player_ids.iter().all(|&id| matches!(id, 0..=3)));
+ 
+-        let (name, is_oracle, version, enable_quick_eval, enable_rule_based_agari_guard) =
+-            Python::with_gil(|py| {
+-                let obj = engine.bind_borrowed(py);
+-                ensure!(
+-                    obj.getattr("react_batch")?.is_callable(),
+-                    "missing method react_batch",
+-                );
+-
+-                let name = obj.getattr("name")?.extract()?;
+-                let is_oracle = obj.getattr("is_oracle")?.extract()?;
+-                let version = obj.getattr("version")?.extract()?;
+-                let enable_quick_eval = obj.getattr("enable_quick_eval")?.extract()?;
+-                let enable_rule_based_agari_guard =
+-                    obj.getattr("enable_rule_based_agari_guard")?.extract()?;
+-                Ok((
+-                    name,
+-                    is_oracle,
+-                    version,
+-                    enable_quick_eval,
+-                    enable_rule_based_agari_guard,
+-                ))
+-            })?;
++        let (
++            name,
++            is_oracle,
++            version,
++            enable_quick_eval,
++            enable_rule_based_agari_guard,
++            supports_decision_context,
++        ) = Python::with_gil(|py| {
++            let obj = engine.bind_borrowed(py);
++            ensure!(
++                obj.getattr("react_batch")?.is_callable(),
++                "missing method react_batch",
++            );
++
++            let name = obj.getattr("name")?.extract()?;
++            let is_oracle = obj.getattr("is_oracle")?.extract()?;
++            let version = obj.getattr("version")?.extract()?;
++            let enable_quick_eval = obj.getattr("enable_quick_eval")?.extract()?;
++            let enable_rule_based_agari_guard =
++                obj.getattr("enable_rule_based_agari_guard")?.extract()?;
++            let supports_decision_context = obj
++                .getattr("supports_decision_context")
++                .ok()
++                .and_then(|value| value.extract::<bool>().ok())
++                .unwrap_or(false);
++            Ok((
++                name,
++                is_oracle,
++                version,
++                enable_quick_eval,
++                enable_rule_based_agari_guard,
++                supports_decision_context,
++            ))
++        })?;
+ 
+         let size = player_ids.len();
+         let quick_eval_reactions = if enable_quick_eval {
+@@ -83,6 +97,7 @@ impl MortalBatchAgent {
+             states: vec![],
+             invisible_states: vec![],
+             masks: vec![],
++            contexts: vec![],
+             action_idxs: vec![0; size],
+             kan_action_idxs: vec![None; size],
+         }));
+@@ -93,6 +108,7 @@ impl MortalBatchAgent {
+             version,
+             enable_quick_eval,
+             enable_rule_based_agari_guard,
++            supports_decision_context,
+             name,
+             player_ids: player_ids.to_vec(),
+ 
+@@ -141,11 +157,35 @@ impl MortalBatchAgent {
+                     .map(|v| PyArray2::from_owned_array(py, v))
+                     .collect()
+             });
++            let contexts: Vec<_> = sync_fields
++                .contexts
++                .drain(..)
++                .map(|context| {
++                    (
++                        context.generation_seed,
++                        context.seed_key,
++                        context.seat,
++                        context.kyoku_index,
++                        context.decision_index,
++                        context.own_riichi,
++                        context.exploration_allowed,
++                    )
++                })
++                .collect();
+ 
+-            let args = (states, masks, invisible_states);
+-            self.engine
+-                .bind_borrowed(py)
+-                .call_method1(intern!(py, "react_batch"), args)
++            let engine = self.engine.bind_borrowed(py);
++            let result = if self.supports_decision_context {
++                engine.call_method1(
++                    intern!(py, "react_batch"),
++                    (states, masks, invisible_states, contexts),
++                )
++            } else {
++                engine.call_method1(
++                    intern!(py, "react_batch"),
++                    (states, masks, invisible_states),
++                )
++            };
++            result
+                 .context("failed to execute `react_batch` on Python engine")?
+                 .extract()
+                 .context("failed to extract to Rust type")
+@@ -198,11 +238,28 @@ impl BatchAgent for MortalBatchAgent {
+     }
+ 
+     fn set_scene(
++        &mut self,
++        index: usize,
++        log: &[EventExt],
++        state: &PlayerState,
++        invisible_state: Option<InvisibleState>,
++    ) -> Result<()> {
++        self.set_scene_with_context(
++            index,
++            log,
++            state,
++            invisible_state,
++            DecisionContext::default(),
++        )
++    }
++
++    fn set_scene_with_context(
+         &mut self,
+         index: usize,
+         _: &[EventExt],
+         state: &PlayerState,
+         invisible_state: Option<InvisibleState>,
++        context: DecisionContext,
+     ) -> Result<()> {
+         self.evaluated = false;
+         let cans = state.last_cans();
+@@ -266,6 +323,7 @@ impl BatchAgent for MortalBatchAgent {
+                 states,
+                 invisible_states,
+                 masks,
++                contexts,
+                 action_idxs,
+                 kan_action_idxs,
+             } = &mut *sync_fields.lock();
+@@ -273,6 +331,10 @@ impl BatchAgent for MortalBatchAgent {
+                 kan_action_idxs[index] = Some(states.len());
+                 states.push(kan_feature);
+                 masks.push(kan_mask);
++                contexts.push(DecisionContext {
++                    exploration_allowed: false,
++                    ..context
++                });
+                 if let Some(invisible_state) = invisible_state.clone() {
+                     invisible_states.push(invisible_state);
+                 }
+@@ -281,6 +343,7 @@ impl BatchAgent for MortalBatchAgent {
+             action_idxs[index] = states.len();
+             states.push(feature);
+             masks.push(mask);
++            contexts.push(context);
+             if let Some(invisible_state) = invisible_state {
+                 invisible_states.push(invisible_state);
+             }
+diff --git a/libriichi/src/arena/game.rs b/libriichi/src/arena/game.rs
+index 9fee2df..3807e1f 100644
+--- a/libriichi/src/arena/game.rs
++++ b/libriichi/src/arena/game.rs
+@@ -1,6 +1,6 @@
+ use super::board::{Board, BoardState, Poll};
+ use super::result::GameResult;
+-use crate::agent::BatchAgent;
++use crate::agent::{BatchAgent, DecisionContext};
+ use crate::mjai::EventExt;
+ use std::time::Duration;
+ use std::{array, mem};
+@@ -37,6 +37,9 @@ struct Game {
+ 
+     board: BoardState,
+     kyoku: u8,
++    next_kyoku_index: u64,
++    active_kyoku_index: u64,
++    decision_indices: [u64; 4],
+     honba: u8,
+     kyotaku: u8,
+     scores: [i32; 4],
+@@ -84,6 +87,9 @@ impl Game {
+             };
+             next_board.init_from_seed(self.seed);
+             self.board = next_board.into_state();
++            self.active_kyoku_index = self.next_kyoku_index;
++            self.next_kyoku_index += 1;
++            self.decision_indices = [0; 4];
+             self.kyoku_started = true;
+         }
+ 
+@@ -102,12 +108,23 @@ impl Game {
+                     self.invisible_state_cache[player_id].clone_from(&invisible_state);
+ 
+                     let idx = self.indexes[player_id];
+-                    agents[idx.agent_idx].set_scene(
++                    let context = DecisionContext {
++                        generation_seed: self.seed.0,
++                        seed_key: self.seed.1,
++                        seat: player_id as u8,
++                        kyoku_index: self.active_kyoku_index,
++                        decision_index: self.decision_indices[player_id],
++                        own_riichi: state.self_riichi_declared() || state.self_riichi_accepted(),
++                        exploration_allowed: true,
++                    };
++                    agents[idx.agent_idx].set_scene_with_context(
+                         idx.player_id_idx,
+                         ctx.log,
+                         state,
+                         invisible_state,
++                        context,
+                     )?;
++                    self.decision_indices[player_id] += 1;
+                 }
+             }
+ 

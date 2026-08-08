@@ -26,6 +26,9 @@ pythonpath = ["src", "."]
 testpaths = ["tests"]
 python_files = [
     "test_action_spec_aka_ankan.py",
+    "test_d3_exploration_engine.py",
+    "test_d3_exploration_feasibility.py",
+    "test_d3_exploration_production.py",
     "test_aka_consistency.py",
     "test_import_boundary.py",
     "test_legal_actions_comprehensive.py",
@@ -50,4 +53,5 @@ python_files = [
 dev = [
     "pytest>=9.0.2",
     "ruff>=0.15.10",
+    "toml>=0.10.2",
 ]

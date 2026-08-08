@@ -13,6 +13,11 @@ from typing import Any
 
 import torch
 
+# Import the installed native arena before adding third_party/Mortal/mortal to
+# sys.path; that directory contains a legacy libriichi.pyd which shadows the
+# current Python package and does not expose the FourPlayer arena wrapper.
+from libriichi.arena import FourPlayer as NativeFourPlayer
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
@@ -185,8 +190,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     mortal_python_dir = (args.mortal_root / "mortal").resolve()
     if str(mortal_python_dir) not in sys.path:
         sys.path.insert(0, str(mortal_python_dir))
-    from libriichi.arena import FourPlayer  # noqa: PLC0415
-
     labels, engines, model_load_times = _load_engines(
         models=models,
         mortal_root=args.mortal_root,
@@ -195,7 +198,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         enable_profile=bool(args.profile),
     )
 
-    env = FourPlayer(disable_progress_bar=True, log_dir=str(log_dir))
+    env = NativeFourPlayer(disable_progress_bar=True, log_dir=str(log_dir))
     total_games = int(args.games)
     progress_every = int(getattr(args, "progress_every", 0) or 0)
     requested_batch_size = int(getattr(args, "native_batch_games", 0) or 0)

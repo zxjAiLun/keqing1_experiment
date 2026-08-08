@@ -153,7 +153,28 @@ def _git_dirty(path: Path) -> bool | None:
     return bool(result.stdout.strip())
 
 
-def _dataset_contract(config: dict[str, Any], file_list: list[str], player_names: list[str]) -> dict[str, Any]:
+def _load_player_names_by_file(config: dict[str, Any]) -> dict[str, str] | None:
+    mapping_path = config["dataset"].get("player_names_by_file")
+    if not mapping_path:
+        return None
+    path_value = Path(str(mapping_path)).resolve()
+    payload = json.loads(path_value.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"player_names_by_file must contain a JSON object: {path_value}")
+    mapping: dict[str, str] = {}
+    for filename, label in payload.items():
+        if not str(label).strip():
+            raise ValueError(f"empty player label in {path_value}: {filename}")
+        mapping[str(Path(str(filename)).resolve())] = str(label).strip()
+    return mapping
+
+
+def _dataset_contract(
+    config: dict[str, Any],
+    file_list: list[str],
+    player_names: list[str],
+    player_names_by_file: dict[str, str] | None = None,
+) -> dict[str, Any]:
     dataset = config["dataset"]
     manifest = {
         "version": int(config["control"]["version"]),
@@ -165,7 +186,7 @@ def _dataset_contract(config: dict[str, Any], file_list: list[str], player_names
         "augmented_first": bool(dataset["augmented_first"]),
     }
     file_index = Path(str(dataset["file_index"])).resolve()
-    return {
+    contract = {
         "file_count": len(file_list),
         "file_index": str(file_index),
         "file_index_sha256": _sha256_file(file_index) if file_index.exists() else None,
@@ -178,6 +199,15 @@ def _dataset_contract(config: dict[str, Any], file_list: list[str], player_names
         "enable_augmentation": manifest["enable_augmentation"],
         "augmented_first": manifest["augmented_first"],
     }
+    if player_names_by_file is not None:
+        mapping_path = Path(str(dataset["player_names_by_file"])).resolve()
+        contract["player_names_by_file"] = str(mapping_path)
+        contract["player_names_by_file_sha256"] = _sha256_file(mapping_path)
+        contract["mapped_label_counts"] = {
+            label: sum(value == label for value in player_names_by_file.values())
+            for label in sorted(set(player_names_by_file.values()))
+        }
+    return contract
 
 
 def _training_contract(
@@ -429,8 +459,19 @@ def train_to_target_steps(
     logging.info("file list size: %s", f"{len(file_list):,}")
     dataset = config["dataset"]
     player_names = _load_player_names(config)
+    player_names_by_file = _load_player_names_by_file(config)
+    if player_names_by_file is not None:
+        indexed_paths = {str(Path(str(value)).resolve()) for value in file_list}
+        mapped_paths = set(player_names_by_file)
+        if indexed_paths != mapped_paths:
+            missing = sorted(indexed_paths - mapped_paths)
+            extra = sorted(mapped_paths - indexed_paths)
+            raise ValueError(
+                "player_names_by_file must cover exactly the file index "
+                f"(missing={len(missing)}, extra={len(extra)})"
+            )
     reward_contract = reward_contract_from_config(config)
-    dataset_contract = _dataset_contract(config, file_list, player_names)
+    dataset_contract = _dataset_contract(config, file_list, player_names, player_names_by_file)
     loader_workers = int(dataset["num_workers"] if num_workers is None else num_workers)
     dataset_iter = FileDatasetsIter(
         version=version,
@@ -442,6 +483,7 @@ def train_to_target_steps(
         num_epochs=int(dataset["num_epochs"]),
         enable_augmentation=bool(dataset["enable_augmentation"]),
         augmented_first=bool(dataset["augmented_first"]),
+        player_names_by_file=player_names_by_file,
     )
     data_loader = iter(
         DataLoader(
