@@ -105,7 +105,7 @@ def expected_label(
             label = 41
         elif nt in ("daiminkan", "kakan", "ankan") and nxt.get("actor") == seat:
             label = 42
-        elif nt == "ryukyoku":
+        elif nt == "ryukyoku" and state.last_cans.can_ryukyoku:
             label = 44
         else:
             ron_by_pov = False

@@ -309,6 +309,34 @@ def test_native_scene_chi_labels() -> None:
     assert chi_label(["W", "7m"], "6m") is None
 
 
+class _FakeCans:
+    def __init__(self, can_ryukyoku: bool = False) -> None:
+        self.can_ryukyoku = can_ryukyoku
+        self.can_chi = False
+        self.can_pon = False
+        self.can_daiminkan = False
+        self.can_ron_agari = False
+
+
+class _FakeState:
+    def __init__(self, can_ryukyoku: bool = False) -> None:
+        self.last_cans = _FakeCans(can_ryukyoku)
+
+
+def test_native_scene_ryukyoku_label_requires_can_ryukyoku() -> None:
+    from training.mortal.d3_native_scene import expected_label
+
+    # draw followed by ryukyoku with the player able to vote -> label 44
+    events = [
+        {"type": "tsumo", "actor": 1, "pai": "6p"},
+        {"type": "ryukyoku"},
+        {"type": "end_kyoku"},
+    ]
+    assert expected_label(events, 0, seat=1, state=_FakeState(can_ryukyoku=True)) == 44
+    # same draw but the player cannot vote (exhaustive-draw edge): no loader row
+    assert expected_label(events, 0, seat=1, state=_FakeState(can_ryukyoku=False)) is None
+
+
 def test_lineage_constants_target_migrated_repo_identity() -> None:
     assert EXPECTED_BRANCH == "main"
     assert TRAINING_TRANSFER_ANCHOR == "74a3154d0c543b805a75e679ab93c74f2afbefaf"
