@@ -390,6 +390,8 @@ def audit(args: argparse.Namespace) -> dict[str, Any]:
                 "lineage": lineage_checks,
             },
             "confirmation_token": shard_confirmation_token(shard_index),
+            "generation_commit": protocol.get("project_lineage", {}).get("commit"),
+            "auditor_commit": current_lineage["project"]["commit"],
             "d3_semantic_anchor": protocol.get("continuation_lineage", {}).get(
                 "d3_semantic_anchor"
             ),
