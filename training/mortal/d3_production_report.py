@@ -60,15 +60,18 @@ def _write_markdown(report: dict[str, Any], path: Path) -> None:
     behavior = metrics["k0_behavior"]
     exploration = metrics["exploration"]
     lines = [
-        "# D3 首个 250h 生产 Gate 机器审计",
+        "# D3 首个 250h 生产 Gate 机器审计 v2",
         "",
         f"- Gate：`{gate['verdict']}`",
         f"- Contract：`{CONTRACT_ID}`",
         f"- Seeds：`{SEED_START}..{SEED_END_EXCLUSIVE - 1}`；seed key `{SEED_KEY}`",
-        f"- 真实单次 B250：`{gate['checks']['protocol']['native_call_count']}`",
+        f"- 真实单次 B250：`{gate['checks']['provenance']['native_call_count']}`",
+        f"- Generation commit：`{gate['generation_commit']}`",
+        f"- Auditor commit：`{gate['auditor_commit']}`",
         f"- 日志：`{report['data_integrity']['file_count']}`；唯一 canonical hanchans：`{report['data_integrity']['unique_canonical_hanchans']}`",
         f"- Primary decisions：`{behavior['total_primary_decisions']}`；parent greedy agreement：`{behavior['parent_greedy_agreement_rate']:.4%}`",
         f"- Eligible / explored：`{exploration['eligible_count']}` / `{exploration['explored_count']}`；realized rate：`{exploration['realized_explored_over_eligible']:.4%}`",
+        f"- 事件映射：`{report['event_audit']['event_count'] - report['event_audit']['mapping_violations'].get('unmapped_context', 0)}` / `{report['event_audit']['event_count']}`；behavior mismatch：`{report['event_audit']['mapping_violations'].get('behavior_mismatch', 0)}`",
         "",
         "## Hard checks",
         "",

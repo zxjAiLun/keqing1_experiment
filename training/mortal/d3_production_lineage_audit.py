@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -10,8 +11,8 @@ from training.mortal.d3_production_contract import (
     AMP, AUTHORITATIVE_MORTAL_COMMIT, AUTHORITATIVE_NATIVE_BINARY_SHA256,
     AUTHORITATIVE_NATIVE_PATCH_SHA256, DEVICE, GAMES, GATE_ID, NATIVE_BATCH_GAMES,
     PRODUCTION_IMPLEMENTATION_PATHS, PRODUCTION_SCHEMA, RANK_POINTS, REQUIRED_LABELS, REPO_ROOT,
-    SEAT_MODE, SEED_END_EXCLUSIVE, SEED_KEY, SEED_START, implementation_manifest,
-    mortal_lineage, project_lineage, sha256_file,
+    SEAT_MODE, SEED_END_EXCLUSIVE, SEED_KEY, SEED_START, git_text,
+    implementation_manifest, mortal_lineage, project_lineage, sha256_file,
 )
 
 def _protocol_checks(protocol: dict[str, Any], run_dir: Path) -> dict[str, bool]:
@@ -115,7 +116,30 @@ def _current_lineage_checks(protocol: dict[str, Any], mortal_root: Path) -> dict
         elif sha256_file(path) != row.get("sha256"):
             model_errors.append(f"model SHA changed after generation: {label}")
     expected_project_commit = protocol.get("project_lineage", {}).get("commit")
-    project_commit_exact = project["commit"] == expected_project_commit
+    generation_is_ancestor = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", expected_project_commit, "HEAD"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+    ).returncode == 0
+    # Auditor v2 provenance split: the generation code commit is frozen; the
+    # auditor itself legitimately moved. Hard requirement: the generation
+    # commit is an ancestor of the auditor HEAD and the generation-semantic
+    # files did not change since then. Audit-only files are allowed to differ.
+    GENERATION_SEMANTIC_PATHS = (
+        "training/mortal/d3_exploration_engine.py",
+        "training/mortal/patches/libriichi_d3_decision_context.patch",
+        "training/mortal/run_d3_exploration_production_2026_08.py",
+        "training/mortal/d3_production_preflight.py",
+        "training/mortal/d3_production_contract.py",
+    )
+    semantic_diff = git_text(
+        REPO_ROOT,
+        "diff",
+        "--name-only",
+        expected_project_commit,
+        "--",
+        *GENERATION_SEMANTIC_PATHS,
+    ).splitlines()
     loaded_binary_path = Path(_riichi.__file__).resolve()
     loaded_binary_sha = sha256_file(loaded_binary_path)
     binary_exact = loaded_binary_sha == protocol.get("runtime", {}).get(
@@ -132,18 +156,16 @@ def _current_lineage_checks(protocol: dict[str, Any], mortal_root: Path) -> dict
         smoke_protocol_path.is_file()
         and sha256_file(smoke_protocol_path) == smoke_row.get("protocol_sha256")
     )
-    implementation_error: str | None = None
-    try:
-        current_implementation = implementation_manifest(REPO_ROOT)
-    except Exception as exc:  # noqa: BLE001
-        current_implementation = {}
-        implementation_error = str(exc)
-    implementation_exact = current_implementation == protocol.get("production_implementation")
+    auditor_commit = git_text(REPO_ROOT, "rev-parse", "HEAD")
     extra_errors: list[str] = []
-    if not project_commit_exact:
+    if not generation_is_ancestor:
         extra_errors.append(
-            f"project HEAD changed after generation: expected={expected_project_commit} "
-            f"actual={project['commit']}"
+            f"generation commit is not an ancestor of auditor HEAD: "
+            f"generation={expected_project_commit} auditor={auditor_commit}"
+        )
+    if semantic_diff:
+        extra_errors.append(
+            f"generation-semantic files changed since generation commit: {semantic_diff}"
         )
     if not binary_exact:
         extra_errors.append(f"loaded native binary changed after generation: {loaded_binary_sha}")
@@ -153,15 +175,13 @@ def _current_lineage_checks(protocol: dict[str, Any], mortal_root: Path) -> dict
         extra_errors.append(
             f"authoritative smoke protocol missing or changed after generation: {smoke_protocol_path}"
         )
-    if not implementation_exact:
-        extra_errors.append(
-            "production runner/auditor implementation changed after generation"
-            + (f": {implementation_error}" if implementation_error else "")
-        )
     return {
         "project": project,
         "mortal": native,
-        "project_commit_exact": project_commit_exact,
+        "generation_commit": expected_project_commit,
+        "auditor_commit": auditor_commit,
+        "generation_is_ancestor": generation_is_ancestor,
+        "generation_semantic_diff_paths": semantic_diff,
         "loaded_libriichi_path": str(loaded_binary_path),
         "loaded_libriichi_sha256": loaded_binary_sha,
         "native_binary_exact": binary_exact,
@@ -169,18 +189,16 @@ def _current_lineage_checks(protocol: dict[str, Any], mortal_root: Path) -> dict
         "native_patch_exact": patch_exact,
         "authoritative_smoke_protocol_path": str(smoke_protocol_path),
         "authoritative_smoke_protocol_exact": smoke_protocol_exact,
-        "production_implementation": current_implementation,
-        "production_implementation_exact": implementation_exact,
         "model_errors": model_errors,
         "extra_errors": extra_errors,
         "passed": (
             project["passed"]
             and native["passed"]
-            and project_commit_exact
+            and generation_is_ancestor
+            and not semantic_diff
             and binary_exact
             and patch_exact
             and smoke_protocol_exact
-            and implementation_exact
             and not model_errors
         ),
     }

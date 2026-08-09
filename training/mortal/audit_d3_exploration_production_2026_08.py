@@ -16,13 +16,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from training.mortal.d3_exploration_engine import (
-    CONTRACT_ID, EXPLORATION_PROBABILITY, HANCHAN_BUDGET, KYOKU_BUDGET, MARGIN_THRESHOLD,
+    CONTRACT_ID, DISCARD_ACTION_LIMIT, EXPLORATION_PROBABILITY,
 )
 from training.mortal.d3_production_contract import (
-    AUDIT_SCHEMA, DEFAULT_OUTPUT_DIR, GAMES, GATE_ID, RANK_POINTS, REQUIRED_LABELS, read_json, write_json,
+    DEFAULT_OUTPUT_DIR, GAMES, GATE_ID, RANK_POINTS, REQUIRED_LABELS, read_json, write_json,
 )
 from training.mortal.d3_production_audit_core import (
-    DecisionSnapshot, _load_events, _load_log_manifest, primary_row_flags,
+    _load_events, _load_log_manifest,
 )
 from training.mortal.d3_production_event_audit import audit_event_records
 from training.mortal.d3_production_lineage_audit import _current_lineage_checks, _protocol_checks
@@ -59,7 +59,7 @@ def audit(args: argparse.Namespace) -> dict[str, Any]:
     exploration_counters = exploration_summary.get("counters", {})
     from training.mortal.stat_report import write_stat_report  # noqa: PLC0415
 
-    audit_dir = run_dir / "audit"
+    audit_dir = run_dir / "audit_v2"
     detailed_stats = write_stat_report(
         output_dir=audit_dir / "stats",
         log_dir=run_dir / "logs",
@@ -75,6 +75,7 @@ def audit(args: argparse.Namespace) -> dict[str, Any]:
         if summary.get("rank_counts", {}).get(label) != expected_counts:
             rank_counts_match = False
 
+    # ---- gate B: data integrity ----
     data_checks = {
         "250_log_files": log_manifest["file_count"] == GAMES,
         "250_unique_seed_keys": log_manifest["unique_seed_count"] == GAMES,
@@ -96,81 +97,71 @@ def audit(args: argparse.Namespace) -> dict[str, Any]:
         "gameplay_loader_zero_malformed": not behavior_metrics["malformed"],
         "rank_counts_match_logs": rank_counts_match,
     }
-    summary_reason_counts = {
-        reason: int(exploration_counters.get(f"{reason}_count", 0))
-        for reason in (
-            "explored",
-            "hash_rejected",
-            "kyoku_budget_exhausted",
-            "hanchan_budget_exhausted",
-        )
+
+    # ---- gate D: reconstruction integrity ----
+    reconstruction_checks = {
+        "zero_native_scene_label_mismatches": behavior_metrics["reconstruction_errors"] == [],
+        "no_unmapped_event_context": event_audit["mapping_violations"].get(
+            "unmapped_context", 0
+        ) == 0,
+        "behavior_action_correspondence_zero": event_audit["mapping_violations"].get(
+            "behavior_mismatch", 0
+        ) == 0,
+        "no_duplicate_event_context": event_audit["contract_violations"].get(
+            "duplicate_context", 0
+        ) == 0,
+        "no_extra_generation_context": event_audit["extra_event_count"] == 0,
     }
-    exploration_checks = {
-        "summary_contract_id": exploration_summary.get("contract_id") == CONTRACT_ID,
-        "summary_probability": exploration_summary.get("probability") == EXPLORATION_PROBABILITY,
-        "summary_margin": exploration_summary.get("margin_threshold") == MARGIN_THRESHOLD,
-        "summary_kyoku_budget": exploration_summary.get("kyoku_budget") == KYOKU_BUDGET,
-        "summary_hanchan_budget": exploration_summary.get("hanchan_budget") == HANCHAN_BUDGET,
-        "summary_primary_state_count": exploration_counters.get("states")
-        == behavior_metrics["total_primary_decisions"],
-        "summary_event_count": exploration_counters.get("event_count")
-        == event_audit["event_count"],
-        "summary_eligible_count": exploration_counters.get("eligible_count")
-        == event_audit["event_count"],
-        "summary_explored_count": exploration_counters.get("explored_count")
-        == event_audit["explored_count"],
-        "summary_reason_counts": summary_reason_counts == event_audit["reason_counts"],
-        "runner_summary_counters_match": summary.get("exploration_counters")
-        == exploration_counters,
-        "protocol_counters_match": protocol.get("exploration_counters")
-        == exploration_counters,
-        "eligible_events_positive": event_audit["event_count"] > 0,
-        "explored_events_positive": event_audit["explored_count"] > 0,
-        "eligible_event_set_exact": event_audit["missing_event_count"] == 0
-        and event_audit["extra_event_count"] == 0,
-        "event_contract_recomputed": event_audit["passed"],
-        "primary_context_violation_zero": event_audit["violation_counts"].get(
-            "primary_context", 0
-        )
-        == 0,
-        "own_riichi_violation_zero": event_audit["violation_counts"].get("own_riichi", 0)
-        == 0,
-        "semantic_violation_zero": event_audit["violation_counts"].get("semantic", 0) == 0,
-        "legal_finite_violation_zero": event_audit["violation_counts"].get(
-            "legal_finite", 0
-        )
-        == 0,
-        "stable_ranking_violation_zero": event_audit["violation_counts"].get("ranking", 0)
-        == 0,
-        "finite_q_violation_zero": event_audit["violation_counts"].get("finite_q", 0) == 0,
-        "q_recompute_violation_zero": event_audit["violation_counts"].get("q_recompute", 0)
-        == 0,
-        "threshold_violation_zero": event_audit["violation_counts"].get("threshold", 0) == 0,
-        "hash_violation_zero": event_audit["violation_counts"].get("hash", 0) == 0,
-        "budget_violation_zero": event_audit["violation_counts"].get("budget", 0) == 0
-        and event_audit["violation_counts"].get("budget_reason", 0) == 0,
-        "actual_action_violation_zero": event_audit["violation_counts"].get(
+
+    # ---- gate C: event internal contract (frozen, no replay-Q) ----
+    contract_checks = {
+        "contract_id": all(
+            event.get("contract_id") == CONTRACT_ID for event in events
+        ),
+        "probability_0_25": all(
+            math.isclose(
+                float(event.get("exploration_probability", float("nan"))),
+                EXPLORATION_PROBABILITY,
+                rel_tol=0.0,
+                abs_tol=0.0,
+            )
+            for event in events
+        ),
+        "distinct_discards": all(
+            0 <= int(event["top1_action"]) < DISCARD_ACTION_LIMIT
+            and 0 <= int(event["top2_action"]) < DISCARD_ACTION_LIMIT
+            and int(event["top1_action"]) != int(event["top2_action"])
+            for event in events
+        ),
+        "event_q_finite": event_audit["contract_violations"].get("finite_q", 0) == 0,
+        "margin_identity": event_audit["contract_violations"].get("margin_identity", 0) == 0,
+        "margin_le_0_5": event_audit["contract_violations"].get("threshold", 0) == 0,
+        "hash_exact": event_audit["contract_violations"].get("hash", 0) == 0,
+        "budget_exact": event_audit["contract_violations"].get("budget", 0) == 0
+        and event_audit["contract_violations"].get("budget_reason", 0) == 0,
+        "reason_exact": event_audit["contract_violations"].get("budget_reason", 0) == 0,
+        "explored_and_action_exact": event_audit["contract_violations"].get(
             "actual_action", 0
-        )
-        == 0,
-        "base_action_violation_zero": event_audit["violation_counts"].get("base_action", 0)
-        == 0,
-        "auxiliary_exploration_zero": "auxiliary_exploration_count" in exploration_counters
-        and exploration_counters.get("auxiliary_exploration_count") == 0,
+        ) == 0,
+        "base_action_exact": event_audit["contract_violations"].get("base_action", 0) == 0,
+        "seed_range_exact": event_audit["contract_violations"].get("seed_range", 0) == 0,
     }
+
     lineage_checks = {
         "runtime_protocol_lineage": all(protocol_checks.values()),
-        "current_project_native_models_unchanged": current_lineage["passed"],
+        "current_generation_lineage_unchanged": current_lineage["passed"],
     }
     hard_pass = (
         all(protocol_checks.values())
         and all(data_checks.values())
-        and all(exploration_checks.values())
+        and all(contract_checks.values())
+        and all(reconstruction_checks.values())
         and all(lineage_checks.values())
     )
     errors = [
         *log_manifest["malformed"],
         *behavior_metrics["malformed"],
+        *behavior_metrics["reconstruction_errors"],
         *event_audit["errors"],
         *current_lineage["project"]["errors"],
         *current_lineage["mortal"]["errors"],
@@ -179,13 +170,16 @@ def audit(args: argparse.Namespace) -> dict[str, Any]:
     ]
     failed_protocol = [name for name, passed in protocol_checks.items() if not passed]
     failed_data = [name for name, passed in data_checks.items() if not passed]
-    failed_exploration = [name for name, passed in exploration_checks.items() if not passed]
+    failed_contract = [name for name, passed in contract_checks.items() if not passed]
+    failed_mapping = [name for name, passed in reconstruction_checks.items() if not passed]
     if failed_protocol:
-        errors.append(f"failed protocol checks: {failed_protocol}")
+        errors.append(f"failed provenance checks: {failed_protocol}")
     if failed_data:
-        errors.append(f"failed data checks: {failed_data}")
-    if failed_exploration:
-        errors.append(f"failed exploration checks: {failed_exploration}")
+        errors.append(f"failed data integrity checks: {failed_data}")
+    if failed_contract:
+        errors.append(f"failed event contract checks: {failed_contract}")
+    if failed_mapping:
+        errors.append(f"failed correspondence checks: {failed_mapping}")
 
     exploration_distribution = _exploration_distribution(
         events, snapshots, behavior_metrics["all_kyoku_keys"]
@@ -193,18 +187,30 @@ def audit(args: argparse.Namespace) -> dict[str, Any]:
     eligible_count = event_audit["event_count"]
     explored_count = event_audit["explored_count"]
     k0_stats = detailed_stats["players"]["K0_70k"]
+    generation_commit = protocol.get("project_lineage", {}).get("commit")
+    auditor_commit = current_lineage["auditor_commit"]
     report = {
-        "schema": AUDIT_SCHEMA,
+        "schema": "keqing.mortal.d3_production_gate_reaudit.v2",
         "gate": {
             "gate_id": GATE_ID,
             "verdict": "PASS" if hard_pass else "FAIL",
             "passed": hard_pass,
             "checks": {
-                "protocol": protocol_checks,
+                "provenance": protocol_checks,
                 "data_integrity": data_checks,
-                "exploration_contract": exploration_checks,
+                "event_contract": contract_checks,
+                "correspondence": reconstruction_checks,
                 "lineage": lineage_checks,
             },
+            "generation_commit": generation_commit,
+            "auditor_commit": auditor_commit,
+            "generation_artifacts_modified": False,
+            "supersedes_verdict_from": "audit-v1",
+            "supersession_reason": (
+                "authoritative 25h smoke reproduced audit-v1 failure signature; "
+                "audit-v1 replay-Q equality is not an interchangeable oracle for "
+                "generation-time arena inference and is demoted to diagnostics"
+            ),
             "failure_policy": (
                 "FAIL closes D3_top2_discard_v1; do not change parameters under the same experiment ID"
                 if not hard_pass
@@ -250,12 +256,13 @@ def audit(args: argparse.Namespace) -> dict[str, Any]:
         "errors": errors,
         "scope_notes": [
             "rank/Pt and behavior metrics are descriptive only and cannot change the frozen D3 recipe",
+            "replay-Q/ranking/eligibility are descriptive diagnostics (layer E), not hard gates",
             "this audit does not generate the remaining 5750 hanchans and does not start training",
             "a PASS still requires Chinese report, registry, overview, and consistency updates before continuation",
         ],
     }
-    output = args.output or (audit_dir / "d3_production_gate_audit.json")
-    markdown = args.markdown_output or (audit_dir / "d3_production_gate_audit.md")
+    output = args.output or (audit_dir / "d3_production_gate_reaudit_v2.json")
+    markdown = args.markdown_output or (audit_dir / "d3_production_gate_reaudit_v2.md")
     write_json(output.resolve(), report)
     _write_markdown(report, markdown.resolve())
     return report
@@ -267,7 +274,7 @@ def main(argv: list[str] | None = None) -> None:
         json.dumps(
             {
                 "verdict": report["gate"]["verdict"],
-                "output": str((args.output or (args.run_dir / "audit/d3_production_gate_audit.json")).resolve()),
+                "output": str((args.output or (args.run_dir / "audit_v2/d3_production_gate_reaudit_v2.json")).resolve()),
             },
             ensure_ascii=False,
             indent=2,

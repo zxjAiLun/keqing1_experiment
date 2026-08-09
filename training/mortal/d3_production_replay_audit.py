@@ -38,6 +38,7 @@ def _build_decision_snapshots(
         model_q,
         records_from_game,
     )
+    from training.mortal.d3_native_scene import reconstruct_native_scenes  # noqa: PLC0415
 
     if not torch.cuda.is_available():
         raise RuntimeError("production audit requires CUDA")
@@ -73,6 +74,7 @@ def _build_decision_snapshots(
     auxiliary_kan_select_rows = 0
     primary_greedy_agreement = 0
     all_kyoku_keys: set[tuple[int, int, int, int]] = set()
+    reconstruction_errors: list[str] = []
 
     for seed_key, row in sorted(log_manifest["rows"].items()):
         seed, key = seed_key
@@ -96,9 +98,39 @@ def _build_decision_snapshots(
             if len(q_rows) != len(records):
                 raise ValueError("parent Q row count mismatch")
 
+            row_flags = primary_row_flags(record.action for record in records)
+            loader_rows = [
+                {
+                    "action": int(record.action),
+                    "legal_count": int(np.asarray(record.mask, dtype=np.bool_).sum()),
+                    "kyoku": int(record.kyoku),
+                }
+                for record, is_primary in zip(records, row_flags, strict=True)
+                if is_primary
+            ]
+            recon = reconstruct_native_scenes(path, k0_seat, loader_rows)
+            if recon["label_mismatches"]:
+                reconstruction_errors.append(
+                    f"{path.name}: native-scene reconstruction label mismatches: "
+                    f"{recon['label_mismatches']}"
+                )
+            if recon["row_exhausted"]:
+                reconstruction_errors.append(
+                    f"{path.name}: native-scene reconstruction consumed more rows than emitted"
+                )
+            if recon["leftover_rows"]:
+                reconstruction_errors.append(
+                    f"{path.name}: native-scene reconstruction left {recon['leftover_rows']} "
+                    f"loader rows unconsumed"
+                )
+            row_to_arena: dict[tuple[int, int], int] = {}
+            for entry in recon["scenes"]:
+                loader_row_index = entry["loader_row_index"]
+                if loader_row_index is not None and entry["arena_consulted"]:
+                    row_to_arena[(entry["kyoku"], loader_row_index)] = entry["arena_index"]
+
             decision_index_by_kyoku: defaultdict[int, int] = defaultdict(int)
             primary_count = 0
-            row_flags = primary_row_flags(record.action for record in records)
             for record, raw_q, is_primary in zip(records, q_rows, row_flags, strict=True):
                 mask = np.asarray(record.mask, dtype=np.bool_)
                 q = np.asarray(raw_q, dtype=np.float64)
@@ -114,9 +146,14 @@ def _build_decision_snapshots(
                     continue
 
                 kyoku_index = int(record.kyoku)
-                decision_index = decision_index_by_kyoku[kyoku_index]
+                loader_index = decision_index_by_kyoku[kyoku_index]
                 decision_index_by_kyoku[kyoku_index] += 1
-                context = (seed, key, k0_seat, kyoku_index, decision_index)
+                arena_index = row_to_arena.get((kyoku_index, loader_index))
+                if arena_index is None:
+                    # Loader row without an arena scene (post-riichi forced
+                    # discard): no D3 context exists for it.
+                    continue
+                context = (seed, key, k0_seat, kyoku_index, arena_index)
                 if context in snapshots:
                     raise ValueError(f"duplicate decision context: {context}")
                 ranked = sorted(finite_legal, key=lambda candidate: (-float(q[candidate]), candidate))
@@ -214,9 +251,11 @@ def _build_decision_snapshots(
         "eligible_legal_action_count_distribution": _bucket(eligible_legal_counts.elements()),
         "eligible_action_mix": {key: int(value) for key, value in sorted(eligible_action_counts.items())},
         "all_kyoku_keys": [list(key) for key in sorted(all_kyoku_keys)],
+        "reconstruction_errors": reconstruction_errors,
         "malformed": malformed,
         "passed": (
             not malformed
+            and not reconstruction_errors
             and len(decisions_per_hanchan) == GAMES
             and total_training_rows > 0
             and total_primary_decisions > 0

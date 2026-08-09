@@ -4,12 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from training.mortal.audit_d3_exploration_production_2026_08 import (
+from training.mortal.d3_exploration_engine import canonical_hash_u
+from training.mortal.d3_native_scene import chi_label, tile_label
+from training.mortal.d3_production_audit_core import (
     DecisionSnapshot,
-    audit_event_records,
     primary_row_flags,
 )
-from training.mortal.d3_exploration_engine import canonical_hash_u
+from training.mortal.d3_production_event_audit import audit_event_records
 from training.mortal.run_d3_exploration_production_2026_08 import (
     parse_args as parse_runner_args,
     run_single_native_b250,
@@ -128,13 +129,39 @@ def test_authoritative_smoke_manifest_requires_exact_lineage() -> None:
     assert "authoritative smoke games mismatch" in validate_authoritative_smoke_protocol(protocol)
 
 
-def test_event_audit_recomputes_hash_budget_and_loader_decision() -> None:
-    context = (1_800_000, 8192, 2, 0, 0)
+def _valid_event_and_snapshot(seed: int = 1_800_000, seat: int = 2) -> tuple[dict, DecisionSnapshot]:
+    context = (seed, 8192, seat, 0, 0)
     canonical, digest, hash_u = canonical_hash_u(*context)
-    expected_explored = hash_u < 0.25
+    explored = hash_u < 0.25
     top1, top2 = 4, 5
-    actual = top2 if expected_explored else top1
-    reason = "explored" if expected_explored else "hash_rejected"
+    actual = top2 if explored else top1
+    reason = "explored" if explored else "hash_rejected"
+    event = {
+        "contract_id": "D3_top2_discard_v1",
+        "generation_seed": context[0],
+        "seed_key": context[1],
+        "seat": context[2],
+        "kyoku_index": context[3],
+        "decision_index": context[4],
+        "own_riichi": False,
+        "context_kind": "primary_action",
+        "exploration_allowed": True,
+        "top1_action": top1,
+        "top2_action": top2,
+        "top1_q": 1.0,
+        "top2_q": 0.8,
+        "margin": 0.2,
+        "hash_input": canonical,
+        "hash_sha256": digest,
+        "hash_u": hash_u,
+        "exploration_probability": 0.25,
+        "kyoku_exploration_count_before": 0,
+        "hanchan_exploration_count_before": 0,
+        "actual_action": actual,
+        "explored": explored,
+        "reason": reason,
+        "base_action": top1,
+    }
     snapshot = DecisionSnapshot(
         context=context,
         action=actual,
@@ -150,57 +177,136 @@ def test_event_audit_recomputes_hash_budget_and_loader_decision() -> None:
         margin=0.2,
         eligible=True,
     )
-    event = {
-        "contract_id": "D3_top2_discard_v1",
-        "generation_seed": context[0],
-        "seed_key": context[1],
-        "seat": context[2],
-        "kyoku_index": context[3],
-        "decision_index": context[4],
-        "own_riichi": False,
-        "context_kind": "primary_action",
-        "exploration_allowed": True,
-        "exploration_probability": 0.25,
-        "top1_action": top1,
-        "top2_action": top2,
-        "top1_q": 1.0,
-        "top2_q": 0.8,
-        "margin": 0.2,
-        "hash_input": canonical,
-        "hash_sha256": digest,
-        "hash_u": hash_u,
-        "kyoku_exploration_count_before": 0,
-        "hanchan_exploration_count_before": 0,
-        "actual_action": actual,
-        "explored": expected_explored,
-        "reason": reason,
-        "base_action": top1,
-    }
-    result = audit_event_records([event], {context: snapshot})
+    return event, snapshot
+
+
+def test_event_contract_recomputes_hash_budget_and_action() -> None:
+    event, snapshot = _valid_event_and_snapshot()
+    result = audit_event_records([event], {event_context(event): snapshot})
     assert result["passed"] is True
     assert result["missing_event_count"] == 0
+    assert result["contract_violations"] == {}
+    assert result["mapping_violations"] == {}
+    assert result["explored_count"] == (1 if event["explored"] else 0)
 
 
-def test_event_audit_rejects_missing_independently_eligible_event() -> None:
-    context = (1_800_000, 8192, 0, 0, 0)
+def event_context(event: dict) -> tuple[int, int, int, int, int]:
+    return (
+        int(event["generation_seed"]),
+        int(event["seed_key"]),
+        int(event["seat"]),
+        int(event["kyoku_index"]),
+        int(event["decision_index"]),
+    )
+
+
+def test_event_contract_rejects_margin_identity_break() -> None:
+    event, snapshot = _valid_event_and_snapshot()
+    event["margin"] = 0.5
+    result = audit_event_records([event], {event_context(event): snapshot})
+    assert result["passed"] is False
+    assert result["contract_violations"]["margin_identity"] == 1
+
+
+def test_event_contract_rejects_hash_digest_break() -> None:
+    event, snapshot = _valid_event_and_snapshot()
+    event["hash_sha256"] = "0" * 64
+    result = audit_event_records([event], {event_context(event): snapshot})
+    assert result["passed"] is False
+    assert result["contract_violations"]["hash"] == 1
+
+
+def test_event_contract_rejects_wrong_reason_and_action() -> None:
+    event, snapshot = _valid_event_and_snapshot()
+    event["reason"] = "kyoku_budget_exhausted"
+    event["actual_action"] = int(event["top1_action"])
+    event["explored"] = False
+    result = audit_event_records([event], {event_context(event): snapshot})
+    assert result["passed"] is False
+    assert result["contract_violations"]["budget_reason"] == 1
+    assert result["contract_violations"]["actual_action"] == 2
+
+
+def test_event_contract_rejects_wrong_base_action() -> None:
+    event, snapshot = _valid_event_and_snapshot()
+    event["base_action"] = int(event["top2_action"])
+    result = audit_event_records([event], {event_context(event): snapshot})
+    assert result["passed"] is False
+    assert result["contract_violations"]["base_action"] == 1
+
+
+def test_mapping_rejects_event_without_native_scene() -> None:
+    event, snapshot = _valid_event_and_snapshot()
+    result = audit_event_records([event], {})
+    assert result["passed"] is False
+    assert result["mapping_violations"]["unmapped_context"] == 1
+    assert result["missing_event_count"] == 1
+
+
+def test_mapping_rejects_behavior_action_mismatch() -> None:
+    event, snapshot = _valid_event_and_snapshot()
     snapshot = DecisionSnapshot(
-        context=context,
-        action=1,
+        context=snapshot.context,
+        action=int(event["top1_action"]),
         own_riichi=False,
-        shanten=1,
+        shanten=2,
         phase="early",
-        legal_action_count=2,
-        finite_legal_actions=(1, 2),
-        top1_action=1,
-        top2_action=2,
-        top1_q=0.9,
-        top2_q=0.7,
+        legal_action_count=3,
+        finite_legal_actions=(4, 5, 6),
+        top1_action=4,
+        top2_action=5,
+        top1_q=1.0,
+        top2_q=0.8,
         margin=0.2,
         eligible=True,
     )
-    result = audit_event_records([], {context: snapshot})
+    result = audit_event_records([event], {event_context(event): snapshot})
     assert result["passed"] is False
-    assert result["missing_event_count"] == 1
+    assert result["mapping_violations"]["behavior_mismatch"] == 1
+
+
+def test_replay_q_diagnostics_are_descriptive_not_gating() -> None:
+    event, snapshot = _valid_event_and_snapshot()
+    snapshot = DecisionSnapshot(
+        context=snapshot.context,
+        action=snapshot.action,
+        own_riichi=False,
+        shanten=2,
+        phase="early",
+        legal_action_count=3,
+        finite_legal_actions=(4, 5, 6),
+        top1_action=5,
+        top2_action=4,
+        top1_q=1.05,
+        top2_q=0.75,
+        margin=0.3,
+        eligible=True,
+    )
+    result = audit_event_records([event], {event_context(event): snapshot})
+    assert result["passed"] is True
+    diag = result["q_diagnostics"]
+    assert diag["ranking_flip_count"] == 1
+    assert diag["eligibility_flip_count"] == 0
+    assert diag["abs_diff_top1_q"]["max"] > 0
+
+
+def test_native_scene_tile_labels() -> None:
+    assert tile_label("5m") == 4
+    assert tile_label("9s") == 26
+    assert tile_label("1p") == 9
+    assert tile_label("W") == 29
+    assert tile_label("5mr") == 34
+    assert tile_label("5pr") == 35
+    assert tile_label("5sr") == 36
+
+
+def test_native_scene_chi_labels() -> None:
+    assert chi_label(["6m", "7m"], "5m") == 38
+    assert chi_label(["4m", "6m"], "5m") == 39
+    assert chi_label(["3m", "4m"], "5m") == 40
+    assert chi_label(["5mr", "7m"], "6m") == 39
+    assert chi_label(["5m", "7m"], "6m") == 39
+    assert chi_label(["W", "7m"], "6m") is None
 
 
 def test_lineage_constants_target_migrated_repo_identity() -> None:
