@@ -1,6 +1,6 @@
 {
   "schema": "keqing.mortal.research_registry.v1",
-  "authority": "docs/mortal/research_registry.json",
+  "authority": "training/docs/mortal/research_registry.json",
   "language": "zh-CN",
   "current_state": {
     "current_formal_lineage": "K0_70k",
@@ -12,16 +12,16 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "D3 generation contract preregistered; 25h smoke passed; production not started",
+    "current_stage": "D3 first production B250 gate PASS (seeds 1800000..1800249); remaining 5750h and training NOT authorized until continuation governance",
     "next_experiment": "D3_uncertainty_guided_exploration",
-    "next_experiment_status": "preregistered_not_started",
+    "next_experiment_status": "gate_passed",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
       "不重跑 D1/D2 或扫描后代视角比例。",
       "不把 V2/V3 历史候选命名为 K2/K3。",
       "不以单个正向中心均值晋级 checkpoint。",
-      "D3 generation contract 已预注册，但未通过 smoke/production gate 前不得生成完整数据或训练。"
+      "D3 B250 generation 本身不可重跑、不可修改；剩余 1800250..1805999（5750h）与训练在 governance update 完成并核验前不得启动。"
     ]
   },
   "records": [
@@ -47,7 +47,7 @@
       "next_experiment": "D3_uncertainty_guided_exploration",
       "commits": [],
       "artifact_paths": ["artifacts/mortal_training/checkpoints/mortal_default_70k_promoted_candidate.pth"],
-      "report_paths": ["docs/mortal/研发总览_当前.md"]
+      "report_paths": ["training/docs/mortal/研发总览_当前.md"]
     },
     {
       "experiment_id": "M0_operational_control",
@@ -71,7 +71,7 @@
       "next_experiment": "D3_uncertainty_guided_exploration",
       "commits": ["90d148a"],
       "artifact_paths": ["artifacts/experiments/model_pool_2026_07/V2_data/"],
-      "report_paths": ["docs/mortal/研发总览_当前.md"]
+      "report_paths": ["training/docs/mortal/研发总览_当前.md"]
     },
     {
       "experiment_id": "S0_pure_ext_mortal_selfplay",
@@ -95,7 +95,7 @@
       "next_experiment": "D3_uncertainty_guided_exploration",
       "commits": ["d0b44e8"],
       "artifact_paths": ["artifacts/experiments/model_pool_2026_07/data_route_ab_2026_07/summary/data_route_ab_summary.json"],
-      "report_paths": ["docs/mortal/data_route_ab_2026_07.md"]
+      "report_paths": ["training/docs/mortal/data_route_ab_2026_07.md"]
     },
     {
       "experiment_id": "D1_project_owned_k0_view",
@@ -119,7 +119,7 @@
       "next_experiment": "D2_project_owned_descendant_view_mix",
       "commits": ["90d148a", "52b4123"],
       "artifact_paths": ["artifacts/experiments/model_pool_2026_07/D1_project_owned_population_2026_07/eval_b250_1000h_2026_08/summary/d1_b250_eval_summary.json"],
-      "report_paths": ["docs/mortal/experiments_zh/2026-08_D1纯K0数据路线_结果报告.md", "docs/mortal/project_owned_d1_2026_07.md"]
+      "report_paths": ["training/docs/mortal/experiments_zh/2026-08_D1纯K0数据路线_结果报告.md", "training/docs/mortal/project_owned_d1_2026_07.md"]
     },
     {
       "experiment_id": "D2_project_owned_descendant_view_mix",
@@ -145,7 +145,7 @@
       "next_experiment": "D3_uncertainty_guided_exploration",
       "commits": ["52b4123", "0c5a8ff"],
       "artifact_paths": ["artifacts/experiments/model_pool_2026_07/D2_project_owned_descendant_view_mix_2026_08/eval_b250_1000h/summary/d2_b250_eval_summary.json"],
-      "report_paths": ["docs/mortal/experiments_zh/2026-08_D2后代策略视角_结果报告.md", "docs/mortal/d2_descendant_view_mix_2026_08.md"]
+      "report_paths": ["training/docs/mortal/experiments_zh/2026-08_D2后代策略视角_结果报告.md", "training/docs/mortal/d2_descendant_view_mix_2026_08.md"]
     },
     {
       "experiment_id": "D3_uncertainty_guided_exploration",
@@ -158,18 +158,64 @@
       "fixed_variables": ["K0_70k 作为唯一 trainable perspective", "discard-only top-2 exploration", "至少两个 finite legal Q", "top-1/top-2 均为 discard", "自己未立直", "top-1/top-2 margin <= 0.5", "top-2 probability = 0.25", "每个 kyoku 最多探索 1 次", "每个 hanchan 最多探索 8 次", "SHA-256 deterministic decision hash", "canonical index: seat 0-based arena seat; kyoku_index 0-based actual start_kyoku instance; decision_index 0-based K0 action output within kyoku", "stable descending Q tie-break uses smaller action id first", "不把 reviewer/NAGA 当硬标签"],
       "training_seeds": [20260806, 20260807, 20260808],
       "evaluation_protocol": {"generation_smoke": {"seed_start": 1799000, "games": 25, "seed_key": 8192}, "generation_production": {"seed_start": 1800000, "games": 6000, "native_batch_games": 250, "shards": 24, "seed_key": 8192, "seat_mode": "random", "amp": false}, "promotion_eval": {"games_per_seed": 1000, "native_batch_games": 250, "seed_key": 8192, "seat_mode": "random", "amp": false}},
-      "status": "preregistered_not_started",
-      "primary_result": "feasibility audit 已完成并通过 finite-Q 硬检查；authoritative clean 25h function smoke 已通过：两次运行均在 clean project/native lineage 上完成，root/native commit、D3 patch SHA、riichi.pyd SHA、CUDA/release、四模型 SHA 全部一致；703 个 eligible、129 个探索、auxiliary_exploration_count=0，事件和去 meta 牌谱 hash 全部一致；production 250h、完整生成和训练尚未启动。",
+      "status": "gate_passed",
+      "primary_result": "首个 production B250 gate 已通过（audit-v2，74/74 hard checks PASS）。seeds 1800000..1800249、key 8192、250 games、单次 native call；generation commit 2cc12b4、auditor commit cf9bb86；6304 eligible / 1147 explored；6304/6304 exact native-scene correspondence；hash/budget/threshold/action contract 零违反。audit-v1 因使用 GameplayLoader 行序推导 native decision_index 并将 offline replay-Q 误作 generation-time Q oracle，在 authoritative 25h smoke 上复现同型 false-negative，其 gate verdict 被判定无效并保留为历史（superseded）；B250 generation 本身未重跑、未修改。剩余 1800250..1805999（5750h）与训练在 continuation governance 完成后才可授权。",
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
       "checkpoint_promotion": false,
       "closure_reason": null,
+      "gate_record": {
+        "gate": "D3_first_B250_production_gate_2026_08",
+        "status": "PASS",
+        "generation_commit": "2cc12b46f81850da11c6e669d1c54b039476b440",
+        "auditor_commit": "cf9bb86a40e1e52e24deea8d5b2af8ab12e1a63b",
+        "generation_artifacts_modified": false,
+        "seed_start": 1800000,
+        "seed_end_exclusive": 1800250,
+        "seed_key": 8192,
+        "games": 250,
+        "native_call_count": 1,
+        "eligible_events": 6304,
+        "explored_events": 1147,
+        "correspondence": "6304/6304 exact native-scene mapping; unmapped 0; behavior mismatch 0; duplicates 0",
+        "contract_violations": "hash/budget/threshold/action/base 全零",
+        "checks": {"provenance": "42/42", "data_integrity": "13/13", "event_contract": "12/12", "correspondence": "5/5", "lineage": "2/2"},
+        "audit_v1": {
+          "verdict": "FAIL",
+          "qualification": "invalid; superseded",
+          "supersession_reason": "authoritative 25h smoke reproduced audit-v1 failure signature; GameplayLoader row-order decision indices diverge from native arena scenes; offline replay-Q is not an interchangeable oracle for generation-time arena inference",
+          "json_sha256": "79f39c792512c97b9e9626cd3d5bec516214b9411840427f2f8c9dcd4f259c97",
+          "md_sha256": "9fd3238179cd3bafbdadd808b71d9b00e3e78270ed353ea58d85b7c898757b94"
+        },
+        "audit_v2": {
+          "verdict": "PASS",
+          "approach": "deterministic native arena scene reconstruction (d3_native_scene); replay-Q demoted to diagnostics",
+          "json_sha256": "b5e4d852a6eff741b443fb1be4a42a5acb630f414cdc62940ab5fe1fed1def74",
+          "md_sha256": "ae94b7c9e4bf4c9c73cbbf0253f6677f62c6c113720a8a28b7c2fcf22a8ad7e4"
+        }
+      },
       "predecessor": "D2_project_owned_descendant_view_mix",
       "next_experiment": null,
-      "commits": ["0aafffd", "1d8d5b6", "7eb48f1"],
-      "artifact_paths": ["artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/feasibility_audit/d3_exploration_feasibility.json", "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/feasibility_audit/d3_exploration_feasibility.md", "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/generation_smoke/d3_smoke_audit.json", "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/generation_smoke/d3_smoke_audit.md", "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/validation/pytest_failure_baseline.json", "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/generation_smoke/authoritative_run_a", "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/generation_smoke/authoritative_run_b"],
-      "report_paths": ["docs/mortal/研发总览_当前.md", "docs/mortal/experiments_zh/2026-08_D3不确定性探索_预注册设计.md", "docs/mortal/experiments_zh/2026-08_D3生成器Smoke_结果报告.md"],
+      "commits": ["0aafffd", "1d8d5b6", "7eb48f1", "2cc12b4", "cf9bb86"],
+      "artifact_paths": [
+        "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/feasibility_audit/d3_exploration_feasibility.json",
+        "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/feasibility_audit/d3_exploration_feasibility.md",
+        "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/generation_smoke/d3_smoke_audit.json",
+        "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/generation_smoke/d3_smoke_audit.md",
+        "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/validation/pytest_failure_baseline.json",
+        "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/generation_smoke/authoritative_run_a",
+        "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/generation_smoke/authoritative_run_b",
+        "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/generation_production/shard_000_1800000_1800249",
+        "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/generation_production/shard_000_1800000_1800249/audit_v2/d3_production_gate_reaudit_v2.json",
+        "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/generation_production/shard_000_1800000_1800249/audit_v2/d3_production_gate_reaudit_v2.md"
+      ],
+      "report_paths": [
+        "training/docs/mortal/研发总览_当前.md",
+        "training/docs/mortal/experiments_zh/2026-08_D3不确定性探索_预注册设计.md",
+        "training/docs/mortal/experiments_zh/2026-08_D3生成器Smoke_结果报告.md",
+        "training/docs/mortal/experiments_zh/2026-08_D3生产B250Gate_结果报告.md"
+      ],
       "proposal_constraints": ["25h smoke 必须验证 hash 可复现、探索动作合法且 100% 为 discard→discard、预算不超限。", "authoritative smoke 必须 project/native clean，并冻结 project/native commit、D3 patch SHA、riichi.pyd SHA、release/CUDA、四模型 SHA。", "所有 exploration event 必须来自 primary action；auxiliary kan guard row 不得探索、消费预算或写事件。", "250h B250 production gate 必须 250 canonical unique hanchans、0 malformed、0 own-riichi exploration、0 auxiliary-row exploration、0 threshold/budget violation。", "gate 失败时关闭 D3 generation v1，不现场调整概率或阈值。", "未通过 smoke/production gate 前不得生成完整 6000h 或训练。"]
     },
     {
@@ -194,7 +240,7 @@
       "next_experiment": "D3_uncertainty_guided_exploration",
       "commits": ["5a64e72"],
       "artifact_paths": ["artifacts/experiments/model_pool_2026_07/reward_ab_2026_07_epoch3/eval_1000h/summary_six_seeds/reward_ab_eval_1000h_summary.json"],
-      "report_paths": ["docs/mortal/reward_ab_2026_07.md"]
+      "report_paths": ["training/docs/mortal/reward_ab_2026_07.md"]
     },
     {
       "experiment_id": "preserved_adam_legacy_continuation",
@@ -218,7 +264,7 @@
       "next_experiment": "D3_uncertainty_guided_exploration",
       "commits": ["779ba97", "08e9309"],
       "artifact_paths": ["artifacts/experiments/model_pool_2026_07/optimizer_ab_2026_07_replication/eval_1000h/summary_six_seed/optimizer_ab_eval_1000h_summary.json"],
-      "report_paths": ["docs/mortal/optimizer_ab_2026_07.md"]
+      "report_paths": ["training/docs/mortal/optimizer_ab_2026_07.md"]
     },
     {
       "experiment_id": "legal_mean_mc",
@@ -242,7 +288,7 @@
       "next_experiment": "D3_uncertainty_guided_exploration",
       "commits": ["c4d8255"],
       "artifact_paths": ["artifacts/experiments/model_pool_2026_07/legal_mean_value_ab_2026_07/eval_b250_1000h/summary/legal_mean_value_b250_summary.json"],
-      "report_paths": ["docs/mortal/legal_mean_value_ab_2026_07.md"]
+      "report_paths": ["training/docs/mortal/legal_mean_value_ab_2026_07.md"]
     },
     {
       "experiment_id": "V2_74000_historical_candidate",
@@ -266,7 +312,7 @@
       "next_experiment": "D3_uncertainty_guided_exploration",
       "commits": [],
       "artifact_paths": ["artifacts/experiments/model_pool_2026_07/V2_population_mixed_v4_warmstart_2026_07/"],
-      "report_paths": ["docs/mortal/研发总览_当前.md"]
+      "report_paths": ["training/docs/mortal/研发总览_当前.md"]
     },
     {
       "experiment_id": "V3_74000_historical_candidate",
@@ -290,7 +336,7 @@
       "next_experiment": "D3_uncertainty_guided_exploration",
       "commits": [],
       "artifact_paths": ["artifacts/experiments/model_pool_2026_07/V3_final_rank_mc_warmstart_2026_07/"],
-      "report_paths": ["docs/mortal/研发总览_当前.md"]
+      "report_paths": ["training/docs/mortal/研发总览_当前.md"]
     }
   ]
 }

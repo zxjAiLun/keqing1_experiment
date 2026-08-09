@@ -26,3 +26,10 @@ auxiliary-loss / architecture changes until reward is settled).
 - 8月: D1/D2/D3 data design and the uncertainty-exploration generation gate
   (see `experiments_zh/`, `d2_descendant_view_mix_2026_08.md`,
   `research_registry.json`)
+- 8月: **D3 first production B250 gate PASS** (seeds `1800000..1800249`,
+  generation `2cc12b4` frozen, auditor v2 `cf9bb86`, 74/74 hard checks,
+  6304/6304 native-scene correspondence). Remaining 5750h and training are
+  NOT authorized until continuation governance. audit-v1 verdict is superseded
+  as invalid (reproduced on the authoritative 25h smoke); see
+  `experiments_zh/2026-08_D3生产B250Gate_结果报告.md` and the D3 `gate_record`
+  in `research_registry.json`.

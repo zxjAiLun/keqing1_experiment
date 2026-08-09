@@ -44,6 +44,7 @@ ALLOWED_STATUSES = {
     "analysis_only",
     "proposal_only_not_started",
     "preregistered_not_started",
+    "gate_passed",
 }
 
 
@@ -117,6 +118,7 @@ def status_text(status: str) -> str:
         "analysis_only": "仅分析",
         "proposal_only_not_started": "仅提案，未启动",
         "preregistered_not_started": "已预注册，未启动",
+        "gate_passed": "首个 B250 gate 已通过",
     }[status]
 
 
@@ -158,8 +160,8 @@ def replace_block(text: str, block: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--registry", type=Path, default=Path("docs/mortal/research_registry.json"))
-    parser.add_argument("--overview", type=Path, default=Path("docs/mortal/研发总览_当前.md"))
+    parser.add_argument("--registry", type=Path, default=Path("training/docs/mortal/research_registry.json"))
+    parser.add_argument("--overview", type=Path, default=Path("training/docs/mortal/研发总览_当前.md"))
     parser.add_argument("--write", action="store_true", help="replace the marked block in the overview")
     parser.add_argument("--check", action="store_true", help="fail when the overview is not up to date")
     args = parser.parse_args()
