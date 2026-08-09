@@ -142,8 +142,11 @@ def primary_row_flags(actions: Iterable[int]) -> list[bool]:
         raise ValueError("kan action is missing its adjacent auxiliary selection row")
     return flags
 
-def _load_log_manifest(log_dir: Path) -> dict[str, Any]:
-    expected = expected_seed_keys()
+def _load_log_manifest(
+    log_dir: Path, expected: set[tuple[int, int]] | None = None
+) -> dict[str, Any]:
+    if expected is None:
+        expected = expected_seed_keys()
     paths = sorted(log_dir.glob("*.json.gz"))
     rows: dict[tuple[int, int], dict[str, Any]] = {}
     malformed: list[str] = []

@@ -48,6 +48,8 @@ def _q_stats(values: list[float]) -> dict[str, float]:
 def audit_event_records(
     events: list[dict[str, Any]],
     snapshots: dict[tuple[int, int, int, int, int], DecisionSnapshot],
+    *,
+    expected_seeds: set[tuple[int, int]] | None = None,
 ) -> dict[str, Any]:
     errors: list[str] = []
     seen: set[tuple[int, int, int, int, int]] = set()
@@ -56,7 +58,8 @@ def audit_event_records(
     reason_counts: Counter[str] = Counter()
     contract_violations: Counter[str] = Counter()
     mapping_violations: Counter[str] = Counter()
-    expected_seeds = expected_seed_keys()
+    if expected_seeds is None:
+        expected_seeds = expected_seed_keys()
 
     d_top1: list[float] = []
     d_top2: list[float] = []
