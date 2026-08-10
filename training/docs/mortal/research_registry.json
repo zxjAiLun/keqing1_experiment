@@ -12,16 +12,16 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "D3 first production B250 gate PASS (seeds 1800000..1800249); remaining 5750h and training NOT authorized until continuation governance",
+    "current_stage": "D3 6000h generation COMPLETE and aggregate closure PASS; training data-view/target contract audit pending; training NOT authorized",
     "next_experiment": "D3_uncertainty_guided_exploration",
-    "next_experiment_status": "gate_passed",
+    "next_experiment_status": "generation_closed",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
       "不重跑 D1/D2 或扫描后代视角比例。",
       "不把 V2/V3 历史候选命名为 K2/K3。",
       "不以单个正向中心均值晋级 checkpoint。",
-      "D3 B250 generation 本身不可重跑、不可修改；剩余 1800250..1805999（5750h）与训练在 governance update 完成并核验前不得启动。"
+      "D3 6000h 生成已完成并通过 aggregate closure；training 在 data-view/target contract audit、训练 manifest 冻结与 training-recipe governance 完成前不得启动；D3 数据路线尚未被证明优于 M0，K1 不存在。"
     ]
   },
   "records": [
@@ -158,8 +158,8 @@
       "fixed_variables": ["K0_70k 作为唯一 trainable perspective", "discard-only top-2 exploration", "至少两个 finite legal Q", "top-1/top-2 均为 discard", "自己未立直", "top-1/top-2 margin <= 0.5", "top-2 probability = 0.25", "每个 kyoku 最多探索 1 次", "每个 hanchan 最多探索 8 次", "SHA-256 deterministic decision hash", "canonical index: seat 0-based arena seat; kyoku_index 0-based actual start_kyoku instance; decision_index 0-based K0 action output within kyoku", "stable descending Q tie-break uses smaller action id first", "不把 reviewer/NAGA 当硬标签"],
       "training_seeds": [20260806, 20260807, 20260808],
       "evaluation_protocol": {"generation_smoke": {"seed_start": 1799000, "games": 25, "seed_key": 8192}, "generation_production": {"seed_start": 1800000, "games": 6000, "native_batch_games": 250, "shards": 24, "seed_key": 8192, "seat_mode": "random", "amp": false}, "promotion_eval": {"games_per_seed": 1000, "native_batch_games": 250, "seed_key": 8192, "seat_mode": "random", "amp": false}},
-      "status": "gate_passed",
-      "primary_result": "首个 production B250 gate 已通过（audit-v2，74/74 hard checks PASS）。seeds 1800000..1800249、key 8192、250 games、单次 native call；generation commit 2cc12b4、auditor commit cf9bb86；6304 eligible / 1147 explored；6304/6304 exact native-scene correspondence；hash/budget/threshold/action contract 零违反。audit-v1 因使用 GameplayLoader 行序推导 native decision_index 并将 offline replay-Q 误作 generation-time Q oracle，在 authoritative 25h smoke 上复现同型 false-negative，其 gate verdict 被判定无效并保留为历史（superseded）；B250 generation 本身未重跑、未修改。剩余 1800250..1805999（5750h）与训练在 continuation governance 完成后才可授权。",
+      "status": "generation_closed",
+      "primary_result": "6000h 生成完成并闭环：6000 hanchans、seeds 1800000..1805999、24/24 shards PASS、aggregate audit PASS 27/27、151282 eligible / 27506 explored、missing/unexpected/duplicate seeds 全 0、duplicate canonical hanchan 0、duplicate canonical decision context 0、所有 shard contract/mapping violations 全空。generation integrity CLOSED；D3 数据路线已产出但尚未被证明优于 M0（未晋级）；trained checkpoint 不存在，K1 仍为 null。",
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
@@ -195,9 +195,37 @@
           "md_sha256": "ae94b7c9e4bf4c9c73cbbf0253f6677f62c6c113720a8a28b7c2fcf22a8ad7e4"
         }
       },
+      "aggregate_record": {
+        "gate": "D3_6000h_generation_aggregate_closure_2026_08",
+        "status": "PASS",
+        "checks": "27/27",
+        "aggregate_commit": "35f9cea47905c997306e19e861c37b4b9ca329f8",
+        "aggregate_json_sha256": "be6dd9ae078593152c08518226cec4872875dd461516ee61bccead28659d2274",
+        "aggregate_md_sha256": "5cbe21ffce19deafa80ea9235fbc8b298dca8061da545b2232f7af209f96951a",
+        "shard_manifest_sha256": "90930533aea6b7226451a20e081e5723c9f463913bab205c3b5b8d73167091d2",
+        "global": {
+          "shards": 24,
+          "logs": 6000,
+          "seeds": "1800000..1805999",
+          "seed_key": 8192,
+          "eligible": 151282,
+          "explored": 27506,
+          "zero_missing_unexpected_duplicate_seeds": true,
+          "zero_duplicate_canonical_hanchan": true,
+          "zero_duplicate_canonical_context": true,
+          "all_shard_contract_mapping_violations_empty": true
+        },
+        "shard_005_provenance": {
+          "generation_rerun": false,
+          "generation_modified": false,
+          "first_audit_verdict": "FAIL",
+          "first_audit_invalidated_by": "deterministic auditor reconstruction defect (unguarded ryukyoku label)",
+          "final_authoritative_audit": "re-audit PASS @ f67f0368dd7ebd812d791a41c13e97869920928e"
+        }
+      },
       "predecessor": "D2_project_owned_descendant_view_mix",
       "next_experiment": null,
-      "commits": ["0aafffd", "1d8d5b6", "7eb48f1", "2cc12b4", "cf9bb86"],
+      "commits": ["0aafffd", "1d8d5b6", "7eb48f1", "2cc12b4", "cf9bb86", "67f2ccb", "53cc07f", "f67f036", "35f9cea"],
       "artifact_paths": [
         "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/feasibility_audit/d3_exploration_feasibility.json",
         "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/feasibility_audit/d3_exploration_feasibility.md",
@@ -214,7 +242,8 @@
         "training/docs/mortal/研发总览_当前.md",
         "training/docs/mortal/experiments_zh/2026-08_D3不确定性探索_预注册设计.md",
         "training/docs/mortal/experiments_zh/2026-08_D3生成器Smoke_结果报告.md",
-        "training/docs/mortal/experiments_zh/2026-08_D3生产B250Gate_结果报告.md"
+        "training/docs/mortal/experiments_zh/2026-08_D3生产B250Gate_结果报告.md",
+        "training/docs/mortal/experiments_zh/2026-08_D3_6000h生成闭环_结果报告.md"
       ],
       "proposal_constraints": ["25h smoke 必须验证 hash 可复现、探索动作合法且 100% 为 discard→discard、预算不超限。", "authoritative smoke 必须 project/native clean，并冻结 project/native commit、D3 patch SHA、riichi.pyd SHA、release/CUDA、四模型 SHA。", "所有 exploration event 必须来自 primary action；auxiliary kan guard row 不得探索、消费预算或写事件。", "250h B250 production gate 必须 250 canonical unique hanchans、0 malformed、0 own-riichi exploration、0 auxiliary-row exploration、0 threshold/budget violation。", "gate 失败时关闭 D3 generation v1，不现场调整概率或阈值。", "未通过 smoke/production gate 前不得生成完整 6000h 或训练。"]
     },

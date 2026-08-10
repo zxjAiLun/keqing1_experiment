@@ -33,3 +33,11 @@ auxiliary-loss / architecture changes until reward is settled).
   as invalid (reproduced on the authoritative 25h smoke); see
   `experiments_zh/2026-08_D3生产B250Gate_结果报告.md` and the D3 `gate_record`
   in `research_registry.json`.
+- 8月: **D3 6000h generation COMPLETE** — 24/24 shards PASS, aggregate
+  closure 27/27 (`35f9cea`), 151282 eligible / 27506 explored, zero duplicate
+  seeds/hanchans/contexts. Generation integrity CLOSED; the D3 data route is
+  produced but NOT promoted over M0; no trained checkpoint exists (K1 still
+  null). Training-view/target contract audit and training-recipe governance
+  still required before any training. See
+  `experiments_zh/2026-08_D3_6000h生成闭环_结果报告.md` and the D3
+  `aggregate_record` in `research_registry.json`.

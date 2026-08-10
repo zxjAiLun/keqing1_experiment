@@ -45,6 +45,7 @@ ALLOWED_STATUSES = {
     "proposal_only_not_started",
     "preregistered_not_started",
     "gate_passed",
+    "generation_closed",
 }
 
 
@@ -119,6 +120,7 @@ def status_text(status: str) -> str:
         "proposal_only_not_started": "仅提案，未启动",
         "preregistered_not_started": "已预注册，未启动",
         "gate_passed": "首个 B250 gate 已通过",
+        "generation_closed": "6000h 生成已闭环",
     }[status]
 
 
