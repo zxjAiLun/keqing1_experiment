@@ -46,6 +46,7 @@ ALLOWED_STATUSES = {
     "preregistered_not_started",
     "gate_passed",
     "generation_closed",
+    "not_selected",
 }
 
 
@@ -82,14 +83,15 @@ def load_registry(path: Path) -> dict[str, Any]:
         raise ValueError("K1 must remain null until a formal K1 is actually promoted")
     record_by_id = {record["experiment_id"]: record for record in records}
     next_id = state["next_experiment"]
-    if next_id not in record_by_id:
-        raise ValueError(f"current_state.next_experiment is not registered: {next_id}")
-    next_record = record_by_id[next_id]
-    if next_record["status"] != state["next_experiment_status"]:
-        raise ValueError(
-            "next experiment status mismatch: "
-            f"current_state={state['next_experiment_status']} record={next_record['status']}"
-        )
+    if next_id is not None:
+        if next_id not in record_by_id:
+            raise ValueError(f"current_state.next_experiment is not registered: {next_id}")
+        next_record = record_by_id[next_id]
+        if next_record["status"] != state["next_experiment_status"]:
+            raise ValueError(
+                "next experiment status mismatch: "
+                f"current_state={state['next_experiment_status']} record={next_record['status']}"
+            )
     operational_id = state["operational_control"]
     if operational_id not in record_by_id:
         raise ValueError(f"operational control is not registered: {operational_id}")
@@ -121,6 +123,7 @@ def status_text(status: str) -> str:
         "preregistered_not_started": "已预注册，未启动",
         "gate_passed": "首个 B250 gate 已通过",
         "generation_closed": "6000h 生成已闭环",
+        "not_selected": "未选择",
     }[status]
 
 
@@ -145,7 +148,7 @@ def render_block(registry: dict[str, Any]) -> str:
         lines.append(f"| `{record['experiment_id']}` | {record['category']} | {status_text(record['status'])} | {result} |")
     lines.extend([
         "",
-        f"- 下一实验提案：`{state['next_experiment']}`（{state['next_experiment_status']}）。",
+        f"- 下一实验提案：`{state['next_experiment'] or '尚未选择'}`（{state['next_experiment_status']}）。",
         "- 当前禁止事项：",
     ])
     lines.extend(f"  - {item}" for item in state["prohibitions"])

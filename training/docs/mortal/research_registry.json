@@ -12,16 +12,16 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "D3 6000h generation COMPLETE and aggregate closure PASS; training data-view/target contract audit pending; training NOT authorized",
-    "next_experiment": "D3_uncertainty_guided_exploration",
-    "next_experiment_status": "generation_closed",
+    "current_stage": "D3 research CLOSED / NOT PROMOTED; K1 null; next research experiment not selected",
+    "next_experiment": null,
+    "next_experiment_status": "not_selected",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
-      "不重跑 D1/D2 或扫描后代视角比例。",
+      "不重跑 D1/D2/D3 或扫描后代视角比例。",
       "不把 V2/V3 历史候选命名为 K2/K3。",
       "不以单个正向中心均值晋级 checkpoint。",
-      "D3 6000h 生成已完成并通过 aggregate closure；training 在 data-view/target contract audit、训练 manifest 冻结与 training-recipe governance 完成前不得启动；D3 数据路线尚未被证明优于 M0，K1 不存在。"
+      "D3_top2_discard_v1 数据路线已按预注册规则拒绝（0/3 方向 + hierarchical CI 下限 < 0）；不得修改 D3 参数后继续沿用同一实验身份，继续 uncertainty-guided exploration 必须建立新的 experiment ID；K1 尚未产生。"
     ]
   },
   "records": [
@@ -61,7 +61,7 @@
       "training_seeds": [20260806, 20260807, 20260808],
       "evaluation_protocol": {"games_per_seed": 1000, "native_batch_games": 250, "seed_starts": [1700000, 1710000, 1720000], "seed_key": 8192},
       "status": "operational",
-      "primary_result": "D1/D2 的同桌控制；M0-70k 在 D2 评测的均值为 +6.150 Pt/半庄，但 hierarchical CI [-0.450,+12.480] 跨零，不晋级具体 M0 checkpoint。",
+      "primary_result": "D1/D2 的同桌控制；M0-70k 在 D2 评测的 corrected v2 均值为 +6.120 Pt/半庄，equal-seed hierarchical CI [-0.526,+12.555]、pooled CI [+1.020,+10.921]、seed means [0.855,9.990,7.515]，CI 跨零，不晋级具体 M0 checkpoint（旧数值 +6.150 / CI [-0.450,+12.480] 因 ReachAccepted 缺陷 invalidated）。",
       "promoted_data_route": "M0 mixed replay corpus",
       "promoted_checkpoint": null,
       "recipe_promotion": false,
@@ -109,7 +109,17 @@
       "training_seeds": [20260806, 20260807, 20260808],
       "evaluation_protocol": {"games_per_seed": 1000, "native_batch_games": 250, "seed_starts": [1700000, 1710000, 1720000], "seed_key": 8192},
       "status": "rejected",
-      "primary_result": "D1-M0 = -8.025 Pt/半庄；seed means [-6.615,-10.665,-6.795]；hierarchical 95% CI [-13.320,-2.565]；3/3 负向。D1-70k = -5.265。",
+      "primary_result": "D1-M0 = -8.520 Pt/半庄（corrected v2）；seed means [-7.425,-10.980,-7.155]；pooled CI95 [-13.650,-3.510]；equal-seed hierarchical CI95 [-14.025,-3.225]；3/3 负向。D1-70k pooled = -5.010（hier CI [-14.880,+4.185]）。",
+      "historical_summary_correction": {
+        "reason": "ReachAccepted -1000 omitted by inherited summarizer",
+        "raw_evaluation_rerun": false,
+        "promotion_direction_changed": false,
+        "old_summary": "historical_invalidated",
+        "old_primary_result": "D1-M0 = -8.025 Pt/半庄；seed means [-6.615,-10.665,-6.795]；hierarchical 95% CI [-13.320,-2.565]；3/3 负向。D1-70k = -5.265。",
+        "corrected_summary": "keqing-data/mortal/authoritative/D3_top2_discard_v1_2026_08/diagnostics/d1_d2_corrected_summaries/D1/d1_b250_eval_summary_v2.json",
+        "corrected_summary_sha256": "a20d9435fe757593b520b78c466e8a3ec482de2defa4352a72ec7daf92706524",
+        "corrected_equivalence_sha256": "da10477c82fa612a6d4189e195a2c4e3afa2c1dfd8f00349a6e71b49978e0895"
+      },
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
@@ -135,7 +145,17 @@
       "mechanistic_reference": "D1_project_owned_k0_view",
       "primary_promotion_control": "M0_operational_control",
       "status": "rejected",
-      "primary_result": "D2-M0 = -7.965 Pt/半庄；seed means [-1.710,-11.655,-10.530]；hierarchical 95% CI [-14.625,-0.660]；3/3 负向。D2-70k = -1.815，未形成 K1。",
+      "primary_result": "D2-M0 = -7.725 Pt/半庄（corrected v2）；seed means [-1.935,-11.475,-9.765]；pooled CI95 [-12.720,-2.699]；equal-seed hierarchical CI95 [-14.265,-0.734]；3/3 负向。D2-70k pooled = -1.605（hier CI [-6.495,+3.465]），未形成 K1。",
+      "historical_summary_correction": {
+        "reason": "ReachAccepted -1000 omitted by inherited summarizer",
+        "raw_evaluation_rerun": false,
+        "promotion_direction_changed": false,
+        "old_summary": "historical_invalidated",
+        "old_primary_result": "D2-M0 = -7.965 Pt/半庄；seed means [-1.710,-11.655,-10.530]；hierarchical 95% CI [-14.625,-0.660]；3/3 负向。D2-70k = -1.815，未形成 K1。",
+        "corrected_summary": "keqing-data/mortal/authoritative/D3_top2_discard_v1_2026_08/diagnostics/d1_d2_corrected_summaries/D2/d2_b250_eval_summary_v2.json",
+        "corrected_summary_sha256": "25c968368979f88e0e48e59e668d94580560dbb530cbbe265267ccef9dbc1215",
+        "corrected_equivalence_sha256": "1c651405aa7d13a070d46401de8de7ab8712df14188a86775ce42e4c6864f83c"
+      },
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
@@ -158,13 +178,42 @@
       "fixed_variables": ["K0_70k 作为唯一 trainable perspective", "discard-only top-2 exploration", "至少两个 finite legal Q", "top-1/top-2 均为 discard", "自己未立直", "top-1/top-2 margin <= 0.5", "top-2 probability = 0.25", "每个 kyoku 最多探索 1 次", "每个 hanchan 最多探索 8 次", "SHA-256 deterministic decision hash", "canonical index: seat 0-based arena seat; kyoku_index 0-based actual start_kyoku instance; decision_index 0-based K0 action output within kyoku", "stable descending Q tie-break uses smaller action id first", "不把 reviewer/NAGA 当硬标签"],
       "training_seeds": [20260806, 20260807, 20260808],
       "evaluation_protocol": {"generation_smoke": {"seed_start": 1799000, "games": 25, "seed_key": 8192}, "generation_production": {"seed_start": 1800000, "games": 6000, "native_batch_games": 250, "shards": 24, "seed_key": 8192, "seat_mode": "random", "amp": false}, "promotion_eval": {"games_per_seed": 1000, "native_batch_games": 250, "seed_key": 8192, "seat_mode": "random", "amp": false}},
-      "status": "generation_closed",
-      "primary_result": "6000h 生成完成并闭环：6000 hanchans、seeds 1800000..1805999、24/24 shards PASS、aggregate audit PASS 27/27、151282 eligible / 27506 explored、missing/unexpected/duplicate seeds 全 0、duplicate canonical hanchan 0、duplicate canonical decision context 0、所有 shard contract/mapping violations 全空。generation integrity CLOSED；D3 数据路线已产出但尚未被证明优于 M0（未晋级）；trained checkpoint 不存在，K1 仍为 null。",
+      "status": "rejected",
+      "primary_result": "D3 完整受控实验闭环：generation 6000 hanchans（151282 eligible / 27506 explored，integrity closed）→ 3×70k→72k 训练（seeds 20260806/07/08，frozen D3 dataset，preserved Adam，3/3 completion PASS）→ 3×1000h matched promotion evaluation（D3−M0 seed means [-0.855,-11.025,-2.610]，pooled -4.830 Pt/hanchan，hierarchical CI95 [-12.060,+2.070]，0/3 正向）。预注册 promotion gate FAIL：数据路线 NOT PROMOTED，checkpoint NOT PROMOTED。存在 3 个冻结的 D3 72k experimental checkpoints 但均未晋级；不存在 formal K1。",
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
       "checkpoint_promotion": false,
-      "closure_reason": null,
+      "closure_reason": "D3_top2_discard_v1 在完整 generation → training → matched promotion evaluation 链路中未优于 M0。预注册 primary gate 要求 3/3 training-seed mean 为正且 equal-seed hierarchical CI95 下限 > 0；实际 D3-M0 为 [-0.855,-11.025,-2.610]，0/3 正向，hierarchical CI [-12.060,+2.070]，故机械拒绝晋级。本结果拒绝当前 D3_top2_discard_v1 数据路线，不证明 uncertainty-guided exploration 这一更宽泛思想整体无效；若继续研究必须建立新的 experiment ID，不得修改 D3 后继续沿用同一实验身份。",
+      "promotion_summary": {
+        "raw_evaluator_commit": "413a268ef60125ac8f8fa58a77bcb948f71bf4e4",
+        "summary_v1_commit": "a6b1d4b66f8c36a64f0f3958fb9e8410c143209d",
+        "summary_v1_status": "invalidated",
+        "summary_v1_reason": "omitted ReachAccepted -1000 in final-score reconstruction",
+        "summary_v2_commit": "8b36ee8183a45e885f69c816d5cb50dab73a31b7",
+        "summary_v2_json_sha256": "e8d0d9e2806288bea0ce3c79c5996bc2fc1b474c0437d600dd0c21f82ebff8b7",
+        "summary_v2_md_sha256": "03fc810d407376ae1f5317cc6fc4c785a17dc8737f1dad0939e14cef22c7c2dc",
+        "promotion_decision_sha256": "c205e1ef42ef28115b5a67089bfb7c4b0aba3245c678a2c0aa9def147ce1bcfe",
+        "reconstruction_equivalence_sha256": "af94270be8242ceffea686bc1de63494f45eccedca8f0dc6dff454de0972af2a",
+        "raw_eval_rerun": false,
+        "raw_eval_modified": false,
+        "training_rerun": false,
+        "d3_minus_m0": {
+          "seed_means": {"20260806": -0.855, "20260807": -11.025, "20260808": -2.61},
+          "pooled": -4.83,
+          "pooled_ci95": [-9.84, 0.015],
+          "hierarchical_ci95": [-12.060375, 2.07037499999999],
+          "positive_seeds": "0/3"
+        },
+        "d3_minus_k0": {
+          "seed_means": {"20260806": 2.61, "20260807": -6.84, "20260808": -5.31},
+          "pooled": -3.18,
+          "hierarchical_ci95": [-9.69, 3.75]
+        },
+        "route_promotion": false,
+        "checkpoint_promotion": false,
+        "k1": null
+      },
       "gate_record": {
         "gate": "D3_first_B250_production_gate_2026_08",
         "status": "PASS",
@@ -225,7 +274,7 @@
       },
       "predecessor": "D2_project_owned_descendant_view_mix",
       "next_experiment": null,
-      "commits": ["0aafffd", "1d8d5b6", "7eb48f1", "2cc12b4", "cf9bb86", "67f2ccb", "53cc07f", "f67f036", "35f9cea"],
+      "commits": ["0aafffd", "1d8d5b6", "7eb48f1", "2cc12b4", "cf9bb86", "67f2ccb", "53cc07f", "f67f036", "35f9cea", "728e43e", "413a268", "a6b1d4b", "8b36ee8"],
       "artifact_paths": [
         "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/feasibility_audit/d3_exploration_feasibility.json",
         "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/feasibility_audit/d3_exploration_feasibility.md",
@@ -236,14 +285,18 @@
         "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/generation_smoke/authoritative_run_b",
         "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/generation_production/shard_000_1800000_1800249",
         "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/generation_production/shard_000_1800000_1800249/audit_v2/d3_production_gate_reaudit_v2.json",
-        "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/generation_production/shard_000_1800000_1800249/audit_v2/d3_production_gate_reaudit_v2.md"
+        "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/generation_production/shard_000_1800000_1800249/audit_v2/d3_production_gate_reaudit_v2.md",
+        "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/training_recipe_2026_08",
+        "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/eval_b250_1000h_2026_08",
+        "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/eval_1000h/summary_three_seed_v2"
       ],
       "report_paths": [
         "training/docs/mortal/研发总览_当前.md",
         "training/docs/mortal/experiments_zh/2026-08_D3不确定性探索_预注册设计.md",
         "training/docs/mortal/experiments_zh/2026-08_D3生成器Smoke_结果报告.md",
         "training/docs/mortal/experiments_zh/2026-08_D3生产B250Gate_结果报告.md",
-        "training/docs/mortal/experiments_zh/2026-08_D3_6000h生成闭环_结果报告.md"
+        "training/docs/mortal/experiments_zh/2026-08_D3_6000h生成闭环_结果报告.md",
+        "training/docs/mortal/experiments_zh/2026-08_D3不确定性探索数据路线_最终结果报告.md"
       ],
       "proposal_constraints": ["25h smoke 必须验证 hash 可复现、探索动作合法且 100% 为 discard→discard、预算不超限。", "authoritative smoke 必须 project/native clean，并冻结 project/native commit、D3 patch SHA、riichi.pyd SHA、release/CUDA、四模型 SHA。", "所有 exploration event 必须来自 primary action；auxiliary kan guard row 不得探索、消费预算或写事件。", "250h B250 production gate 必须 250 canonical unique hanchans、0 malformed、0 own-riichi exploration、0 auxiliary-row exploration、0 threshold/budget violation。", "gate 失败时关闭 D3 generation v1，不现场调整概率或阈值。", "未通过 smoke/production gate 前不得生成完整 6000h 或训练。"]
     },

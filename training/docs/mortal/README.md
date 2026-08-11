@@ -35,9 +35,17 @@ auxiliary-loss / architecture changes until reward is settled).
   in `research_registry.json`.
 - 8月: **D3 6000h generation COMPLETE** — 24/24 shards PASS, aggregate
   closure 27/27 (`35f9cea`), 151282 eligible / 27506 explored, zero duplicate
-  seeds/hanchans/contexts. Generation integrity CLOSED; the D3 data route is
-  produced but NOT promoted over M0; no trained checkpoint exists (K1 still
-  null). Training-view/target contract audit and training-recipe governance
-  still required before any training. See
-  `experiments_zh/2026-08_D3_6000h生成闭环_结果报告.md` and the D3
-  `aggregate_record` in `research_registry.json`.
+  seeds/hanchans/contexts. Generation integrity CLOSED; see
+  `experiments_zh/2026-08_D3_6000h生成闭环_结果报告.md`.
+- 8月: **D3 full controlled-experiment closure** — 3×70k→72k training
+  complete, 3×1000h matched evaluation complete, and the preregistered
+  promotion gate **FAILED mechanically** (D3−M0 0/3 seed means positive,
+  hierarchical CI95 [-12.060,+2.070]): D3 data route NOT PROMOTED, no
+  checkpoint promoted, K1 null. Summary statistics went through an
+  auditor-side ReachAccepted repair (`8b36ee8`; v1 `a6b1d4b` invalidated);
+  D1/D2 historical summaries corrected to the same fixed reconstruction
+  (direction unchanged). See
+  `experiments_zh/2026-08_D3不确定性探索数据路线_最终结果报告.md` and the D3
+  `promotion_summary` / D1/D2 `historical_summary_correction` in
+  `research_registry.json`. This closes the D1/D2/D3 controlled-training
+  diagnostics chapter.
