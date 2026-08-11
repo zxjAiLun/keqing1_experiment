@@ -13,6 +13,7 @@ from training.mortal.summarize_d3_b250_eval_2026_08 import (
     RANK_POINTS,
     bootstrap,
     comparison,
+    final_scores,
     paired_row,
     promotion_decision,
     ranks_from_events,
@@ -143,3 +144,58 @@ def test_promotion_k1_requires_route_pass() -> None:
     assert decision["primary"]["passed"] is True
     assert decision["checkpoint"]["d3_minus_k0_ci_lower_positive"] is False
     assert decision["checkpoint"]["passed"] is False
+
+
+def test_final_scores_applies_reach_accepted_minus_1000() -> None:
+    events = [
+        {"type": "start_game", "names": ["70k", "ext_mortal", "M0_20260806", "D3_20260806"]},
+        {"type": "start_kyoku", "scores": [25000, 25000, 25000, 25000]},
+        {"type": "tsumo", "actor": 3, "pai": "1m"},
+        {"type": "reach", "actor": 3},
+        {"type": "reach_accepted", "actor": 3},
+        {"type": "dahai", "actor": 3, "pai": "9m"},
+        {"type": "hora", "actor": 0, "target": 3, "deltas": [12000, 0, 0, -12000]},
+    ]
+    scores = final_scores(events)
+    assert scores is not None
+    # seat 3 (D3) paid 12000 plus the 1000 reach stick; seat 0 gained 12000
+    assert scores[0] == 25000 + 12000
+    assert scores[3] == 25000 - 12000 - 1000
+    assert scores[1] == 25000
+    assert scores[2] == 25000
+
+
+def test_final_scores_without_reach_unchanged() -> None:
+    events = [
+        {"type": "start_game", "names": ["70k", "ext_mortal", "M0_20260806", "D3_20260806"]},
+        {"type": "start_kyoku", "scores": [25000, 25000, 25000, 25000]},
+        {"type": "hora", "actor": 0, "target": 3, "deltas": [12000, 0, 0, -12000]},
+    ]
+    scores = final_scores(events)
+    assert scores == [37000.0, 25000.0, 25000.0, 13000.0]
+
+
+def test_reach_accepted_paired_pipeline_uses_final_state(tmp_path) -> None:
+    # D3 declares riichi and loses; the second start_kyoku carries the
+    # post-deduction final scores, so the reconstruction must rank D3 last.
+    names = ["70k", "ext_mortal", "M0_20260806", "D3_20260806"]
+    events = [
+        {"type": "start_game", "names": names, "seed": [1700000, 8192]},
+        {"type": "start_kyoku", "scores": [25000, 25000, 25000, 25000]},
+        {"type": "tsumo", "actor": 3, "pai": "1m"},
+        {"type": "reach", "actor": 3},
+        {"type": "reach_accepted", "actor": 3},
+        {"type": "dahai", "actor": 3, "pai": "9m"},
+        {"type": "hora", "actor": 0, "target": 3, "deltas": [15000, 0, 0, -15000]},
+        {
+            "type": "start_kyoku",
+            "scores": [40000, 25000, 10000, 9000],
+        },
+    ]
+    path = tmp_path / "1700000_8192_a.json.gz"
+    path.write_bytes(gzip.compress("\n".join(json.dumps(event) for event in events).encode("utf-8")))
+    row = paired_row(20260806, path)
+    assert row["rank_m0"] == 3
+    assert row["rank_d3"] == 4
+    assert row["delta_pt_d3_minus_m0"] == -135.0
+    assert row["d3_ahead_of_m0"] is False

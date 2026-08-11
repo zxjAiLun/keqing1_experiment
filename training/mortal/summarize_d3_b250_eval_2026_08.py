@@ -83,17 +83,51 @@ def sha256(path: Path) -> str:
 
 
 def final_scores(events: list[dict[str, Any]]) -> list[float] | None:
+    """Rebuild final scores from raw events in log order.
+
+    Mirrors the native libriichi Stat semantics: a ``reach_accepted`` event
+    deducts 1000 points from its actor before any Hora/Ryukyoku deltas are
+    applied, and the scores published by the next ``start_kyoku`` already
+    include everything from earlier kyoku. Summary v1 omitted the -1000 step
+    and produced non-authoritative ranks (invalidated).
+    """
     scores: list[float] | None = None
     for event in events:
         if event.get("type") == "start_kyoku" and isinstance(event.get("scores"), list):
             values = event["scores"]
             if len(values) == 4:
                 scores = [float(value) for value in values]
+        elif event.get("type") == "reach_accepted" and scores is not None:
+            actor = event.get("actor")
+            if actor is not None and 0 <= int(actor) < 4:
+                scores[int(actor)] -= 1000.0
         elif event.get("type") in {"hora", "ryukyoku"} and scores is not None:
             deltas = event.get("deltas")
             if isinstance(deltas, list) and len(deltas) == 4:
                 scores = [score + float(delta) for score, delta in zip(scores, deltas, strict=True)]
     return scores
+
+
+def authoritative_ranks(path: Path) -> list[int] | None:
+    """Native libriichi Stat per-seat final ranks (0-based seats -> 1..4 rank).
+
+    Returns None when libriichi is unavailable (e.g. plain test environments);
+    the real evaluation machine always provides it.
+    """
+    try:
+        from libriichi.stat import Stat  # noqa: PLC0415
+    except ImportError:
+        return None
+    with gzip.open(path, "rt", encoding="utf-8") as handle:
+        raw_log = handle.read()
+    ranks: list[int] = []
+    for player_id in range(4):
+        stat = Stat.from_log(raw_log, player_id)
+        rank = [rank_id for rank_id in (1, 2, 3, 4) if getattr(stat, f"rank_{rank_id}") == 1]
+        if len(rank) != 1:
+            raise ValueError(f"{path}: ambiguous Stat rank for player {player_id}: {rank}")
+        ranks.append(rank[0])
+    return ranks
 
 
 def ranks_from_events(events: list[dict[str, Any]]) -> dict[str, int]:
@@ -119,10 +153,12 @@ def paired_row(seed: int, path: Path) -> dict[str, Any]:
     if set(ranks) != set(required):
         raise ValueError(f"{path}: expected names {required}, got {sorted(ranks)}")
     points = {label: RANK_POINTS[ranks[label] - 1] for label in required}
+    seat_ranks = [ranks[str(name)] for name in events[0]["names"]]
     return {
         "seed": seed,
         "source_log": str(path),
         "source_log_sha256": sha256(path),
+        "seat_ranks_reconstructed": seat_ranks,
         "rank_70k": ranks["70k"],
         "rank_ext_mortal": ranks["ext_mortal"],
         "rank_m0": ranks[m0_label],
@@ -363,7 +399,7 @@ def build_markdown(summary: dict[str, Any]) -> str:
         "",
         f"- Seeds: `{EXPECTED_SEEDS}`; 1000 hanchans per seed; native batch `250`.",
         f"- Seed starts: `{EXPECTED_SEED_STARTS}`; key `8192`; random seats; CUDA required; AMP disabled.",
-        f"- Rank points: `{list(RANK_POINTS)}`; evaluator commit: `{summary['protocol']['evaluator_commit']}`.",
+        f"- Rank points: `{list(RANK_POINTS)}`; raw evaluator commit: `{summary['protocol']['raw_evaluator_commit']}`; summary v2 commit: `{summary['protocol']['summary_v2_commit']}` (v1 `{summary['protocol']['summary_v1_commit']}` invalidated).",
         "",
         "## Promotion Decision (preregistered, mechanical)",
         "",
@@ -426,6 +462,85 @@ def main() -> None:
         rows_by_seed[seed] = [paired_row(seed, path) for path in logs]
         details_by_seed[seed] = details
     all_rows = [row for seed in EXPECTED_SEEDS for row in rows_by_seed[seed]]
+
+    # ---- reconstruction equivalence: native Stat vs pure raw-event rebuild ----
+    stat_available = True
+    stat_checked = 0
+    stat_mismatch: list[str] = []
+    for row in all_rows:
+        authoritative = authoritative_ranks(Path(row["source_log"]))
+        if authoritative is None:
+            stat_available = False
+            break
+        stat_checked += 1
+        for seat in range(4):
+            if int(row["seat_ranks_reconstructed"][seat]) != authoritative[seat]:
+                stat_mismatch.append(
+                    f"{row['source_log']} seat {seat}: reconstructed="
+                    f"{row['seat_ranks_reconstructed'][seat]} stat={authoritative[seat]}"
+                )
+    reconstruction_equivalence = {
+        "stat_check_available": stat_available,
+        "logs_checked": stat_checked if stat_available else 0,
+        "players_checked": stat_checked * 4 if stat_available else 0,
+        "mismatch_count": len(stat_mismatch) if stat_available else None,
+        "mismatches_sample": stat_mismatch[:20],
+        "rank_count_equivalence": {},
+        "algebraic_invariants": {},
+    }
+    if stat_available and (stat_checked != 3000 or stat_mismatch):
+        raise ValueError(f"native Stat equivalence failed: checked={stat_checked} mismatches={len(stat_mismatch)}")
+
+    # ---- per-seed rank counts: reconstructed == detailed_stats == metrics ----
+    for seed, seed_dir in seed_dirs.items():
+        metrics = details_by_seed[seed]["metrics"]
+        detailed = details_by_seed[seed]["detailed_stats"]
+        labels = sorted(EXPECTED_MODELS_PER_SEED[seed])
+        # explicit per-label reconstruction counts
+        recon_counts = {
+            label: [
+                sum(1 for row in rows_by_seed[seed] if row[f"rank_{'70k' if label == '70k' else 'ext_mortal' if label == 'ext_mortal' else 'm0' if label.startswith('M0') else 'd3'}"] == rank)
+                for rank in (1, 2, 3, 4)
+            ]
+            for label in labels
+        }
+        for label in labels:
+            key = "70k" if label == "70k" else "ext_mortal" if label == "ext_mortal" else "m0" if label.startswith("M0") else "d3"
+            detailed_counts = [
+                int(detailed["players"][label]["raw"][f"rank_{rank}"]) for rank in (1, 2, 3, 4)
+            ]
+            metric_counts = [int(value) for value in metrics["metrics"][label]["rank_counts"]]
+            match = recon_counts[label] == detailed_counts == metric_counts
+            reconstruction_equivalence["rank_count_equivalence"][f"{seed}:{label}"] = {
+                "reconstructed": recon_counts[label],
+                "detailed_stats": detailed_counts,
+                "metrics": metric_counts,
+                "match": match,
+            }
+            if not match:
+                raise ValueError(f"rank-count mismatch for {seed}:{label}")
+
+    # ---- algebraic invariants: mean(delta) == mean(pt_a) - mean(pt_b) ----
+    def check_invariant(delta_field: str, pt_a: str, pt_b: str, name: str) -> bool:
+        deltas = np.asarray([float(row[delta_field]) for row in all_rows])
+        mean_delta = float(deltas.mean())
+        mean_a = float(np.mean([float(row[pt_a]) for row in all_rows]))
+        mean_b = float(np.mean([float(row[pt_b]) for row in all_rows]))
+        ok = math.isclose(mean_delta, mean_a - mean_b, rel_tol=1e-9, abs_tol=1e-9)
+        reconstruction_equivalence["algebraic_invariants"][name] = {
+            "mean_delta": mean_delta,
+            "mean_a_minus_b": mean_a - mean_b,
+            "match": ok,
+        }
+        return ok
+
+    if not (
+        check_invariant("delta_pt_d3_minus_m0", "pt_d3", "pt_m0", "mean_d3_minus_m0")
+        and check_invariant("delta_pt_d3_minus_70k", "pt_d3", "pt_70k", "mean_d3_minus_70k")
+        and check_invariant("delta_pt_m0_minus_70k", "pt_m0", "pt_70k", "mean_m0_minus_70k")
+    ):
+        raise ValueError("algebraic invariant failed: mean(delta) != mean(pt_a) - mean(pt_b)")
+
     args.output_dir.mkdir(parents=True, exist_ok=True)
     rows_path = args.output_dir / "d3_eval_1000h_rows.csv"
     write_rows(rows_path, all_rows)
@@ -449,16 +564,26 @@ def main() -> None:
         "device": "cuda",
         "amp": False,
         "rank_points": list(RANK_POINTS),
-        "evaluator_commit": "413a268ef60125ac8f8fa58a77bcb948f71bf4e4",
-        "summary_code_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        "raw_evaluator_commit": "413a268ef60125ac8f8fa58a77bcb948f71bf4e4",
+        "summary_v1_commit": "a6b1d4b66f8c36a64f0f3958fb9e8410c143209d",
+        "summary_v1_invalidated": True,
+        "summary_v1_invalidation_reason": (
+            "final-score reconstruction omitted ReachAccepted -1000; "
+            "paired statistics non-authoritative; raw evaluation unaffected"
+        ),
+        "summary_v2_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        "raw_eval_rerun": False,
+        "raw_eval_modified": False,
+        "training_rerun": False,
         "model_sha256": dict(EXPECTED_MODEL_SHA),
         "metrics_sha256": dict(EXPECTED_METRICS_SHA),
         "completion_closure": closure_check,
     }
     decision = promotion_decision(comparisons)
     summary = {
-        "schema": "keqing.mortal.d3_b250_eval_summary.v1",
+        "schema": "keqing.mortal.d3_b250_eval_summary.v2",
         "protocol": protocol,
+        "reconstruction_equivalence": reconstruction_equivalence,
         "hanchans": {str(seed): len(rows) for seed, rows in rows_by_seed.items()},
         "comparisons": comparisons,
         "rank_counts": {
@@ -474,9 +599,13 @@ def main() -> None:
     json_path = args.output_dir / "d3_eval_1000h_summary.json"
     md_path = args.output_dir / "d3_eval_1000h_summary.md"
     decision_path = args.output_dir / "d3_promotion_decision.json"
+    equivalence_path = args.output_dir / "reconstruction_equivalence.json"
     json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     md_path.write_text(build_markdown(summary), encoding="utf-8")
     decision_path.write_text(json.dumps(decision, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    equivalence_path.write_text(
+        json.dumps(reconstruction_equivalence, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     print(
         json.dumps(
             {
