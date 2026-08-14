@@ -2,10 +2,18 @@
 """Cross-corpus mechanism audit: M0 vs D1/D2/D3 (read-only, no training).
 
 Memory-frugal rewrite: no per-row storage. Per route we keep only per-hanchan
-aggregate counters (strata/action/shanten histograms), streaming Q-target
+aggregate counters (strata/action-kind/shanten histograms), streaming Q-target
 covariance accumulators, state/decision hash sets, and per-file row counters
 (for exposure simulation). This keeps the audit within laptop RAM while the
 K0 forward pass streams over every row exactly once.
+
+Repair-1 adjudication contract (frozen):
+  * structured strata use the trusted audit_replay_distribution.phase_bucket
+    (early/middle/late) as the first dimension -- NOT exact kyoku.
+  * action families use the trusted audit_replay_distribution.action_name
+    semantics (discard/reach/chi_low/chi_mid/chi_high/pon/kan/agari/
+    ryukyoku/pass) -- NOT raw action IDs.
+  * within-stratum target variance is a Q-free quantity over ALL rows.
 
 Gates:
   A provenance (frozen indexes; D2 hanchans == D1 6000/6000, V2/V3 3000/3000)
@@ -13,14 +21,19 @@ Gates:
     100% legal / augmented false)
   C canonical row audit + K0 Q readout aggregates
   D actual training exposure (RNG-faithful FileDatasetsIter simulation +
-     real preview runs vs frozen batch hashes)
+     real preview runs vs frozen batch hashes) + exposure-weighted readouts
   E overlap / distance (hanchan, structured strata weighted mass, JSD, TV;
      D1-D2 hanchan overlap == 100%)
-  F D3 exploration diagnostic (explored vs hash_rejected, hanchan-cluster
-    uncertainty, descriptive only)
+  F D3 exploration diagnostic (every frozen event mapped to exactly one
+    loader row, per category; hard gate)
 
-Verdict readout: A_coverage_priority / B_credit_assignment_priority /
-inconclusive. Priority, never a causal proof.
+Verdict readout: A_coverage_priority / inconclusive / no_verdict_gates_failed.
+A uses the frozen relative bootstrap rule (majority of families with both
+delta CI lowers above the D1->D2 view baseline + positive M0-exclusive mass).
+B_credit_assignment_priority is NEVER machine-promoted: its observational
+diagnostics are descriptive only because no quantitative promotion threshold
+was frozen before data was seen. Any A-F gate false blocks the verdict.
+Priority, never a causal proof.
 """
 
 from __future__ import annotations
@@ -31,10 +44,10 @@ import json
 import math
 import random
 import subprocess
+import sys
 import time
 from collections import Counter, defaultdict
 from pathlib import Path
-import sys
 from typing import Any
 
 import numpy as np
@@ -46,14 +59,20 @@ if str(REPO) not in sys.path:
 if str(REPO / "third_party" / "Mortal" / "mortal") not in sys.path:
     sys.path.insert(0, str(REPO / "third_party" / "Mortal" / "mortal"))
 
-from training.mortal.d3_production_audit_core import _canonical_log_hash, _read_log, _log_key  # noqa: E402
-from training.mortal.audit_replay_distribution import (  # noqa: E402
+from training.mortal.audit_replay_distribution import (
+    action_name,
     decision_hash,
     load_checkpoint,
     load_model,
     model_q,
+    phase_bucket,
     records_from_game,
     state_hash,
+)
+from training.mortal.d3_production_audit_core import (
+    _canonical_log_hash,
+    _log_key,
+    _read_log,
 )
 
 TRAIN_PTS = np.asarray([6.0, 4.0, 2.0, 0.0], dtype=np.float64)
@@ -113,7 +132,7 @@ def load_index(path: Path) -> list[Path]:
 
 def _as_hash_set(hashes: Any) -> set[bytes]:
     if isinstance(hashes, bytes):
-        return set(hashes[i : i + 16] for i in range(0, len(hashes), 16))
+        return {hashes[i : i + 16] for i in range(0, len(hashes), 16)}
     return set(hashes)
 
 
@@ -130,8 +149,10 @@ def bucket_shanten(value: int) -> str:
 
 
 def strata_key(kyoku: int, current_rank: int, score_gap: float, own_riichi: bool, legal: int, shanten: int) -> tuple[str, ...]:
+    # First dimension is the trusted phase_bucket (early/middle/late), the
+    # frozen structured-state definition from audit_replay_distribution.py.
     return (
-        str(kyoku),
+        phase_bucket(kyoku),
         str(current_rank),
         bucket_score_gap(score_gap),
         str(bool(own_riichi)),
@@ -186,6 +207,130 @@ def corr_from_accumulators(acc: dict[str, float]) -> float:
     return float(cov / denom) if denom > 0 else 0.0
 
 
+# ---------------------------------------------------------------- adjudication
+VERDICT_NO_GATES = "no_verdict_gates_failed"
+VERDICT_A = "A_coverage_priority"
+VERDICT_INCONCLUSIVE = "inconclusive"
+B_MACHINE_GATE = "not_preregistered_quantitatively"
+ROUTE_AGG_CACHE_SCHEMA = "keqing.mortal.route_agg_cache.v2"
+
+
+def decide_readout(*, coverage_votes: int, num_families: int, m0_exclusive_mass: dict[str, float], gates_ok: bool) -> str:
+    """Frozen adjudication contract (repair 1).
+
+    A_coverage_priority: majority of bootstrap families have BOTH the M0->D1
+    and M0->D3 delta CI lowers strictly above the D1->D2 view baseline AND at
+    least one descendant route carries positive M0-exclusive support mass.
+    This is a relative/bootstrap rule -- no absolute thresholds.
+
+    B_credit_assignment_priority is NOT machine-promotable: the observational
+    diagnostics may inform a future experiment, but no quantitative promotion
+    threshold was frozen before data was seen, so the machine never outputs B.
+
+    Any A-F gate false blocks the verdict entirely.
+    """
+    if not gates_ok:
+        return VERDICT_NO_GATES
+    if coverage_votes / num_families > 0.5 and any(value > 0 for value in m0_exclusive_mass.values()):
+        return VERDICT_A
+    return VERDICT_INCONCLUSIVE
+
+
+def gate_f_checks(summary: dict[str, Any]) -> dict[str, bool]:
+    """Hard checks for gate F: every frozen D3 exploration event must map to
+    exactly one loader row (per category, nothing unconsumed, and the mapped
+    count must be an EVENT count, never histogram-cell increments)."""
+    totals = summary.get("category_totals", {})
+    mapped = summary.get("mapped_event_totals", {})
+    total_events = int(summary.get("total_events", 0))
+    total_mapped = int(summary.get("total_mapped_events", 0))
+    total_unconsumed = int(summary.get("total_unconsumed_events", -1))
+    return {
+        "diagnostic_present": total_events > 0,
+        "all_events_mapped_exactly_once": total_events > 0 and total_mapped == total_events,
+        "no_unconsumed_events": total_events > 0 and total_unconsumed == 0,
+        "category_counts_exact": bool(totals) and all(int(mapped.get(key, 0)) == int(totals[key]) for key in totals),
+    }
+
+
+# ------------------------------------------------------------ exposure readout
+def _jsd_counters(first: Counter, second: Counter) -> float:
+    keys = sorted(set(first) | set(second))
+    pa = np.asarray([first.get(k, 0) for k in keys], dtype=np.float64)
+    pb = np.asarray([second.get(k, 0) for k in keys], dtype=np.float64)
+    if pa.sum() == 0 or pb.sum() == 0:
+        return 0.0
+    return jsd(pa / pa.sum(), pb / pb.sum())
+
+
+def _jsd_matrix(routes: dict[str, Counter]) -> dict[str, dict[str, float]]:
+    return {a: {b: _jsd_counters(routes[a], routes[b]) for b in routes} for a in routes}
+
+
+def _json_distribution(counter: Counter) -> dict[str, float]:
+    return {key if isinstance(key, str) else "|".join(str(part) for part in key): float(value) for key, value in counter.items()}
+
+
+def exposure_weighted_distribution(weights: np.ndarray, per_file: list[Counter]) -> Counter:
+    total: Counter = Counter()
+    for weight, counter in zip(weights, per_file):
+        if weight > 0:
+            for key, value in counter.items():
+                total[key] += weight * value
+    return total
+
+
+def exposure_weighted_readout(
+    route_scan: dict[str, dict[str, Any]],
+    exposure: dict[str, dict[str, Any]],
+    seeds: tuple[int, ...] = SEEDS,
+    names: tuple[str, ...] = ("M0", "D1", "D2", "D3"),
+) -> dict[str, Any]:
+    """Exposure-weighted readouts: the 1,024,000 samples the training loop
+    actually consumes, weighted by the RNG-faithful simulation, per route and
+    seed, with route x seed JSD comparisons (canonical vs consumed)."""
+    canonical: dict[str, dict[str, Counter]] = {name: {} for name in names}
+    weighted: dict[str, dict[str, dict[str, Counter]]] = {str(seed): {name: {} for name in names} for seed in seeds}
+    for name in names:
+        scan = route_scan[name]
+        agg_by_index = {int(entry["hanchan"]): entry for entry in scan["hanchan_agg"]}
+        n_files = len(scan["hanchan_agg"])
+        per_file_target = [scan["per_file_target_counts"].get(index, Counter()) for index in range(n_files)]
+        for family in ("target", "action_kind", "strata"):
+            if family == "target":
+                per_file = per_file_target
+            elif family == "action_kind":
+                per_file = [agg_by_index[index]["actions"] for index in range(n_files)]
+            else:
+                per_file = [agg_by_index[index]["strata"] for index in range(n_files)]
+            canonical[name][family] = exposure_weighted_distribution(np.ones(n_files), per_file)
+            for seed in seeds:
+                weights = np.asarray(exposure[name][str(seed)]["simulation"]["consumed_per_file"], dtype=np.float64)
+                if weights.size != n_files:
+                    raise ValueError(f"{name} seed {seed}: exposure weights {weights.size} != files {n_files}")
+                weighted[str(seed)][name][family] = exposure_weighted_distribution(weights, per_file)
+    out: dict[str, Any] = {"seeds": [str(seed) for seed in seeds]}
+    for family in ("target", "action_kind", "strata"):
+        per_seed: dict[str, Any] = {}
+        between_seed_jsd: dict[str, float] = {}
+        for name in names:
+            dists = [weighted[str(seed)][name][family] for seed in seeds]
+            pairs = [_jsd_counters(dists[i], dists[j]) for i in range(len(dists)) for j in range(i + 1, len(dists))]
+            between_seed_jsd[name] = float(np.mean(pairs)) if pairs else 0.0
+        for seed in seeds:
+            routes_dist = {name: weighted[str(seed)][name][family] for name in names}
+            per_seed[str(seed)] = {
+                "jsd_matrix": _jsd_matrix(routes_dist),
+                "distributions": {name: _json_distribution(routes_dist[name]) for name in names},
+            }
+        out[family] = {
+            "canonical_jsd_matrix": _jsd_matrix({name: canonical[name][family] for name in names}),
+            "per_seed": per_seed,
+            "between_seed_mean_jsd": between_seed_jsd,
+        }
+    return out
+
+
 # ---------------------------------------------------------------- route scan
 def scan_route(
     name: str,
@@ -198,7 +343,7 @@ def scan_route(
     q_batch_size: int,
     d3_events_by_key: dict[tuple[int, int], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
-    from libriichi.dataset import GameplayLoader  # noqa: PLC0415
+    from libriichi.dataset import GameplayLoader
 
     hanchan_agg: list[dict[str, Any]] = []
     per_file_counters: dict[int, Counter] = {}
@@ -211,6 +356,7 @@ def scan_route(
     total_rows = 0
     rows_per_hanchan: list[int] = []
     global_tacc = covariance_accumulators()
+    global_target_acc = covariance_accumulators()
     strata_tacc: dict[tuple[str, ...], dict[str, float]] = {}
     action_hist: Counter[str] = Counter()
     shanten_hist: Counter[str] = Counter()
@@ -229,6 +375,9 @@ def scan_route(
         d3_diag = {
             "category_hanchan": defaultdict(lambda: defaultdict(Counter)),
             "category_total": Counter(),
+            "category_mapped_events": Counter(),
+            "category_unconsumed": Counter(),
+            "category_hanchan_events": defaultdict(Counter),
         }
 
     q_pending: list[tuple[Any, dict[str, Any]]] = []
@@ -264,13 +413,6 @@ def scan_route(
             acc["sum_qt"] += behavior_q * target
             acc["sum_q2"] += behavior_q * behavior_q
             acc["sum_t2"] += target * target
-            key = row["strata"]
-            if key not in strata_tacc:
-                strata_tacc[key] = covariance_accumulators()
-            sacc = strata_tacc[key]
-            sacc["n"] += 1
-            sacc["sum_t"] += target
-            sacc["sum_t2"] += target * target
             category = row.get("event_category")
             if category is not None:
                 hanchan = row["hanchan"]
@@ -280,7 +422,7 @@ def scan_route(
                     ("behavior_q", f"{behavior_q:+.3f}"),
                     ("q_regret", f"{greedy_q - behavior_q:+.3f}"),
                     ("margin", f"{(q_row[legal].max() - top2_min):+.3f}"),
-                    ("phase", str(row["kyoku"])),
+                    ("phase", phase_bucket(row["kyoku"])),
                     ("rank", str(row["current_rank"])),
                     ("score_gap", bucket_score_gap(row["score_gap"])),
                     ("shanten", bucket_shanten(row["shanten"])),
@@ -314,8 +456,12 @@ def scan_route(
         event_row_map: dict[tuple[int, int], dict[str, Any]] = {}
         file_events: list[dict[str, Any]] = []
         if d3_events_by_key is not None:
-            from training.mortal.d3_native_scene import reconstruct_native_scenes  # noqa: PLC0415
-            from training.mortal.d3_production_audit_core import primary_row_flags  # noqa: PLC0415
+            from training.mortal.d3_native_scene import (
+                reconstruct_native_scenes,
+            )
+            from training.mortal.d3_production_audit_core import (
+                primary_row_flags,
+            )
 
             game_seed_key = _log_key(_read_log(path), path)
             file_events = d3_events_by_key.get(game_seed_key, [])
@@ -349,6 +495,7 @@ def scan_route(
             total_rows += 1
             final_rank_counts[int(record.target_rank) - 1] += 1
             target_counts[float(record.target)] += 1
+            target = float(record.target)
             kyoku = int(record.kyoku)
             rank = int(record.current_rank)
             score_gap = float(record.score_gap)
@@ -356,21 +503,29 @@ def scan_route(
             shanten = int(record.shanten)
             key = strata_key(kyoku, rank, score_gap, own_riichi, legal_count, shanten)
             hanchan_strata[key] += 1
-            hanchan_actions[str(action)] += 1
+            hanchan_actions[action_name(action)] += 1
             hanchan_shanten[bucket_shanten(shanten)] += 1
-            action_hist[str(action)] += 1
+            action_hist[action_name(action)] += 1
             shanten_hist[bucket_shanten(shanten)] += 1
-            phase_hist[str(kyoku)] += 1
+            phase_hist[phase_bucket(kyoku)] += 1
             rank_hist[str(rank)] += 1
             score_gap_hist[bucket_score_gap(score_gap)] += 1
             legal_hist[bucket_legal(legal_count)] += 1
             per_file_counters[file_index]["rows"] += 1
-            per_file_target_counts[file_index][str(float(record.target))] += 1
+            per_file_target_counts[file_index][str(target)] += 1
+            gacc = global_target_acc
+            gacc["n"] += 1
+            gacc["sum_t"] += target
+            gacc["sum_t2"] += target * target
+            sacc = strata_tacc.setdefault(key, covariance_accumulators())
+            sacc["n"] += 1
+            sacc["sum_t"] += target
+            sacc["sum_t2"] += target * target
             event_category = None
             if event_row_map:
                 loader_index = loader_index_by_kyoku.get(kyoku, 0)
                 loader_index_by_kyoku[kyoku] = loader_index + 1
-                event = event_row_map.get((kyoku, loader_index))
+                event = event_row_map.pop((kyoku, loader_index), None)
                 if event is not None:
                     event_category = (
                         "explored"
@@ -379,9 +534,11 @@ def scan_route(
                         if event.get("reason") == "hash_rejected"
                         else "budget_exhausted"
                     )
+                    d3_diag["category_mapped_events"][event_category] += 1
+                    d3_diag["category_hanchan_events"][event_category][file_index] += 1
             row = {
                 "action": action,
-                "target": float(record.target),
+                "target": target,
                 "mask": mask,
                 "strata": key,
                 "hanchan": file_index,
@@ -399,6 +556,10 @@ def scan_route(
         for event in file_events:
             category = "explored" if event.get("explored") else "hash_rejected" if event.get("reason") == "hash_rejected" else "budget_exhausted"
             d3_diag["category_total"][category] += 1
+        if event_row_map:
+            for event in event_row_map.values():
+                category = "explored" if event.get("explored") else "hash_rejected" if event.get("reason") == "hash_rejected" else "budget_exhausted"
+                d3_diag["category_unconsumed"][category] += 1
         hanchan_agg.append(
             {
                 "hanchan": file_index,
@@ -417,8 +578,9 @@ def scan_route(
         raise ValueError(f"{name}: integrity {perspective_count}/{len(files)} legal {behavior_legal}/{total_rows}")
     within_sum = sum(
         acc["sum_t2"] - acc["sum_t"] ** 2 / acc["n"] for acc in strata_tacc.values() if acc["n"] >= 2
-    ) / total_rows
-    total_var = (global_tacc["sum_t2"] - global_tacc["sum_t"] ** 2 / global_tacc["n"]) / total_rows if global_tacc["n"] > 1 else 0.0
+    )
+    total_n = global_target_acc["n"]
+    total_var = global_target_acc["sum_t2"] - global_target_acc["sum_t"] ** 2 / total_n if total_n > 1 else 0.0
     return {
         "route": name,
         "meta": {
@@ -437,7 +599,7 @@ def scan_route(
         "per_file_counters": per_file_counters,
         "per_file_target_counts": per_file_target_counts,
         "distributions": {
-            "action": dict(action_hist),
+            "action_kind": dict(action_hist),
             "shanten": dict(shanten_hist),
             "phase": dict(phase_hist),
             "rank": dict(rank_hist),
@@ -485,7 +647,7 @@ def scan_route_fast(
     max_files: int | None = None,
     d3_events_by_key: dict[tuple[int, int], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
-    from libriichi.dataset import GameplayLoader  # noqa: PLC0415
+    from libriichi.dataset import GameplayLoader
 
     files = files if max_files is None else files[:max_files]
     hanchan_agg: list[dict[str, Any]] = []
@@ -499,6 +661,7 @@ def scan_route_fast(
     total_rows = 0
     rows_per_hanchan: list[int] = []
     global_tacc = covariance_accumulators()
+    global_target_acc = covariance_accumulators()
     strata_tacc: dict[tuple[str, ...], dict[str, float]] = {}
     action_hist: Counter[str] = Counter()
     shanten_hist: Counter[str] = Counter()
@@ -514,7 +677,13 @@ def scan_route_fast(
     perspective_count = 0
     d3_diag: dict[str, Any] | None = None
     if name == "D3" and d3_events_by_key is not None:
-        d3_diag = {"category_hanchan": defaultdict(lambda: defaultdict(Counter)), "category_total": Counter()}
+        d3_diag = {
+            "category_hanchan": defaultdict(lambda: defaultdict(Counter)),
+            "category_total": Counter(),
+            "category_mapped_events": Counter(),
+            "category_unconsumed": Counter(),
+            "category_hanchan_events": defaultdict(Counter),
+        }
 
     pending_obs: list[np.ndarray] = []
     pending_masks: list[np.ndarray] = []
@@ -555,11 +724,6 @@ def scan_route_fast(
             acc["sum_qt"] += behavior_q * meta["target"]
             acc["sum_q2"] += behavior_q * behavior_q
             acc["sum_t2"] += meta["target"] * meta["target"]
-            key = meta["strata"]
-            sacc = strata_tacc.setdefault(key, covariance_accumulators())
-            sacc["n"] += 1
-            sacc["sum_t"] += meta["target"]
-            sacc["sum_t2"] += meta["target"] * meta["target"]
             category = meta.get("event_category")
             if category is not None:
                 hanchan = meta["hanchan"]
@@ -569,7 +733,7 @@ def scan_route_fast(
                     ("behavior_q", f"{behavior_q:+.3f}"),
                     ("q_regret", f"{greedy_q - behavior_q:+.3f}"),
                     ("margin", f"{margin:+.3f}"),
-                    ("phase", str(meta["kyoku"])),
+                    ("phase", phase_bucket(meta["kyoku"])),
                     ("rank", str(meta["current_rank"])),
                     ("score_gap", bucket_score_gap(meta["score_gap"])),
                     ("shanten", bucket_shanten(meta["shanten"])),
@@ -654,8 +818,12 @@ def scan_route_fast(
                 event_row_map: dict[tuple[int, int], dict[str, Any]] = {}
                 file_events: list[dict[str, Any]] = []
                 if d3_events_by_key is not None:
-                    from training.mortal.d3_native_scene import reconstruct_native_scenes  # noqa: PLC0415
-                    from training.mortal.d3_production_audit_core import primary_row_flags  # noqa: PLC0415
+                    from training.mortal.d3_native_scene import (
+                        reconstruct_native_scenes,
+                    )
+                    from training.mortal.d3_production_audit_core import (
+                        primary_row_flags,
+                    )
 
                     game_seed_key = _log_key(_read_log(path), path)
                     file_events = d3_events_by_key.get(game_seed_key, [])
@@ -692,16 +860,24 @@ def scan_route_fast(
                     total_rows += 1
                     key = strata_key(kyoku, rank, score_gap, own_riichi[i], legal_count, shanten)
                     hanchan_strata[key] += 1
-                    hanchan_actions[str(action)] += 1
+                    hanchan_actions[action_name(action)] += 1
                     hanchan_shanten[bucket_shanten(shanten)] += 1
-                    action_hist[str(action)] += 1
+                    action_hist[action_name(action)] += 1
                     shanten_hist[bucket_shanten(shanten)] += 1
-                    phase_hist[str(kyoku)] += 1
+                    phase_hist[phase_bucket(kyoku)] += 1
                     rank_hist[str(rank)] += 1
                     score_gap_hist[bucket_score_gap(score_gap)] += 1
                     legal_hist[bucket_legal(legal_count)] += 1
                     per_file_counters[file_index]["rows"] += 1
                     per_file_target_counts[file_index][f"{target:+.0f}"] += 1
+                    gacc = global_target_acc
+                    gacc["n"] += 1
+                    gacc["sum_t"] += target
+                    gacc["sum_t2"] += target * target
+                    sacc = strata_tacc.setdefault(key, covariance_accumulators())
+                    sacc["n"] += 1
+                    sacc["sum_t"] += target
+                    sacc["sum_t2"] += target * target
                     state_hash_buf += hashlib.blake2b(np.ascontiguousarray(obs_rows[i]).tobytes() + np.ascontiguousarray(masks_arr[i]).tobytes(), digest_size=16).digest()
                     decision_hash_buf += hashlib.blake2b(
                         np.ascontiguousarray(obs_rows[i]).tobytes() + np.ascontiguousarray(masks_arr[i]).tobytes() + action.to_bytes(2, "little", signed=False),
@@ -711,7 +887,7 @@ def scan_route_fast(
                     if event_row_map:
                         loader_index = loader_index_by_kyoku.get(kyoku, 0)
                         loader_index_by_kyoku[kyoku] = loader_index + 1
-                        event = event_row_map.get((kyoku, loader_index))
+                        event = event_row_map.pop((kyoku, loader_index), None)
                         if event is not None:
                             event_category = (
                                 "explored"
@@ -720,6 +896,8 @@ def scan_route_fast(
                                 if event.get("reason") == "hash_rejected"
                                 else "budget_exhausted"
                             )
+                            d3_diag["category_mapped_events"][event_category] += 1
+                            d3_diag["category_hanchan_events"][event_category][file_index] += 1
                     meta = {
                         "action": action,
                         "target": target,
@@ -742,6 +920,10 @@ def scan_route_fast(
                 for event in file_events:
                     category = "explored" if event.get("explored") else "hash_rejected" if event.get("reason") == "hash_rejected" else "budget_exhausted"
                     d3_diag["category_total"][category] += 1
+                if event_row_map:
+                    for event in event_row_map.values():
+                        category = "explored" if event.get("explored") else "hash_rejected" if event.get("reason") == "hash_rejected" else "budget_exhausted"
+                        d3_diag["category_unconsumed"][category] += 1
                 hanchan_agg.append(
                     {
                         "hanchan": file_index,
@@ -753,7 +935,7 @@ def scan_route_fast(
                 )
                 if (file_index + 1) % 1000 == 0:
                     try:
-                        import psutil  # noqa: PLC0415
+                        import psutil
 
                         rss_mb = int(psutil.Process().memory_info().rss / 1_000_000)
                     except Exception:  # noqa: BLE001
@@ -766,8 +948,9 @@ def scan_route_fast(
         raise ValueError(f"{name}: integrity {perspective_count}/{len(files)} legal {behavior_legal}/{total_rows}")
     within_sum = sum(
         acc["sum_t2"] - acc["sum_t"] ** 2 / acc["n"] for acc in strata_tacc.values() if acc["n"] >= 2
-    ) / total_rows
-    total_var = (global_tacc["sum_t2"] - global_tacc["sum_t"] ** 2 / global_tacc["n"]) / total_rows if global_tacc["n"] > 1 else 0.0
+    )
+    total_n = global_target_acc["n"]
+    total_var = global_target_acc["sum_t2"] - global_target_acc["sum_t"] ** 2 / total_n if total_n > 1 else 0.0
 
     def _unique_count(buf: bytearray) -> int:
         if not buf:
@@ -793,7 +976,7 @@ def scan_route_fast(
         "per_file_counters": per_file_counters,
         "per_file_target_counts": per_file_target_counts,
         "distributions": {
-            "action": dict(action_hist),
+            "action_kind": dict(action_hist),
             "shanten": dict(shanten_hist),
             "phase": dict(phase_hist),
             "rank": dict(rank_hist),
@@ -849,6 +1032,7 @@ def simulate_exposure(
     return {
         "seed": seed,
         "samples_consumed": consumed,
+        "consumed_per_file": counts.astype(np.int64).tolist(),
         "unique_hanchans_exposed": unique,
         "repeat_rate": float((consumed - unique) / consumed) if consumed else 0.0,
         "exposure_gini": gini(counts),
@@ -886,7 +1070,7 @@ def cluster_bootstrap_delta(
             field = "strata"
         elif family == "shanten_jsd":
             field = "shanten"
-        elif family == "action_jsd":
+        elif family == "action_kind_jsd":
             field = "actions"
         else:
             raise ValueError(family)
@@ -965,8 +1149,15 @@ def main(argv: list[str] | None = None) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     checks: dict[str, bool] = {}
     report: dict[str, Any] = {
-        "schema": "keqing.mortal.cross_corpus_mechanism_audit.v1",
-        "verdict": {"readout": "inconclusive", "new_experiment_created": False, "training_performed": False, "generation_performed": False},
+        "schema": "keqing.mortal.cross_corpus_mechanism_audit.v2",
+        "verdict": {
+            "readout": "pending",
+            "authoritative": False,
+            "b_machine_gate": B_MACHINE_GATE,
+            "new_experiment_created": False,
+            "training_performed": False,
+            "generation_performed": False,
+        },
         "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=REPO).strip(),
         "checks": checks,
     }
@@ -985,8 +1176,6 @@ def main(argv: list[str] | None = None) -> None:
     d2_labels = Counter(mapping_normalized.values())
     checks["gate_a_d2_hanchans_equal_d1"] = d2_paths == d1_paths
     checks["gate_a_d2_v2_v3_3000_3000"] = d2_labels.get("V2_74000", 0) == 3000 and d2_labels.get("V3_74000", 0) == 3000
-    if not (checks["gate_a_d2_hanchans_equal_d1"] and checks["gate_a_d2_v2_v3_3000_3000"]):
-        raise ValueError("gate A failed")
     routes = {
         "M0": {"index": m0_index, "labels": ["ext_mortal"], "by_file": None, "configs": {seed: D1_PREP / f"M0_control/seed_{seed}/config.toml" for seed in SEEDS}},
         "D1": {"index": d1_index, "labels": ["K0_70k"], "by_file": None, "configs": {seed: D1_PREP / f"D1_variant/seed_{seed}/config.toml" for seed in SEEDS}},
@@ -1033,7 +1222,7 @@ def main(argv: list[str] | None = None) -> None:
                 "target_counts": rm["target_counts"] == fm["target_counts"],
                 "unique_state_hashes": rm["unique_state_hashes"] == fm["unique_state_hashes"],
                 "unique_decision_hashes": rm["unique_decision_hashes"] == fm["unique_decision_hashes"],
-                "action": dict(ref["distributions"]["action"]) == dict(fast["distributions"]["action"]),
+                "action_kind": dict(ref["distributions"]["action_kind"]) == dict(fast["distributions"]["action_kind"]),
                 "shanten": dict(ref["distributions"]["shanten"]) == dict(fast["distributions"]["shanten"]),
                 "phase": dict(ref["distributions"]["phase"]) == dict(fast["distributions"]["phase"]),
                 "rank": dict(ref["distributions"]["rank"]) == dict(fast["distributions"]["rank"]),
@@ -1064,7 +1253,15 @@ def main(argv: list[str] | None = None) -> None:
 
     route_scan: dict[str, dict[str, Any]] = {}
     t0 = time.time()
+    report["provenance"]["agg_source"] = {}
+    cache_dir = output_dir / "route_agg_cache"
     for name in ("M0", "D1", "D2", "D3"):
+        cache_path = cache_dir / f"{name}.json"
+        if cache_path.is_file():
+            route_scan[name] = load_route_agg(cache_path)
+            report["provenance"]["agg_source"][name] = "cache"
+            print(f"[audit] {name} loaded from agg cache", flush=True)
+            continue
         d3_events = None
         if name == "D3":
             d3_events = load_d3_events_by_key()
@@ -1073,14 +1270,15 @@ def main(argv: list[str] | None = None) -> None:
             version, brain, dqn, args.q_batch_size, max_files=args.max_files,
             d3_events_by_key=d3_events,
         )
+        report["provenance"]["agg_source"][name] = "live"
         print(f"[audit] {name} rows={route_scan[name]['meta']['total_rows']} elapsed={time.time() - t0:.1f}s", flush=True)
-    checks["gate_b_c_loader_and_q"] = True
+        dump_route_agg(route_scan[name], cache_path)
     report["corpus_rows_summary"] = {name: route_scan[name]["meta"] for name in ("M0", "D1", "D2", "D3")}
     (output_dir / "corpus_rows_summary.json").write_text(json.dumps(report["corpus_rows_summary"], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     # gate D
     if not args.skip_exposure:
-        import tomllib  # noqa: PLC0415
+        import tomllib
 
         frozen_previews = {
             "M0": {"20260806": D1_PREP / "preflight/m0_control_batch_preview.json"},
@@ -1108,6 +1306,9 @@ def main(argv: list[str] | None = None) -> None:
                         raise ValueError(f"{name} seed {seed}: preview hashes differ from frozen reference")
                 exposure[name][str(seed)] = {"simulation": sim, "stream_deterministic": sim == sim_repeat, "frozen_preview_match": preview_match}
         report["training_exposure"] = exposure
+        exposure_weighted = exposure_weighted_readout(route_scan, exposure, SEEDS, ("M0", "D1", "D2", "D3"))
+        report["exposure_weighted"] = exposure_weighted
+        (output_dir / "exposure_weighted.json").write_text(json.dumps(exposure_weighted, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         (output_dir / "training_exposure.json").write_text(json.dumps(exposure, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         checks["gate_d_exposure_simulation"] = True
         checks["gate_d_stream_deterministic"] = all(
@@ -1119,6 +1320,7 @@ def main(argv: list[str] | None = None) -> None:
         )
     else:
         report["training_exposure"] = {"skipped": True}
+        report["exposure_weighted"] = {"skipped": True}
         checks["gate_d_exposure_simulation"] = True
         checks["gate_d_stream_deterministic"] = True
         checks["gate_d_frozen_previews_match"] = True
@@ -1157,34 +1359,67 @@ def main(argv: list[str] | None = None) -> None:
     (output_dir / "support_overlap.json").write_text(json.dumps(report["support_overlap"], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     checks["gate_e_overlap_distance"] = True
 
-    # gate F (D3 exploration diagnostic)
+    # gate F (D3 exploration diagnostic; hard gate on exactly-once mapping)
     d3_diag = route_scan["D3"]["d3_diag"]
-    report["d3_exploration_readout"] = summarize_d3_diag(d3_diag) if d3_diag else None
-    checks["gate_f_d3_exploration_diagnostic"] = True
+    d3_summary = summarize_d3_diag(d3_diag) if d3_diag else None
+    report["d3_exploration_readout"] = d3_summary
+    f_checks = (
+        gate_f_checks(d3_summary)
+        if d3_summary
+        else {"diagnostic_present": False, "all_events_mapped_exactly_once": False, "no_unconsumed_events": False, "category_counts_exact": False}
+    )
+    checks.update({f"gate_f_{key}": value for key, value in f_checks.items()})
+    checks["gate_f_d3_exploration_diagnostic"] = all(f_checks.values())
 
-    # verdict
+    # verdict (frozen repair-1 adjudication; B is descriptive only)
     view_agg = {"D1": route_scan["D1"]["hanchan_agg"], "D2": route_scan["D2"]["hanchan_agg"]}
     route_agg = {name: route_scan[name]["hanchan_agg"] for name in ("M0", "D1", "D3")}
     families = {}
-    for family in ("structured_jsd", "structured_tv", "shanten_jsd", "action_jsd"):
+    for family in ("structured_jsd", "structured_tv", "shanten_jsd", "action_kind_jsd"):
         families[family] = cluster_bootstrap_delta(family, route_agg, view_agg, args.bootstrap_reps, args.bootstrap_seed)
     coverage_votes = sum(1 for f in families.values() if f["delta1_ci95"][0] > 0 and f["delta3_ci95"][0] > 0)
-    supports_a = coverage_votes / len(families) > 0.5 and any(value > 0 for value in m0_exclusive.values())
-    prioritize_b = False
-    if not supports_a:
-        prioritize_b = all(
-            route_scan[name]["meta"]["within_stratum_target_var_ratio"] >= 0.8
-            and abs(route_scan[name]["meta"]["behavior_q_target_corr"]) <= 0.3
-            for name in ("M0", "D1", "D2", "D3")
-        )
-    readout = "A_coverage_priority" if supports_a else ("B_credit_assignment_priority" if prioritize_b else "inconclusive")
+    gates_ok = all(value for key, value in checks.items() if isinstance(value, bool))
+    readout = decide_readout(
+        coverage_votes=coverage_votes,
+        num_families=len(families),
+        m0_exclusive_mass=m0_exclusive,
+        gates_ok=gates_ok,
+    )
     report["verdict"]["readout"] = readout
+    report["verdict"]["authoritative"] = gates_ok and readout != VERDICT_NO_GATES
     report["mechanism_bootstrap"] = families
     report["coverage_support"] = {"votes": coverage_votes, "families": len(families), "m0_exclusive_mass": m0_exclusive}
+    report["credit_assignment_diagnostics"] = {
+        "machine_gate": B_MACHINE_GATE,
+        "note": (
+            "descriptive only: no quantitative B promotion threshold was frozen before data, "
+            "so B_credit_assignment_priority is never machine-promoted"
+        ),
+        "within_stratum_target_var_ratio": {
+            name: route_scan[name]["meta"]["within_stratum_target_var_ratio"] for name in ("M0", "D1", "D2", "D3")
+        },
+        "behavior_q_target_corr": {
+            name: route_scan[name]["meta"]["behavior_q_target_corr"] for name in ("M0", "D1", "D2", "D3")
+        },
+    }
     report["checks"] = checks
     out_json = output_dir / "cross_corpus_mechanism_audit.json"
     out_json.write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-    print(json.dumps({"verdict": readout, "checks": checks, "m0_exclusive_mass": m0_exclusive, "coverage_votes": f"{coverage_votes}/{len(families)}", "output": str(out_json)}, ensure_ascii=False, indent=2), flush=True)
+    print(
+        json.dumps(
+            {
+                "verdict": readout,
+                "authoritative": report["verdict"]["authoritative"],
+                "checks": checks,
+                "m0_exclusive_mass": m0_exclusive,
+                "coverage_votes": f"{coverage_votes}/{len(families)}",
+                "output": str(out_json),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        flush=True,
+    )
 
 
 def load_d3_events_by_key() -> dict[tuple[int, int], list[dict[str, Any]]]:
@@ -1207,28 +1442,147 @@ def load_d3_events_by_key() -> dict[tuple[int, int], list[dict[str, Any]]]:
 
 
 def summarize_d3_diag(d3_diag: dict[str, Any]) -> dict[str, Any]:
-    """Per-category aggregate + per-hanchan rate stats (cluster unit = hanchan)."""
+    """Per-category aggregate + per-hanchan rate stats (cluster unit = hanchan).
+
+    'events_mapped_to_rows' counts EVENTS consumed by exactly one loader row,
+    never histogram-cell increments. Histogram cells stay descriptive only.
+    """
     category_total = d3_diag["category_total"]
     category_hanchan = d3_diag["category_hanchan"]
-    result: dict[str, Any] = {"category_totals": dict(category_total)}
+    category_mapped = d3_diag["category_mapped_events"]
+    category_unconsumed = d3_diag["category_unconsumed"]
+    category_hanchan_events = d3_diag["category_hanchan_events"]
+    result: dict[str, Any] = {
+        "category_totals": {str(key): int(value) for key, value in sorted(category_total.items())},
+        "mapped_event_totals": {str(key): int(category_mapped.get(key, 0)) for key in sorted(category_total)},
+        "unconsumed_event_totals": {str(key): int(category_unconsumed.get(key, 0)) for key in sorted(category_total)},
+        "total_events": int(sum(category_total.values())),
+        "total_mapped_events": int(sum(category_mapped.values())),
+        "total_unconsumed_events": int(sum(category_unconsumed.values())),
+    }
     for category in sorted(category_total):
         hanchan_rows = category_hanchan[category]
-        per_hanchan_counts = [sum(hanchan_rows[hanchan].values()) for hanchan in hanchan_rows]
+        hanchan_event_counts = [int(category_hanchan_events[category].get(hanchan, 0)) for hanchan in hanchan_rows]
         histograms: Counter = Counter()
         for hanchan in hanchan_rows:
             histograms.update(hanchan_rows[hanchan])
         result[category] = {
             "events": int(category_total[category]),
-            "events_mapped_to_rows": sum(per_hanchan_counts),
-            "hanchans_with_events": len(per_hanchan_counts),
+            "events_mapped_to_rows": int(category_mapped.get(category, 0)),
+            "hanchans_with_events": int(sum(1 for count in hanchan_event_counts if count > 0)),
             "per_hanchan_event_count": {
-                "min": min(per_hanchan_counts) if per_hanchan_counts else 0,
-                "median": float(np.median(per_hanchan_counts)) if per_hanchan_counts else 0.0,
-                "max": max(per_hanchan_counts) if per_hanchan_counts else 0,
+                "min": min(hanchan_event_counts) if hanchan_event_counts else 0,
+                "median": float(np.median(hanchan_event_counts)) if hanchan_event_counts else 0.0,
+                "max": max(hanchan_event_counts) if hanchan_event_counts else 0,
             },
-            "histograms": {k: v for k, v in sorted(histograms.items())},
+            "histograms": {key: value for key, value in sorted(histograms.items())},
         }
     return result
+
+
+# ---------------------------------------------------------------- agg cache
+def _counter_to_json(counter: Counter, tuple_keys: bool) -> dict[str, int]:
+    return {("|".join(key) if tuple_keys else str(key)): int(value) for key, value in counter.items()}
+
+
+def _json_to_counter(payload: dict[str, int], tuple_keys: bool) -> Counter:
+    counter: Counter = Counter()
+    for key, value in payload.items():
+        counter[tuple(key.split("|")) if tuple_keys else key] = value
+    return counter
+
+
+def _load_diag(payload: dict[str, Any] | None) -> dict[str, Any] | None:
+    if payload is None:
+        return None
+    return {
+        "category_hanchan": defaultdict(
+            lambda: defaultdict(Counter),
+            {
+                category: defaultdict(Counter, {int(hanchan): Counter(cells) for hanchan, cells in hanchans.items()})
+                for category, hanchans in payload["category_hanchan"].items()
+            },
+        ),
+        "category_total": Counter(payload["category_total"]),
+        "category_mapped_events": Counter(payload["category_mapped_events"]),
+        "category_unconsumed": Counter(payload["category_unconsumed"]),
+        "category_hanchan_events": defaultdict(
+            Counter,
+            {
+                category: Counter({int(hanchan): int(count) for hanchan, count in hanchans.items()})
+                for category, hanchans in payload["category_hanchan_events"].items()
+            },
+        ),
+    }
+
+
+def dump_route_agg(scan: dict[str, Any], path: Path) -> None:
+    """Persist per-route aggregation so later adjudication rounds can recompute
+    bootstrap / exposure-weighted readouts without rescanning the corpus."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    diag = scan.get("d3_diag")
+    serialized_diag = None
+    if diag is not None:
+        serialized_diag = {
+            "category_hanchan": {
+                category: {str(hanchan): dict(cells) for hanchan, cells in hanchans.items()}
+                for category, hanchans in diag["category_hanchan"].items()
+            },
+            "category_total": dict(diag["category_total"]),
+            "category_mapped_events": dict(diag["category_mapped_events"]),
+            "category_unconsumed": dict(diag["category_unconsumed"]),
+            "category_hanchan_events": {
+                category: {str(hanchan): int(count) for hanchan, count in hanchans.items()}
+                for category, hanchans in diag["category_hanchan_events"].items()
+            },
+        }
+    payload = {
+        "cache_schema": ROUTE_AGG_CACHE_SCHEMA,
+        "route": scan["route"],
+        "meta": scan["meta"],
+        "hanchan_agg": [
+            {
+                "hanchan": int(entry["hanchan"]),
+                "rows": int(entry["rows"]),
+                "strata": _counter_to_json(entry["strata"], tuple_keys=True),
+                "actions": _counter_to_json(entry["actions"], tuple_keys=False),
+                "shanten": _counter_to_json(entry["shanten"], tuple_keys=False),
+            }
+            for entry in scan["hanchan_agg"]
+        ],
+        "per_file_counters": {str(index): dict(counter) for index, counter in scan["per_file_counters"].items()},
+        "per_file_target_counts": {str(index): dict(counter) for index, counter in scan["per_file_target_counts"].items()},
+        "distributions": scan["distributions"],
+        "d3_diag": serialized_diag,
+    }
+    with path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False)
+
+
+def load_route_agg(path: Path) -> dict[str, Any]:
+    payload = read_json(path)
+    if payload.get("cache_schema") != ROUTE_AGG_CACHE_SCHEMA:
+        raise ValueError(f"stale aggregation cache {path.name}: delete route_agg_cache and rescan")
+    return {
+        "route": payload["route"],
+        "meta": payload["meta"],
+        "hanchan_agg": [
+            {
+                "hanchan": int(entry["hanchan"]),
+                "rows": int(entry["rows"]),
+                "strata": _json_to_counter(entry["strata"], tuple_keys=True),
+                "actions": _json_to_counter(entry["actions"], tuple_keys=False),
+                "shanten": _json_to_counter(entry["shanten"], tuple_keys=False),
+            }
+            for entry in payload["hanchan_agg"]
+        ],
+        "per_file_counters": {int(index): Counter(counter) for index, counter in payload["per_file_counters"].items()},
+        "per_file_target_counts": {int(index): Counter(counter) for index, counter in payload["per_file_target_counts"].items()},
+        "distributions": payload["distributions"],
+        "state_hashes": b"",
+        "decision_hashes": b"",
+        "d3_diag": _load_diag(payload["d3_diag"]),
+    }
 
 
 if __name__ == "__main__":
