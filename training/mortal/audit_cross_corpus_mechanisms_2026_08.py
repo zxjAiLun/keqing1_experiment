@@ -1208,6 +1208,14 @@ def main(argv: list[str] | None = None) -> None:
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     checks: dict[str, bool] = {}
+    git_status = subprocess.check_output(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        text=True,
+        cwd=REPO,
+    ).strip().splitlines()
+    git_worktree_clean = not any(line.strip() for line in git_status)
+    cuda_available = bool(torch.cuda.is_available())
+    cuda_device_name = torch.cuda.get_device_name(0) if cuda_available else None
     report: dict[str, Any] = {
         "schema": "keqing.mortal.cross_corpus_mechanism_audit.v2",
         "verdict": {
@@ -1219,10 +1227,38 @@ def main(argv: list[str] | None = None) -> None:
             "generation_performed": False,
         },
         "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=REPO).strip(),
+        "git_worktree_clean": git_worktree_clean,
+        "git_worktree_status": git_status,
+        "python_executable": str(Path(sys.executable).resolve()),
+        "python_version": sys.version,
+        "torch_version": torch.__version__,
+        "torch_file": str(Path(torch.__file__).resolve()),
+        "torch_cuda_version": torch.version.cuda,
+        "torch_cuda_available": cuda_available,
         "device": str(device),
+        "cuda_device_index": 0 if cuda_available and device.type == "cuda" else None,
+        "cuda_device_name": cuda_device_name if cuda_available and device.type == "cuda" else None,
         "routes_requested": list(route_names),
+        "source_files": {
+            "audit": {
+                "path": str(Path(__file__).resolve()),
+                "sha256": sha256(Path(__file__).resolve()),
+            },
+            "preview": {
+                "path": str(PREVIEW_SCRIPT.resolve()),
+                "sha256": sha256(PREVIEW_SCRIPT),
+            },
+            "setup_dev": {
+                "path": str((REPO / "scripts/setup-dev.sh").resolve()),
+                "sha256": sha256(REPO / "scripts/setup-dev.sh"),
+            },
+        },
         "checks": checks,
     }
+    cache_manifest_path = output_dir / "route_cache_manifest.json"
+    cache_manifest = read_json(cache_manifest_path) if cache_manifest_path.is_file() else None
+    if cache_manifest is not None and cache_manifest.get("schema") != "keqing.mortal.route_cache_manifest.v1":
+        raise ValueError(f"unsupported route cache manifest schema in {cache_manifest_path}")
 
     # gate A
     m0_index = load_index(D1_PREP / "file_index_m0.pth")
@@ -1343,7 +1379,37 @@ def main(argv: list[str] | None = None) -> None:
             flush=True,
         )
         dump_route_agg(route_scan[name], cache_path)
-    report["route_timings_seconds"] = {name: route_timings.get(name) for name in route_names}
+    report["route_cache"] = {}
+    for name in route_names:
+        cache_path = cache_dir / f"{name}.json"
+        if not cache_path.is_file():
+            raise ValueError(f"missing route agg cache: {cache_path}")
+        actual_cache_sha = sha256(cache_path)
+        entry: dict[str, Any] = {
+            "sha256": actual_cache_sha,
+            "device": str(device),
+            "rows": int(route_scan[name]["meta"]["total_rows"]),
+        }
+        if cache_manifest is not None:
+            manifest_route = cache_manifest.get("routes", {}).get(name)
+            if not isinstance(manifest_route, dict):
+                raise ValueError(f"route cache manifest is missing route {name}")
+            if manifest_route.get("sha256") != actual_cache_sha:
+                raise ValueError(
+                    f"route cache manifest SHA mismatch for {name}: "
+                    f"manifest={manifest_route.get('sha256')} actual={actual_cache_sha}"
+                )
+            entry["route_elapsed_seconds"] = manifest_route.get("route_elapsed_seconds")
+            entry["cache_sha256_matches_manifest"] = True
+            entry["cache_generated_under_commit"] = cache_manifest.get("source_commit")
+        report["route_cache"][name] = entry
+    report["route_cache_manifest"] = cache_manifest
+    if cache_manifest is not None and set(cache_manifest.get("routes", {})) >= set(FULL_ROUTE_NAMES):
+        report["route_timings_seconds"] = {
+            name: cache_manifest["routes"][name].get("route_elapsed_seconds") for name in FULL_ROUTE_NAMES
+        }
+    else:
+        report["route_timings_seconds"] = {name: route_timings.get(name) for name in route_names}
     report["corpus_rows_summary"] = {name: route_scan[name]["meta"] for name in route_names}
 
     if route_names != FULL_ROUTE_NAMES:
@@ -1482,7 +1548,7 @@ def main(argv: list[str] | None = None) -> None:
         gates_ok=gates_ok,
     )
     report["verdict"]["readout"] = readout
-    report["verdict"]["authoritative"] = gates_ok and readout != VERDICT_NO_GATES
+    report["verdict"]["authoritative"] = gates_ok and readout != VERDICT_NO_GATES and git_worktree_clean
     report["mechanism_bootstrap"] = families
     report["coverage_support"] = {"votes": coverage_votes, "families": len(families), "m0_exclusive_mass": m0_exclusive}
     report["credit_assignment_diagnostics"] = {
