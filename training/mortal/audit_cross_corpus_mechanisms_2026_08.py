@@ -42,7 +42,9 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import random
+import re
 import subprocess
 import sys
 import time
@@ -78,17 +80,29 @@ from training.mortal.d3_production_audit_core import (
 TRAIN_PTS = np.asarray([6.0, 4.0, 2.0, 0.0], dtype=np.float64)
 SEEDS = (20260806, 20260807, 20260808)
 CONSUMED_SAMPLES = 2000 * 512
-DEFAULT_OUTPUT_DIR = Path(
-    r"E:\AUbuntuProject\keqing-data\mortal\authoritative\D3_top2_discard_v1_2026_08"
-    r"\diagnostics\cross_corpus_mechanism_audit"
+FULL_ROUTE_NAMES = ("M0", "D1", "D2", "D3")
+
+# Repository layout is stable on both OSes:
+#   <project>/keqing1_experiment  (this repo)
+#   <project>/keqing1             (training mainline)
+#   <project>/../keqing-data       (shared authoritative data)
+PROJECT_ROOT = REPO.parent
+DATA_ROOT = PROJECT_ROOT.parent / "keqing-data"
+KEQING1_REPO = PROJECT_ROOT / "keqing1"
+DEFAULT_OUTPUT_DIR = (
+    DATA_ROOT
+    / "mortal/authoritative/D3_top2_discard_v1_2026_08"
+    / "diagnostics/cross_corpus_mechanism_audit"
 )
-D1_PREP = Path(
-    r"E:\AUbuntuProject\project\keqing1\artifacts\experiments\model_pool_2026_07"
-    r"\D1_project_owned_population_2026_07\training_prep_2026_07"
+D1_PREP = (
+    KEQING1_REPO
+    / "artifacts/experiments/model_pool_2026_07"
+    / "D1_project_owned_population_2026_07/training_prep_2026_07"
 )
-D2_PREP = Path(
-    r"E:\AUbuntuProject\project\keqing1\artifacts\experiments\model_pool_2026_07"
-    r"\D2_project_owned_descendant_view_mix_2026_08\training_prep_2026_08"
+D2_PREP = (
+    KEQING1_REPO
+    / "artifacts/experiments/model_pool_2026_07"
+    / "D2_project_owned_descendant_view_mix_2026_08/training_prep_2026_08"
 )
 D2_DATASET = D2_PREP.parent / "dataset"
 D3_RECIPE = (
@@ -98,15 +112,35 @@ D3_RECIPE = (
 )
 D3_INDEX = D3_RECIPE.parent / "training_contract_2026_08/file_index_d3_k0.pth"
 D3_INDEX_SHA = "174122d9ff12365bc37331364ea2372c7a80bf382de039a3298da2fa5a8201f4"
-K0_MODEL = Path(
-    r"E:\AUbuntuProject\keqing-data\mortal\authoritative\D3_top2_discard_v1_2026_08"
-    r"\models\K0_70k\mortal_default_70k_promoted_candidate.pth"
+K0_MODEL = (
+    DATA_ROOT
+    / "mortal/authoritative/D3_top2_discard_v1_2026_08"
+    / "models/K0_70k/mortal_default_70k_promoted_candidate.pth"
 )
 D3_EXP_ROOT = (
     REPO
     / "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08"
 )
 PREVIEW_SCRIPT = REPO / "training/mortal/preview_dataloader_batches_2026_07.py"
+
+
+def native_path(raw: str | Path) -> Path:
+    """Resolve frozen Windows paths from repo artifacts on the current OS.
+
+    D1/D2/D3 indexes were frozen on Windows and store absolute paths such as
+    ``E:\\AUbuntuProject\\...``.  On Windows those are valid as-is; on POSIX
+    they are remapped to the mounted AUbuntuProject root that contains this
+    repo, so the audit can run without modifying the frozen index files.
+    """
+    text = str(raw)
+    if os.name != "nt" and re.match(r"^[A-Za-z]:[\\/]", text):
+        parts = text.replace("\\", "/").split("/")
+        repo_parts = REPO.parts
+        if "AUbuntuProject" in parts and "AUbuntuProject" in repo_parts:
+            root_idx = repo_parts.index("AUbuntuProject")
+            path_idx = parts.index("AUbuntuProject")
+            return Path(*repo_parts[: root_idx + 1], *parts[path_idx + 1 :]).resolve()
+    return Path(text).resolve()
 
 
 def sha256(path: Path) -> str:
@@ -127,7 +161,11 @@ def load_index(path: Path) -> list[Path]:
     values = payload.get("file_list") if isinstance(payload, dict) else payload
     if not isinstance(values, list) or len(values) != 6000:
         raise ValueError(f"expected 6000 indexed files in {path}")
-    return [Path(str(value)) for value in values]
+    files = [native_path(value) for value in values]
+    for file_path in files:
+        if not file_path.is_file():
+            raise ValueError(f"indexed file does not exist on this OS: {file_path}")
+    return files
 
 
 def _as_hash_set(hashes: Any) -> set[bytes]:
@@ -341,6 +379,7 @@ def scan_route(
     brain,
     dqn,
     q_batch_size: int,
+    device: torch.device,
     d3_events_by_key: dict[tuple[int, int], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     from libriichi.dataset import GameplayLoader
@@ -386,7 +425,7 @@ def scan_route(
         nonlocal greedy_agreement
         if not q_pending:
             return
-        q = model_q(brain, dqn, [item[0] for item in q_pending], torch.device("cuda"))
+        q = model_q(brain, dqn, [item[0] for item in q_pending], device)
         for index, (_, row) in enumerate(q_pending):
             q_row = np.asarray(q[index], dtype=np.float64)
             mask = row["mask"]
@@ -644,6 +683,7 @@ def scan_route_fast(
     brain,
     dqn,
     q_batch_size: int,
+    device: torch.device,
     max_files: int | None = None,
     d3_events_by_key: dict[tuple[int, int], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
@@ -693,8 +733,8 @@ def scan_route_fast(
         nonlocal greedy_agreement
         if not pending_obs:
             return
-        obs_tensor = torch.as_tensor(np.ascontiguousarray(np.stack(pending_obs)), device=torch.device("cuda"))
-        mask_tensor = torch.as_tensor(np.ascontiguousarray(np.stack(pending_masks)), device=torch.device("cuda"))
+        obs_tensor = torch.as_tensor(np.ascontiguousarray(np.stack(pending_obs)), device=device)
+        mask_tensor = torch.as_tensor(np.ascontiguousarray(np.stack(pending_masks)), device=device)
         with torch.inference_mode():
             q = dqn(brain(obs_tensor), mask_tensor)
         q_np = q.float().cpu().numpy()
@@ -1138,6 +1178,13 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--k0-model", type=Path, default=K0_MODEL)
+    parser.add_argument("--device", type=str, default="cuda", help="torch device for the K0 Q readout")
+    parser.add_argument(
+        "--routes",
+        type=str,
+        default=",".join(FULL_ROUTE_NAMES),
+        help="comma-separated route subset to scan; the default runs the complete audit",
+    )
     parser.add_argument("--q-batch-size", type=int, default=512)
     parser.add_argument("--bootstrap-reps", type=int, default=500)
     parser.add_argument("--bootstrap-seed", type=int, default=20260809)
@@ -1145,6 +1192,19 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--max-files", type=int, default=None, help="cap files per route (benchmarking)")
     parser.add_argument("--equivalence", type=int, default=None, help="run reference vs fast on N files per route and exit")
     args = parser.parse_args(argv)
+    route_names = tuple(dict.fromkeys(name.strip() for name in args.routes.split(",") if name.strip()))
+    if not route_names:
+        raise ValueError("--routes must contain at least one route name")
+    unknown_routes = sorted(set(route_names) - set(FULL_ROUTE_NAMES))
+    if unknown_routes:
+        raise ValueError(f"unknown routes: {unknown_routes}; expected {FULL_ROUTE_NAMES}")
+    device = torch.device(args.device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(
+            "CUDA was requested but torch.cuda.is_available() is False. "
+            "Fix the NVIDIA driver/kernel-module state (usually reboot after a driver update) "
+            "or use --device cpu explicitly."
+        )
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     checks: dict[str, bool] = {}
@@ -1159,6 +1219,8 @@ def main(argv: list[str] | None = None) -> None:
             "generation_performed": False,
         },
         "git_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=REPO).strip(),
+        "device": str(device),
+        "routes_requested": list(route_names),
         "checks": checks,
     }
 
@@ -1170,7 +1232,7 @@ def main(argv: list[str] | None = None) -> None:
     if sha256(D3_INDEX) != D3_INDEX_SHA:
         raise ValueError("D3 frozen file index SHA mismatch")
     mapping = json.loads((D2_DATASET / "player_names_by_file.json").read_text(encoding="utf-8"))
-    mapping_normalized = {str(Path(str(k)).resolve()): str(v) for k, v in mapping.items()}
+    mapping_normalized = {str(native_path(k)): str(v) for k, v in mapping.items()}
     d2_paths = {str(path.resolve()) for path in d2_index}
     d1_paths = {str(path.resolve()) for path in d1_index}
     d2_labels = Counter(mapping_normalized.values())
@@ -1196,21 +1258,21 @@ def main(argv: list[str] | None = None) -> None:
     state = load_checkpoint(args.k0_model.resolve())
     version = int(state["config"]["control"].get("version", 4))
     del state
-    brain, dqn, _ = load_model(load_checkpoint(args.k0_model.resolve()), torch.device("cuda"))
+    brain, dqn, _ = load_model(load_checkpoint(args.k0_model.resolve()), device)
 
     if args.equivalence:
         d3_keys = None
         result = {"comparisons": {}}
-        for name in ("M0", "D1", "D2", "D3"):
+        for name in route_names:
             ref_files = routes[name]["index"][: args.equivalence]
             ref = scan_route(
                 name, ref_files, routes[name]["labels"], routes[name]["by_file"],
-                version, brain, dqn, args.q_batch_size,
+                version, brain, dqn, args.q_batch_size, device,
                 d3_events_by_key=d3_keys if name == "D3" else None,
             )
             fast = scan_route_fast(
                 name, routes[name]["index"], routes[name]["labels"], routes[name]["by_file"],
-                version, brain, dqn, args.q_batch_size, max_files=args.equivalence,
+                version, brain, dqn, args.q_batch_size, device, max_files=args.equivalence,
                 d3_events_by_key=d3_keys if name == "D3" else None,
             )
             rm = ref["meta"]
@@ -1252,10 +1314,11 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     route_scan: dict[str, dict[str, Any]] = {}
+    route_timings: dict[str, float] = {}
     t0 = time.time()
     report["provenance"]["agg_source"] = {}
     cache_dir = output_dir / "route_agg_cache"
-    for name in ("M0", "D1", "D2", "D3"):
+    for name in route_names:
         cache_path = cache_dir / f"{name}.json"
         if cache_path.is_file():
             route_scan[name] = load_route_agg(cache_path)
@@ -1265,15 +1328,48 @@ def main(argv: list[str] | None = None) -> None:
         d3_events = None
         if name == "D3":
             d3_events = load_d3_events_by_key()
+        route_t0 = time.time()
         route_scan[name] = scan_route_fast(
             name, routes[name]["index"], routes[name]["labels"], routes[name]["by_file"],
-            version, brain, dqn, args.q_batch_size, max_files=args.max_files,
+            version, brain, dqn, args.q_batch_size, device, max_files=args.max_files,
             d3_events_by_key=d3_events,
         )
+        route_elapsed = time.time() - route_t0
+        route_timings[name] = route_elapsed
         report["provenance"]["agg_source"][name] = "live"
-        print(f"[audit] {name} rows={route_scan[name]['meta']['total_rows']} elapsed={time.time() - t0:.1f}s", flush=True)
+        print(
+            f"[audit] {name} rows={route_scan[name]['meta']['total_rows']} "
+            f"route_elapsed={route_elapsed:.1f}s elapsed_total={time.time() - t0:.1f}s",
+            flush=True,
+        )
         dump_route_agg(route_scan[name], cache_path)
-    report["corpus_rows_summary"] = {name: route_scan[name]["meta"] for name in ("M0", "D1", "D2", "D3")}
+    report["route_timings_seconds"] = {name: route_timings.get(name) for name in route_names}
+    report["corpus_rows_summary"] = {name: route_scan[name]["meta"] for name in route_names}
+
+    if route_names != FULL_ROUTE_NAMES:
+        partial = {
+            "schema": "keqing.mortal.cross_corpus_route_scan_partial.v2",
+            "git_commit": report["git_commit"],
+            "device": str(device),
+            "routes_scanned": list(route_names),
+            "corpus_rows_summary": report["corpus_rows_summary"],
+            "note": "route scan only; gates D/E/F and the verdict are not computed for a route subset",
+        }
+        (output_dir / "route_scan_partial.json").write_text(json.dumps(partial, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+        print(
+            json.dumps(
+                {
+                    "partial_route_scan": list(route_names),
+                    "corpus_rows_summary": partial["corpus_rows_summary"],
+                    "output": str(output_dir / "route_scan_partial.json"),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            flush=True,
+        )
+        return
+
     (output_dir / "corpus_rows_summary.json").write_text(json.dumps(report["corpus_rows_summary"], ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     # gate D

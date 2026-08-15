@@ -6,16 +6,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
-from pathlib import Path
 import random
+import re
 import sys
 import tomllib
+from pathlib import Path
 from typing import Any
 
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MORTAL_PYTHON = REPO_ROOT / "third_party" / "Mortal" / "mortal"
@@ -23,6 +22,19 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 if str(MORTAL_PYTHON) not in sys.path:
     sys.path.insert(0, str(MORTAL_PYTHON))
+
+
+def native_path(raw: str | Path) -> Path:
+    """Remap frozen Windows paths (``E:\\AUbuntuProject\\...``) on POSIX."""
+    text = str(raw)
+    if os.name != "nt" and re.match(r"^[A-Za-z]:[\\/]", text):
+        parts = text.replace("\\", "/").split("/")
+        repo_parts = REPO_ROOT.parts
+        if "AUbuntuProject" in parts and "AUbuntuProject" in repo_parts:
+            root_idx = repo_parts.index("AUbuntuProject")
+            path_idx = parts.index("AUbuntuProject")
+            return Path(*repo_parts[: root_idx + 1], *parts[path_idx + 1 :]).resolve()
+    return Path(text).resolve()
 
 
 def hash_tensor(digest: Any, tensor: torch.Tensor) -> None:
@@ -44,7 +56,7 @@ def load_labels(config: dict[str, Any]) -> list[str]:
     for path in config["dataset"]["player_names_files"]:
         values.update(
             line.strip()
-            for line in Path(str(path)).read_text(encoding="utf-8").splitlines()
+            for line in native_path(path).read_text(encoding="utf-8").splitlines()
             if line.strip() and not line.startswith("#")
         )
     return sorted(values)
@@ -54,10 +66,10 @@ def load_player_names_by_file(config: dict[str, Any]) -> dict[str, str] | None:
     path = config["dataset"].get("player_names_by_file")
     if not path:
         return None
-    payload = __import__("json").loads(Path(str(path)).read_text(encoding="utf-8"))
+    payload = __import__("json").loads(native_path(path).read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
-        raise ValueError(f"player_names_by_file must be a JSON object: {path}")
-    return {str(Path(str(key)).resolve()): str(value) for key, value in payload.items()}
+        raise TypeError(f"player_names_by_file must be a JSON object: {path}")
+    return {str(native_path(key)): str(value) for key, value in payload.items()}
 
 
 def main() -> None:
@@ -75,11 +87,12 @@ def main() -> None:
     config = tomllib.loads(config_path.read_text(encoding="utf-8"))
     random.seed(args.data_seed)
     torch.manual_seed(args.data_seed)
-    from training.mortal.mainline_dataloader import FileDatasetsIter  # noqa: PLC0415
+    from training.mortal.mainline_dataloader import FileDatasetsIter
 
-    index_path = Path(str(config["dataset"]["file_index"])).resolve()
+    index_path = native_path(config["dataset"]["file_index"])
     index_payload = torch.load(index_path, weights_only=False, map_location="cpu")
-    file_list = list(index_payload["file_list"] if isinstance(index_payload, dict) else index_payload)
+    raw_file_list = index_payload["file_list"] if isinstance(index_payload, dict) else index_payload
+    file_list = [str(native_path(value)) for value in raw_file_list]
     if len(file_list) != 6000:
         raise ValueError(f"expected 6000 indexed files, got {len(file_list)}")
     dataset = FileDatasetsIter(
