@@ -134,7 +134,7 @@ def formal_preflight(device: torch.device, out_root: Path) -> dict[str, Any]:
         checks[f"route_cache_{route_name.lower()}"] = cache_path.is_file() and sha256(cache_path) == expected
     worktree = git_worktree_metadata()
     checks["git_worktree_clean"] = bool(worktree["git_worktree_clean"])
-    checks["device_is_cuda0"] = bool(device.type == "cuda" and getattr(device, "index", 0) == 0)
+    checks["device_is_cuda0"] = bool(device.type == "cuda" and getattr(device, "index", 0) in (None, 0))
     checks["torch_cuda_available"] = bool(torch.cuda.is_available())
     checks["output_dir_absent_or_empty"] = not out_root.exists() or not any(out_root.iterdir())
     gate_a = {
@@ -1102,7 +1102,7 @@ def run_formal_audit(device: torch.device, out_root: Path) -> None:
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint-smoke", action="store_true")
-    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--output-root", type=Path, default=OUTPUT_ROOT)
     args = parser.parse_args(argv)
     device = torch.device(args.device)
