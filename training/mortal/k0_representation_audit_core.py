@@ -417,6 +417,39 @@ def knn_row_stats_and_indicators(
     }
 
 
+def query_to_reference_density_stats(
+    query_z: np.ndarray,
+    reference_z: np.ndarray,
+    query_hanchan: np.ndarray,
+    reference_hanchan: np.ndarray,
+    k: int = KNN_K,
+) -> dict[str, np.ndarray]:
+    """One-way descriptive density stats used by D3 and exposure groups.
+
+    This intentionally does NOT compute query-self or reference->query
+    geometry; those are not needed for the prereg readout and would make the
+    82k-row D3 descriptive categories unnecessarily quadratic.
+    """
+    query_to_reference_mean = _knn_mean_distances_blockwise(
+        query_z, reference_z, query_hanchan, reference_hanchan, k
+    )
+    reference_self_mean = _knn_mean_distances_blockwise(
+        reference_z, reference_z, reference_hanchan, reference_hanchan, k
+    )
+    sorted_reference = np.sort(reference_self_mean)
+    left = np.searchsorted(sorted_reference, query_to_reference_mean, side="left")
+    right = np.searchsorted(sorted_reference, query_to_reference_mean, side="right")
+    density_percentile = (left.astype(np.float64) + right.astype(np.float64)) / (2.0 * sorted_reference.size)
+    threshold = percentile(reference_self_mean, 0.95)
+    return {
+        "query_to_reference_mean": query_to_reference_mean,
+        "reference_self_mean": reference_self_mean,
+        "density_percentile": density_percentile,
+        "q95_reference_self": np.asarray([threshold], dtype=np.float64),
+        "low_density": (query_to_reference_mean > threshold).astype(np.int8),
+    }
+
+
 def bootstrap_hanchan_draws(
     n_hanchans: int,
     reps: int = BOOTSTRAP_REPS,

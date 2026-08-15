@@ -12,6 +12,8 @@ from training.mortal.audit_k0_representation_space_2026_08 import (
     PREREG_COMMIT,
     PREREG_FILE,
     PREREG_FILE_SHA256,
+    _authoritative_verdict,
+    _downstream_relations,
     _exposure_proxy_probabilities,
     _metric_bootstrap_deltas,
     _reservoir_row_indices,
@@ -35,6 +37,7 @@ from training.mortal.k0_representation_audit_core import (
     make_rff_features,
     make_sw_directions,
     permutation_draws,
+    query_to_reference_density_stats,
     rff_mmd2_weighted,
     sample_cross_hanchan_pairs,
     sha256_array,
@@ -289,6 +292,20 @@ def test_perspective_label_roundtrip_metadata(tmp_path) -> None:
     assert loaded["rows"] == 2
     assert loaded["perspective_labels"] == ["V2_74000", "V3_74000"]
     assert loaded["canonical_hanchan_hashes"] == ["hash-a", "hash-b"]
+    np.save(route_dir / "canonical_z.npy", z)
+    np.savez(
+        route_dir / "canonical_metadata.npz",
+        file_index=np.asarray([0, 1], dtype=np.int64),
+        row_index=np.asarray([0, 1], dtype=np.int64),
+        hanchan_index=np.asarray([0, 1], dtype=np.int32),
+        target=np.asarray([-1.0, 1.0]),
+        phi_l2_norm=np.asarray([1.0, 1.0]),
+    )
+    (route_dir / "canonical_perspective_labels.json").write_text(json.dumps(["K0_70k", "K0_70k"]), encoding="utf-8")
+    (route_dir / "canonical_canonical_hanchan_hashes.json").write_text(json.dumps(["hash-a", "hash-b"]), encoding="utf-8")
+    np.save(route_dir / "canonical_category.npy", np.asarray(["ordinary", "explored"]), allow_pickle=False)
+    canonical = runner._load_extra_route_rows(tmp_path, "D2", "canonical")
+    assert canonical["event_category"].tolist() == ["ordinary", "explored"]
 
 
 def test_optimized_sw_rff_matches_naive_on_small_fixture() -> None:
@@ -367,6 +384,60 @@ def test_frozen_input_gate_a_covers_all_prereg_artifacts() -> None:
     }
     assert set(FROZEN_INPUT_SHA256) == expected_keys
     assert all(len(value) == 2 for value in FROZEN_INPUT_SHA256.values())
+
+
+def test_downstream_relations_preserve_shared_rows_per_explored_source() -> None:
+    relations = _downstream_relations({0: "explored", 1: "explored"}, n_rows=12)
+    assert len(relations) == 16
+    # row 2 is downstream of both explored rows and must appear twice.
+    shared = [relation for relation in relations if relation[1] == 2]
+    assert len(shared) == 2
+    assert shared[0][2] == 2
+    assert shared[1][2] == 1
+
+
+def test_authoritative_verdict_gate_rules() -> None:
+    assert _authoritative_verdict("inconclusive", True) == {
+        "readout": "inconclusive",
+        "authoritative": True,
+    }
+    assert _authoritative_verdict("latent_coverage_signal", False) == {
+        "readout": "no_verdict_gates_failed",
+        "authoritative": False,
+    }
+
+
+def test_one_way_density_stats_match_general_helper_direction() -> None:
+    z_query = _normalized(81, n_rows=12)
+    z_reference = _normalized(82, n_rows=12)
+    query_hanchan = np.repeat(np.arange(4), 3)
+    reference_hanchan = np.repeat(np.arange(4), 3)
+    general = knn_row_stats_and_indicators(z_query, z_reference, query_hanchan, reference_hanchan, k=3)
+    one_way = query_to_reference_density_stats(z_query, z_reference, query_hanchan, reference_hanchan, k=3)
+    assert np.array_equal(one_way["query_to_reference_mean"], general["a_to_b_mean"])
+    assert np.array_equal(one_way["low_density"], general["a_missing_in_b"])
+    assert np.all((one_way["density_percentile"] >= 0) & (one_way["density_percentile"] <= 1))
+    assert 0.0 <= float(one_way["low_density"].mean()) <= 1.0
+
+
+def test_actual_riichi_extension_provenance_matches_prereg() -> None:
+    import riichi
+
+    from training.mortal.k0_representation_audit_core import sha256_file
+
+    path = Path(riichi.__file__).resolve()
+    assert FROZEN_INPUT_SHA256["riichi_extension"][0] == path
+    assert sha256_file(path) == FROZEN_INPUT_SHA256["riichi_extension"][1]
+
+
+def test_proxy_sample_indices_have_deterministic_sha() -> None:
+    from training.mortal.k0_representation_audit_core import sha256_array
+
+    file_index_by_row = np.repeat(np.arange(10), 3)
+    consumed = np.arange(1, 11, dtype=np.float64)
+    sample = _weighted_proxy_sample(file_index_by_row, consumed, n_samples=18000, seed=20260821, route_index=0)
+    assert sample.shape == (18000,)
+    assert sha256_array(sample) == "aaf7c3cf60946303f004d03cfa8b77ecfea47e839798174adb457a114d6a51ab"
 
 
 def test_checkpoint_smoke_phi_shape() -> None:

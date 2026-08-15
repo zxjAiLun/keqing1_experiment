@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import site
 import subprocess
 import sys
 import time
@@ -24,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import riichi
 import torch
 
 REPO = Path(__file__).resolve().parents[2]
@@ -82,6 +82,7 @@ from training.mortal.k0_representation_audit_core import (
     percentile,
     permutation_draws,
     permuted_hanchan_targets,
+    query_to_reference_density_stats,
     rff_mmd2_weighted,
     sha256_array,
     sliced_wasserstein_weighted,
@@ -114,7 +115,7 @@ FROZEN_INPUT_SHA256 = {
     "v2_report": (CROSS_CORPUS_OUTPUT / "cross_corpus_mechanism_audit.json", "57f03bbe5653fc3168341df790e0c3dc7ec87860efcd4803f0ba233476a383e0"),
     "v2_route_cache_manifest": (CROSS_CORPUS_OUTPUT / "route_cache_manifest.json", "cd79b0a6c4cb19e48501a7ecaf762c54b80263aa6db1f0be12999f593a98fa44"),
     "v2_training_exposure": (CROSS_CORPUS_OUTPUT / "training_exposure.json", "430cc9eef8fcf495619c115736a04abd6a1f003c764eb7e06368a22305f540e9"),
-    "riichi_extension": (Path(site.getsitepackages()[0]) / "riichi.so", "da687ececbae8c803c99fe58fb8f66d0e4b9e762eb2bb7257a2115c57e5dd82b"),
+    "riichi_extension": (Path(riichi.__file__).resolve(), "da687ececbae8c803c99fe58fb8f66d0e4b9e762eb2bb7257a2115c57e5dd82b"),
 }
 ROUTE_CACHE_EXPECTED_SHA256 = {
     "M0": "61353d4d2910944bd9b7d02c8ded084268a09d152f98c60f0b20dfd29d869cbb",
@@ -134,7 +135,7 @@ def formal_preflight(device: torch.device, out_root: Path) -> dict[str, Any]:
         checks[f"route_cache_{route_name.lower()}"] = cache_path.is_file() and sha256(cache_path) == expected
     worktree = git_worktree_metadata()
     checks["git_worktree_clean"] = bool(worktree["git_worktree_clean"])
-    checks["device_is_cuda0"] = bool(device.type == "cuda" and getattr(device, "index", 0) in (None, 0))
+    checks["device_is_cuda0"] = bool(device.type == "cuda" and getattr(device, "index", -1) == 0)
     checks["torch_cuda_available"] = bool(torch.cuda.is_available())
     checks["output_dir_absent_or_empty"] = not out_root.exists() or not any(out_root.iterdir())
     gate_a = {
@@ -321,6 +322,29 @@ def _d3_event_category_by_loader_row(
     return result
 
 
+def _downstream_relations(
+    event_category_by_row: dict[int, str],
+    n_rows: int,
+) -> list[tuple[int, int, int]]:
+    """Per-explored-row downstream relations, without deduplicating shared rows."""
+    relations: list[tuple[int, int, int]] = []
+    for source_row_index in sorted(event_category_by_row):
+        if event_category_by_row[source_row_index] == "explored":
+            for offset, downstream_index in enumerate(
+                range(source_row_index + 1, min(source_row_index + 9, n_rows)),
+                start=1,
+            ):
+                relations.append((int(source_row_index), int(downstream_index), int(offset)))
+    return relations
+
+
+def _authoritative_verdict(readout: str, preflight_all_pass: bool) -> dict[str, Any]:
+    return {
+        "readout": readout if preflight_all_pass else "no_verdict_gates_failed",
+        "authoritative": bool(preflight_all_pass and readout != "no_verdict_gates_failed"),
+    }
+
+
 def _reservoir_row_indices(n_rows: int) -> np.ndarray:
     if n_rows < 3:
         raise ValueError(f"canonical hanchan has fewer than 3 rows: {n_rows}")
@@ -464,12 +488,9 @@ def extract_route_representation(
                 selected_indices = _reservoir_row_indices(n_rows)
                 selected_set = {int(value) for value in selected_indices}
                 event_set = set(event_category_by_row)
-                downstream_set: set[int] = set()
-                for row_index in sorted(event_category_by_row):
-                    if event_category_by_row[row_index] == "explored":
-                        for downstream_index in range(row_index + 1, min(row_index + 9, n_rows)):
-                            downstream_set.add(downstream_index)
-                union_indices = sorted(selected_set | event_set | downstream_set)
+                downstream_relations = _downstream_relations(event_category_by_row, n_rows)
+                downstream_needed = {downstream_index for _, downstream_index, _ in downstream_relations}
+                union_indices = sorted(selected_set | event_set | downstream_needed)
                 obs_rows = [np.ascontiguousarray(np.asarray(obs[i], dtype=np.float32)) for i in range(n_rows)]
                 all_phi = np.empty((n_rows, PHI_DIM), dtype=np.float64)
                 batch_size = 512
@@ -505,16 +526,29 @@ def extract_route_representation(
                         "phi_l2_norm": float(phi_norms[row_index]),
                         "z": projected[row_index].astype(np.float32),
                     }
+                    if route_name == "D3":
+                        row["event_category"] = event_category_by_row.get(row_index, "ordinary")
                     if row_index in selected_set:
-                        canonical_rows.append(row)
+                        canonical_rows.append(dict(row))
                     if row_index in event_set:
-                        row = dict(row)
-                        row["event_category"] = event_category_by_row[row_index]
-                        event_rows.append(row)
-                    if row_index in downstream_set:
-                        row = dict(row)
-                        row["downstream_of_explored"] = True
-                        downstream_rows.append(row)
+                        event_rows.append(dict(row))
+                for source_explored_row_index, downstream_index, offset in downstream_relations:
+                    row = {
+                        "route": route_name,
+                        "file_index": int(file_index),
+                        "row_index": int(downstream_index),
+                        "hanchan_index": int(hanchan_index),
+                        "canonical_hanchan_hash": canonical_hanchan_hash,
+                        "perspective_label": label,
+                        "target": target,
+                        "phi_l2_norm": float(phi_norms[downstream_index]),
+                        "z": projected[downstream_index].astype(np.float32),
+                        "source_explored_row_index": source_explored_row_index,
+                        "downstream_offset": offset,
+                    }
+                    if route_name == "D3":
+                        row["event_category"] = "ordinary"
+                    downstream_rows.append(row)
 
     if malformed or perspective_count != len(files) or len(hanchan_hashes) != len(files):
         raise ValueError(f"{route_name}: malformed={malformed[:5]} perspectives={perspective_count}/{len(files)}")
@@ -535,6 +569,11 @@ def extract_route_representation(
             "target": np.asarray([row["target"] for row in rows], dtype=np.float64),
             "phi_l2_norm": np.asarray([row["phi_l2_norm"] for row in rows], dtype=np.float64),
         }
+        if prefix == "downstream":
+            metadata["source_explored_row_index"] = np.asarray(
+                [row["source_explored_row_index"] for row in rows], dtype=np.int64
+            )
+            metadata["downstream_offset"] = np.asarray([row["downstream_offset"] for row in rows], dtype=np.int8)
         np.save(route_dir / f"{prefix}_z.npy", z_array, allow_pickle=False)
         np.savez(route_dir / f"{prefix}_metadata.npz", **metadata)
         labels_path = route_dir / f"{prefix}_perspective_labels.json"
@@ -547,7 +586,7 @@ def extract_route_representation(
             json.dumps([row["canonical_hanchan_hash"] for row in rows], ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-        if prefix == "event":
+        if "event_category" in rows[0]:
             np.save(
                 route_dir / f"{prefix}_category.npy",
                 np.asarray([row.get("event_category", "ordinary") for row in rows]),
@@ -680,6 +719,7 @@ def _metric_bootstrap_deltas(
                 raise ValueError(f"{name}: expected 3 canonical rows per hanchan, got {rows.size}")
             hanchan_sums[hanchan] = features[rows].sum(axis=0)
         rff_precomputed[name]["hanchan_sums"] = hanchan_sums
+        del rff_precomputed[name]["features"]
 
     def sw_fast(left: str, right: str, weights_left: np.ndarray, weights_right: np.ndarray) -> float:
         total = 0.0
@@ -707,6 +747,44 @@ def _metric_bootstrap_deltas(
         left_mean = (counts_left @ rff_precomputed[left]["hanchan_sums"]) / (3.0 * counts_left.sum())
         right_mean = (counts_right @ rff_precomputed[right]["hanchan_sums"]) / (3.0 * counts_right.sum())
         return float(np.sum((left_mean - right_mean) ** 2))
+
+    def pair_metric_value(
+        family: str,
+        left: str,
+        right: str,
+        weights: dict[str, np.ndarray],
+        counts: dict[str, np.ndarray],
+    ) -> float:
+        if family == "sliced_wasserstein":
+            return sw_fast(left, right, weights[left], weights[right])
+        if family == "rbf_mmd":
+            return mmd_fast(left, right, counts[left], counts[right])
+        stats = knn_stats[(left, right)]
+        if family == "cross_knn_distance":
+            return 0.5 * (
+                _weighted_mean(stats["a_to_b_mean"], weights[left])
+                + _weighted_mean(stats["b_to_a_mean"], weights[right])
+            )
+        return 0.5 * (
+            _weighted_mean(stats["a_missing_in_b"], weights[left])
+            + _weighted_mean(stats["b_missing_in_a"], weights[right])
+        )
+
+    full_weights = {name: np.ones(routes[name]["z"].shape[0], dtype=np.float64) for name in ROUTE_ORDER}
+    full_counts = {name: np.ones(n_hanchans, dtype=np.float64) for name in ROUTE_ORDER}
+    full_point: dict[str, dict[str, float]] = {}
+    for family in ("sliced_wasserstein", "rbf_mmd", "cross_knn_distance", "latent_missing_mass"):
+        full_point[family] = {
+            "d_m0_d1": pair_metric_value(family, "M0", "D1", full_weights, full_counts),
+            "d_m0_d3": pair_metric_value(family, "M0", "D3", full_weights, full_counts),
+            "d_d1_d2": pair_metric_value(family, "D1", "D2", full_weights, full_counts),
+        }
+    stats_m0_d1_full = knn_stats[("M0", "D1")]
+    stats_m0_d3_full = knn_stats[("M0", "D3")]
+    full_support = {
+        "D1": float(stats_m0_d1_full["a_missing_in_b"].mean() - stats_m0_d1_full["b_missing_in_a"].mean()),
+        "D3": float(stats_m0_d3_full["a_missing_in_b"].mean() - stats_m0_d3_full["b_missing_in_a"].mean()),
+    }
 
     families = {
         "sliced_wasserstein": {},
@@ -767,11 +845,7 @@ def _metric_bootstrap_deltas(
     coverage_family_votes = 0
     for family, values in families.items():
         family_results[family] = {
-            "point": {
-                "d_m0_d1": float(np.mean(values["d_m0_d1"])),
-                "d_m0_d3": float(np.mean(values["d_m0_d3"])),
-                "d_d1_d2": float(np.mean(values["d_d1_d2"])),
-            },
+            "point": full_point[family],
             "delta1_ci95": [percentile(np.asarray(values["delta1"]), 0.025), percentile(np.asarray(values["delta1"]), 0.975)],
             "delta3_ci95": [percentile(np.asarray(values["delta3"]), 0.025), percentile(np.asarray(values["delta3"]), 0.975)],
         }
@@ -779,11 +853,11 @@ def _metric_bootstrap_deltas(
             coverage_family_votes += 1
     support_results = {
         "D1": {
-            "point": float(np.mean(support_d1)),
+            "point": full_support["D1"],
             "ci95": [percentile(np.asarray(support_d1), 0.025), percentile(np.asarray(support_d1), 0.975)],
         },
         "D3": {
-            "point": float(np.mean(support_d3)),
+            "point": full_support["D3"],
             "ci95": [percentile(np.asarray(support_d3), 0.025), percentile(np.asarray(support_d3), 0.975)],
         },
     }
@@ -876,7 +950,7 @@ def _descriptive_d3_and_exposure(
         output: dict[str, Any] = {}
         for reference_name in ("D1", "M0"):
             reference = routes[reference_name]
-            stats = knn_row_stats_and_indicators(
+            stats = query_to_reference_density_stats(
                 query["z"],
                 reference["z"],
                 query_global_ids,
@@ -885,8 +959,11 @@ def _descriptive_d3_and_exposure(
             )
             output[reference_name] = {
                 "rows": int(query["z"].shape[0]),
-                "mean_cross_knn_distance": float(stats["a_to_b_mean"].mean()),
-                "missing_mass_in_reference": float(stats["a_missing_in_b"].mean()),
+                "mean_cross_knn_distance": float(stats["query_to_reference_mean"].mean()),
+                "missing_mass_in_reference": float(stats["low_density"].mean()),
+                "density_percentile_median": float(percentile(stats["density_percentile"], 0.50)),
+                "density_percentile_p90": float(percentile(stats["density_percentile"], 0.90)),
+                "low_density_fraction": float(stats["low_density"].mean()),
             }
         output["_row_kind"] = label
         return output
@@ -906,11 +983,14 @@ def _descriptive_d3_and_exposure(
     downstream_output = distance_summary(downstream_rows, downstream_global_ids, "explored_downstream")
 
     exposure = read_json(exposure_json_path)
+    proxy_index_dir = out_root / "proxy_indices"
+    proxy_index_dir.mkdir(parents=True, exist_ok=True)
     exposure_output: dict[str, Any] = {}
-    for route_name in ROUTE_ORDER:
-        route = routes[route_name]
-        exposure_output[route_name] = {}
-        for seed in SEEDS:
+    for seed in SEEDS:
+        proxies: dict[str, dict[str, np.ndarray]] = {}
+        seed_output: dict[str, Any] = {"proxy_indices": {}}
+        for route_name in ROUTE_ORDER:
+            route = routes[route_name]
             consumed = np.asarray(
                 exposure[route_name][str(seed)]["simulation"]["consumed_per_file"],
                 dtype=np.float64,
@@ -924,23 +1004,72 @@ def _descriptive_d3_and_exposure(
                 EXPOSURE_PROXY_SEED,
                 ROUTE_ORDER.index(route_name),
             )
-            proxy_z = route["z"][sample_indices]
-            proxy_hanchan = neighbor_hanchan[route_name][sample_indices]
-            sw = sliced_wasserstein_weighted(
-                route["z"], np.ones(route["z"].shape[0]), proxy_z, np.ones(proxy_z.shape[0]), directions
-            )
-            mmd = rff_mmd2_weighted(
-                route["z"], np.ones(route["z"].shape[0]), proxy_z, np.ones(proxy_z.shape[0]), omega, bias
-            )
-            knn = knn_row_stats_and_indicators(
-                route["z"], proxy_z, neighbor_hanchan[route_name], proxy_hanchan, KNN_K
-            )
-            exposure_output[route_name][str(seed)] = {
-                "sliced_wasserstein": sw,
-                "rff_mmd2": mmd,
-                "mean_cross_knn_distance": float(knn["a_to_b_mean"].mean()),
-                "canonical_missing_in_proxy": float(knn["a_missing_in_b"].mean()),
+            index_path = proxy_index_dir / f"{route_name}_{seed}.npy"
+            np.save(index_path, sample_indices, allow_pickle=False)
+            proxies[route_name] = {
+                "z": route["z"][sample_indices],
+                "hanchan": neighbor_hanchan[route_name][sample_indices],
             }
+            seed_output["proxy_indices"][route_name] = {
+                "path": str(index_path),
+                "n": EXPOSURE_PROXY_SIZE,
+                "sha256": sha256(index_path),
+            }
+
+        def matrix(
+            kind: str,
+            proxies: dict[str, dict[str, np.ndarray]] = proxies,
+        ) -> dict[str, dict[str, float]]:
+            output: dict[str, dict[str, float]] = {name: {} for name in ROUTE_ORDER}
+            for left in ROUTE_ORDER:
+                for right in ROUTE_ORDER:
+                    if kind == "sliced_wasserstein":
+                        value = sliced_wasserstein_weighted(
+                            proxies[left]["z"], np.ones(proxies[left]["z"].shape[0]),
+                            proxies[right]["z"], np.ones(proxies[right]["z"].shape[0]),
+                            directions,
+                        )
+                    elif kind == "rbf_mmd":
+                        value = rff_mmd2_weighted(
+                            proxies[left]["z"], np.ones(proxies[left]["z"].shape[0]),
+                            proxies[right]["z"], np.ones(proxies[right]["z"].shape[0]),
+                            omega, bias,
+                        )
+                    else:
+                        left_to_right = query_to_reference_density_stats(
+                            proxies[left]["z"], proxies[right]["z"],
+                            proxies[left]["hanchan"], proxies[right]["hanchan"], KNN_K,
+                        )
+                        right_to_left = query_to_reference_density_stats(
+                            proxies[right]["z"], proxies[left]["z"],
+                            proxies[right]["hanchan"], proxies[left]["hanchan"], KNN_K,
+                        )
+                        value = 0.5 * (
+                            float(left_to_right["query_to_reference_mean"].mean())
+                            + float(right_to_left["query_to_reference_mean"].mean())
+                        )
+                    output[left][right] = value
+            return output
+
+        seed_output["matrix_sliced_wasserstein"] = matrix("sliced_wasserstein")
+        seed_output["matrix_rbf_mmd"] = matrix("rbf_mmd")
+        seed_output["matrix_cross_knn"] = matrix("cross_knn")
+        seed_output["within_route_exposure_drift"] = {}
+        for route_name in ROUTE_ORDER:
+            route = routes[route_name]
+            seed_output["within_route_exposure_drift"][route_name] = {
+                "sliced_wasserstein": sliced_wasserstein_weighted(
+                    route["z"], np.ones(route["z"].shape[0]),
+                    proxies[route_name]["z"], np.ones(proxies[route_name]["z"].shape[0]),
+                    directions,
+                ),
+                "rbf_mmd2": rff_mmd2_weighted(
+                    route["z"], np.ones(route["z"].shape[0]),
+                    proxies[route_name]["z"], np.ones(proxies[route_name]["z"].shape[0]),
+                    omega, bias,
+                ),
+            }
+        exposure_output[str(seed)] = seed_output
     return {"d3_event_rows": d3_event_output, "d3_downstream": downstream_output, "exposure_proxy": exposure_output}
 
 
@@ -1054,7 +1183,17 @@ def run_formal_audit(device: torch.device, out_root: Path) -> None:
         raise RuntimeError(f"formal run is not authorized: {RUN_AUTHORIZATION_NOTE}")
     preflight = formal_preflight(device, out_root)
     if not preflight["all_pass"]:
-        raise RuntimeError(f"formal preflight failed: {json.dumps(preflight, ensure_ascii=False, indent=2)}")
+        failure_report = {
+            "schema": "keqing.mortal.k0_representation_space_audit.v1",
+            "preregistration": check_preregistration(),
+            "formal_preflight": preflight,
+            **git_worktree_metadata(),
+            "verdict": _authoritative_verdict("no_verdict_gates_failed", False),
+        }
+        failure_path = out_root.with_suffix(out_root.suffix + ".preflight_failed.json")
+        failure_path.write_text(json.dumps(failure_report, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
+        print(json.dumps({"preflight_failed": True, "report": str(failure_path)}, ensure_ascii=False, indent=2), flush=True)
+        raise RuntimeError(f"formal preflight failed: report={failure_path}")
     out_root.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     report: dict[str, Any] = {
@@ -1063,12 +1202,17 @@ def run_formal_audit(device: torch.device, out_root: Path) -> None:
         "formal_preflight": preflight,
         **git_worktree_metadata(),
         "device": str(device),
+        "python_executable": str(Path(sys.executable).resolve()),
+        "python_version": sys.version,
         "torch_version": torch.__version__,
         "torch_cuda_version": torch.version.cuda,
         "torch_cuda_available": bool(torch.cuda.is_available()),
         "cuda_device_index": 0 if torch.cuda.is_available() else None,
         "cuda_device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+        "riichi_extension_path": str(Path(riichi.__file__).resolve()),
+        "riichi_extension_sha256": sha256(Path(riichi.__file__).resolve()),
         "route_timings_seconds": {},
+        "verdict": _authoritative_verdict("no_verdict_gates_failed", preflight["all_pass"]),
     }
     route_table = build_route_table()
     brain, version, _ = load_brain_only(K0_MODEL, device)
@@ -1094,6 +1238,7 @@ def run_formal_audit(device: torch.device, out_root: Path) -> None:
         report["route_timings_seconds"][route_name] = time.time() - route_t0
     report["route_manifests"] = route_manifests
     report["analysis"] = analyze_route_artifacts(out_root, CROSS_CORPUS_OUTPUT / "training_exposure.json")
+    report["verdict"] = _authoritative_verdict(report["analysis"]["verdict"], preflight["all_pass"])
     report["status"] = "complete"
     report["elapsed_total_seconds"] = time.time() - t0
     (out_root / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
