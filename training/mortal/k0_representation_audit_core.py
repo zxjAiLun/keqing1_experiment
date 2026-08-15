@@ -39,6 +39,7 @@ PROJECTION_SEED = 20260815
 SW_DIRECTION_SEED = 20260816
 CREDIT_ALPHA = 0.05
 EXPOSURE_PROXY_SIZE = 18000
+EXPOSURE_PROXY_SEED = 20260821
 FALLBACK_SIGMA = 0.1
 ROUTE_ORDER = ("M0", "D1", "D2", "D3")
 
@@ -82,29 +83,59 @@ def weighted_quantile_values(
     if total <= 0:
         raise ValueError("weights must have positive sum")
     order = np.argsort(values, kind="stable")
-    sorted_values = values[order]
-    sorted_weights = weights[order] / total
+    return weighted_quantile_values_from_sorted(values[order], weights[order] / total, n_quantiles)
+
+
+def weighted_quantile_values_from_sorted(
+    sorted_values: np.ndarray,
+    sorted_weights: np.ndarray,
+    n_quantiles: int = SW_QUANTILE_COUNT,
+) -> np.ndarray:
+    """Quantile inversion for already sorted values and normalized weights."""
+    sorted_values = np.asarray(sorted_values, dtype=np.float64)
+    sorted_weights = np.asarray(sorted_weights, dtype=np.float64)
+    if sorted_values.ndim != 1 or sorted_weights.shape != sorted_values.shape:
+        raise ValueError("sorted values and weights must be 1-D arrays of equal length")
+    if sorted_values.size == 0:
+        raise ValueError("weighted_quantile_values_from_sorted requires at least one value")
+    if np.any(sorted_weights < 0):
+        raise ValueError("weights must be non-negative")
+    total = float(sorted_weights.sum())
+    if total <= 0:
+        raise ValueError("weights must have positive sum")
+    sorted_weights = sorted_weights / total
     cumulative = np.cumsum(sorted_weights)
+    n = sorted_values.size
     lower_cumulative = np.empty_like(cumulative)
     lower_cumulative[0] = 0.0
     lower_cumulative[1:] = cumulative[:-1]
 
+    # Precompute the next positive-weight bin for zero-weight runs.
+    next_positive = np.full(n, -1, dtype=np.int64)
+    nearest = -1
+    for index in range(n - 1, -1, -1):
+        if sorted_weights[index] > 0:
+            nearest = index
+        next_positive[index] = nearest
+
     query_points = (np.arange(n_quantiles, dtype=np.float64) + 0.5) / float(n_quantiles)
+    hits = np.searchsorted(cumulative, query_points, side="left").astype(np.int64)
     output = np.empty(n_quantiles, dtype=np.float64)
-    for index, query in enumerate(query_points):
-        # First bin whose upper cumulative edge reaches the query point.
-        hit = int(np.searchsorted(cumulative, query, side="left"))
-        if hit >= values.size:
-            output[index] = sorted_values[-1]
-        elif cumulative[hit] <= lower_cumulative[hit]:
-            # Zero-weight bin; use the first later value with positive mass.
-            later = hit + 1
-            while later < values.size and cumulative[later] <= lower_cumulative[later]:
-                later += 1
-            output[index] = sorted_values[later] if later < values.size else sorted_values[-1]
-        else:
-            slope = (sorted_values[hit] - sorted_values[hit - 1]) / (cumulative[hit] - lower_cumulative[hit]) if hit > 0 else 0.0
-            output[index] = sorted_values[hit - 1] + slope * (query - lower_cumulative[hit]) if hit > 0 else sorted_values[0]
+    inside = hits < n
+    if inside.any():
+        hit = hits[inside]
+        prev_hit = np.maximum(hit - 1, 0)
+        upper = cumulative[hit]
+        lower = lower_cumulative[hit]
+        value_at_hit = sorted_values[hit]
+        value_prev = sorted_values[prev_hit]
+        interpolated = value_prev + (value_at_hit - value_prev) * (query_points[inside] - lower) / np.maximum(upper - lower, np.finfo(np.float64).tiny)
+        zero_weight = upper <= lower
+        later = next_positive[hit]
+        fallback = np.where(later >= 0, sorted_values[np.maximum(later, 0)], sorted_values[-1])
+        output[inside] = np.where(zero_weight, fallback, interpolated)
+    if not inside.all():
+        output[~inside] = sorted_values[-1]
     return output
 
 
@@ -259,6 +290,24 @@ def rff_mmd2_weighted(
     mean_a = weights_a @ features_a
     mean_b = weights_b @ features_b
     return float(np.sum((mean_a - mean_b) ** 2))
+
+
+def build_global_hanchan_ids(
+    sorted_hashes_by_route: dict[str, list[str]],
+) -> tuple[dict[str, np.ndarray], dict[str, int]]:
+    """Canonical-hash -> global integer identity shared across all routes.
+
+    Route-local bootstrap indices remain separate; cross-route neighbor
+    exclusion MUST use these global IDs so that equal sorted positions in
+    different routes are never treated as the same hanchan.
+    """
+    union = sorted({value for values in sorted_hashes_by_route.values() for value in values})
+    hash_to_id = {value: index for index, value in enumerate(union)}
+    route_ids = {
+        route: np.asarray([hash_to_id[value] for value in sorted_hashes_by_route[route]], dtype=np.int32)
+        for route in sorted_hashes_by_route
+    }
+    return route_ids, hash_to_id
 
 
 def knn_neighbor_indices_blockwise(

@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import numpy as np
 import torch
 
 from training.mortal.audit_k0_representation_space_2026_08 import (
     FORMAL_RUN_AUTHORIZED,
+    FROZEN_INPUT_SHA256,
     PREREG_COMMIT,
     PREREG_FILE,
     PREREG_FILE_SHA256,
+    _exposure_proxy_probabilities,
+    _metric_bootstrap_deltas,
     _reservoir_row_indices,
+    _weighted_proxy_sample,
     checkpoint_smoke,
 )
 from training.mortal.k0_representation_audit_core import (
@@ -18,6 +25,7 @@ from training.mortal.k0_representation_audit_core import (
     PROJECTION_DIM,
     ROUTE_ORDER,
     bootstrap_hanchan_draws,
+    build_global_hanchan_ids,
     combine_verdict,
     credit_ambiguity_vote,
     estimate_sigma_from_pairs,
@@ -182,6 +190,183 @@ def test_preregistration_sha_is_frozen() -> None:
     assert PREREG_FILE_SHA256 == "3ebd88b5afc8e7fda28c1c5e61aff5cdf6babf90d082a9096a1529545088b359"
     assert sha256_file(PREREG_FILE) == PREREG_FILE_SHA256
     assert FORMAL_RUN_AUTHORIZED is False
+
+
+def test_global_hanchan_identity_separates_sorted_position_from_canonical_hash() -> None:
+    route_ids, _hash_to_id = build_global_hanchan_ids({"A": ["aaa", "ccc"], "B": ["bbb", "ccc"]})
+    assert route_ids["A"][0] != route_ids["B"][0]  # same sorted position, different hash
+    assert route_ids["A"][1] == route_ids["B"][1]  # same hash, different sorted position
+
+
+def test_credit_predictive_case_p001_vote_false() -> None:
+    null = np.linspace(0.0, 0.01, 999)
+    result = credit_ambiguity_vote(0.02, null)
+    assert result["p_predict"] == 1.0 / 1000.0
+    assert result["vote"] is False
+
+
+def test_exposure_proxy_probabilities_sum_to_one() -> None:
+    file_index_by_row = np.asarray([0, 0, 0, 1, 1, 1])
+    consumed = np.asarray([2.0, 3.0])
+    probabilities = _exposure_proxy_probabilities(file_index_by_row, consumed)
+    assert np.isclose(probabilities.sum(), 1.0)
+    assert np.isclose(probabilities[0], 2.0 / 15.0)
+    sample = _weighted_proxy_sample(file_index_by_row, consumed, n_samples=2000, seed=123, route_index=0)
+    assert sample.shape == (2000,)
+    assert set(sample.tolist()) <= {0, 1, 2, 3, 4, 5}
+
+
+def test_d3_event_mapping_uses_arena_to_row(monkeypatch) -> None:
+    import training.mortal.audit_k0_representation_space_2026_08 as runner
+    import training.mortal.d3_native_scene as native_scene
+    import training.mortal.d3_production_audit_core as audit_core
+
+    monkeypatch.setattr(audit_core, "primary_row_flags", lambda actions: [True] * len(list(actions)))
+    monkeypatch.setattr(
+        native_scene,
+        "reconstruct_native_scenes",
+        lambda *args, **kwargs: {
+            "scenes": [
+                {"kyoku": 0, "arena_index": 2, "loader_row_index": 1, "arena_consulted": True},
+            ]
+        },
+    )
+    actions = np.asarray([0, 0, 0], dtype=np.int64)
+    legal_counts = np.asarray([5, 5, 5], dtype=np.int64)
+    at_kyoku = np.asarray([0, 0, 0], dtype=np.int64)
+    events = [{"kyoku_index": 0, "decision_index": 2, "explored": True}]
+    mapped = runner._d3_event_category_by_loader_row(__import__("pathlib").Path("virtual.json.gz"), 0, actions, legal_counts, at_kyoku, events)
+    assert mapped == {1: "explored"}
+
+
+def test_d3_mapping_categories_roundtrip(monkeypatch) -> None:
+    import training.mortal.audit_k0_representation_space_2026_08 as runner
+    import training.mortal.d3_native_scene as native_scene
+    import training.mortal.d3_production_audit_core as audit_core
+
+    monkeypatch.setattr(audit_core, "primary_row_flags", lambda actions: [True] * len(list(actions)))
+    monkeypatch.setattr(
+        native_scene,
+        "reconstruct_native_scenes",
+        lambda *args, **kwargs: {
+            "scenes": [
+                {"kyoku": 0, "arena_index": 0, "loader_row_index": 0, "arena_consulted": True},
+                {"kyoku": 0, "arena_index": 1, "loader_row_index": 1, "arena_consulted": True},
+                {"kyoku": 0, "arena_index": 2, "loader_row_index": 2, "arena_consulted": True},
+            ]
+        },
+    )
+    actions = np.asarray([0, 0, 0], dtype=np.int64)
+    legal_counts = np.asarray([5, 5, 5], dtype=np.int64)
+    at_kyoku = np.asarray([0, 0, 0], dtype=np.int64)
+    events = [
+        {"kyoku_index": 0, "decision_index": 0, "explored": True},
+        {"kyoku_index": 0, "decision_index": 1, "reason": "hash_rejected"},
+        {"kyoku_index": 0, "decision_index": 2, "reason": "budget"},
+    ]
+    mapped = runner._d3_event_category_by_loader_row(Path("virtual.json.gz"), 0, actions, legal_counts, at_kyoku, events)
+    assert mapped == {0: "explored", 1: "hash_rejected", 2: "budget_exhausted"}
+
+
+def test_perspective_label_roundtrip_metadata(tmp_path) -> None:
+    import training.mortal.audit_k0_representation_space_2026_08 as runner
+
+    route_dir = tmp_path / "route_artifacts" / "D2"
+    route_dir.mkdir(parents=True)
+    z = np.eye(2, PROJECTION_DIM, dtype=np.float32)
+    np.save(route_dir / "event_z.npy", z)
+    np.savez(
+        route_dir / "event_metadata.npz",
+        file_index=np.asarray([0, 1], dtype=np.int64),
+        row_index=np.asarray([0, 1], dtype=np.int64),
+        hanchan_index=np.asarray([0, 1], dtype=np.int32),
+        target=np.asarray([-1.0, 1.0]),
+        phi_l2_norm=np.asarray([1.0, 1.0]),
+    )
+    (route_dir / "event_perspective_labels.json").write_text(json.dumps(["V2_74000", "V3_74000"]), encoding="utf-8")
+    (route_dir / "event_canonical_hanchan_hashes.json").write_text(json.dumps(["hash-a", "hash-b"]), encoding="utf-8")
+    loaded = runner._load_extra_route_rows(tmp_path, "D2", "event")
+    assert loaded["rows"] == 2
+    assert loaded["perspective_labels"] == ["V2_74000", "V3_74000"]
+    assert loaded["canonical_hanchan_hashes"] == ["hash-a", "hash-b"]
+
+
+def test_optimized_sw_rff_matches_naive_on_small_fixture() -> None:
+    rng = np.random.default_rng(123)
+    z_m0 = rng.normal(size=(9, PROJECTION_DIM))
+    z_m0 /= np.linalg.norm(z_m0, axis=1, keepdims=True)
+    z_d1 = rng.normal(size=(9, PROJECTION_DIM))
+    z_d1 /= np.linalg.norm(z_d1, axis=1, keepdims=True)
+    z_d2 = rng.normal(size=(9, PROJECTION_DIM))
+    z_d2 /= np.linalg.norm(z_d2, axis=1, keepdims=True)
+    z_d3 = rng.normal(size=(9, PROJECTION_DIM))
+    z_d3 /= np.linalg.norm(z_d3, axis=1, keepdims=True)
+    routes = {
+        name: {"z": z, "hanchan_index": np.repeat(np.arange(3), 3).astype(np.int32)}
+        for name, z in (("M0", z_m0), ("D1", z_d1), ("D2", z_d2), ("D3", z_d3))
+    }
+    directions = np.random.default_rng(5).normal(size=(2, PROJECTION_DIM))
+    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
+    omega = np.random.default_rng(6).normal(size=(4, PROJECTION_DIM))
+    bias = np.random.default_rng(7).uniform(0, 2 * np.pi, size=4)
+    knn_stats = {
+        (left, right): knn_row_stats_and_indicators(
+            routes[left]["z"], routes[right]["z"], routes[left]["hanchan_index"], routes[right]["hanchan_index"], k=2
+        )
+        for left, right in (("M0", "D1"), ("M0", "D3"), ("D1", "D2"))
+    }
+    draws = {"m0": np.asarray([[0, 1, 2]]), "d12": np.asarray([[0, 1, 2]]), "d3": np.asarray([[0, 1, 2]])}
+    result = _metric_bootstrap_deltas(routes, directions, omega, bias, knn_stats, draws, reps=1)
+    expected_sw = sliced_wasserstein_weighted(z_m0, np.ones(9), z_d1, np.ones(9), directions)
+    expected_mmd = rff_mmd2_weighted(z_m0, np.ones(9), z_d1, np.ones(9), omega, bias)
+    assert np.isclose(result["families"]["sliced_wasserstein"]["point"]["d_m0_d1"], expected_sw, rtol=1e-12)
+    assert np.isclose(result["families"]["rbf_mmd"]["point"]["d_m0_d1"], expected_mmd, rtol=1e-12)
+
+
+def test_formal_preflight_sha_mismatch_fails_closed(monkeypatch, tmp_path) -> None:
+    import training.mortal.audit_k0_representation_space_2026_08 as runner
+
+    original_sha = runner.sha256
+    monkeypatch.setattr(runner, "sha256", lambda path: "0" * 64)
+    preflight = runner.formal_preflight(torch.device("cpu"), tmp_path / "absent")
+    assert preflight["all_pass"] is False
+    assert preflight["checks"]["k0_checkpoint"] is False
+    assert preflight["checks"]["device_is_cuda0"] is False
+    monkeypatch.setattr(runner, "sha256", original_sha)
+
+
+def test_formal_preflight_rejects_dirty_worktree_and_nonempty_output(monkeypatch, tmp_path) -> None:
+    import training.mortal.audit_k0_representation_space_2026_08 as runner
+
+    monkeypatch.setattr(
+        runner,
+        "git_worktree_metadata",
+        lambda: {"git_worktree_clean": False, "git_worktree_status": ["M dirty.py"]},
+    )
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "existing.txt").write_text("x", encoding="utf-8")
+    preflight = runner.formal_preflight(torch.device("cuda"), output)
+    assert preflight["checks"]["git_worktree_clean"] is False
+    assert preflight["checks"]["output_dir_absent_or_empty"] is False
+    assert preflight["all_pass"] is False
+
+
+def test_frozen_input_gate_a_covers_all_prereg_artifacts() -> None:
+    expected_keys = {
+        "k0_checkpoint",
+        "m0_index",
+        "d1_index",
+        "d2_index",
+        "d3_index",
+        "d2_mapping",
+        "v2_report",
+        "v2_route_cache_manifest",
+        "v2_training_exposure",
+        "riichi_extension",
+    }
+    assert set(FROZEN_INPUT_SHA256) == expected_keys
+    assert all(len(value) == 2 for value in FROZEN_INPUT_SHA256.values())
 
 
 def test_checkpoint_smoke_phi_shape() -> None:

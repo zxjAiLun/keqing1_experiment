@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import site
 import subprocess
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +40,7 @@ from training.mortal.audit_cross_corpus_mechanisms_2026_08 import (
     DATA_ROOT,
     FULL_ROUTE_NAMES,
     K0_MODEL,
+    SEEDS,
     TRAIN_PTS,
     _canonical_log_hash,
     _log_key,
@@ -52,6 +55,8 @@ from training.mortal.audit_replay_distribution import load_checkpoint
 from training.mortal.k0_representation_audit_core import (
     BOOTSTRAP_REPS,
     BOOTSTRAP_SEED,
+    EXPOSURE_PROXY_SEED,
+    EXPOSURE_PROXY_SIZE,
     KNN_K,
     PAIR_COUNT_PER_ROUTE,
     PAIR_SEED,
@@ -61,7 +66,9 @@ from training.mortal.k0_representation_audit_core import (
     PROJECTION_DIM,
     RESERVOIR_ROWS_PER_HANCHAN,
     ROUTE_ORDER,
+    SW_QUANTILE_COUNT,
     bootstrap_hanchan_draws,
+    build_global_hanchan_ids,
     combine_verdict,
     credit_ambiguity_vote,
     entropy,
@@ -78,6 +85,7 @@ from training.mortal.k0_representation_audit_core import (
     rff_mmd2_weighted,
     sha256_array,
     sliced_wasserstein_weighted,
+    weighted_quantile_values_from_sorted,
 )
 
 # ---------------------------------------------------------------- prereg gate
@@ -96,6 +104,52 @@ CROSS_CORPUS_OUTPUT = (
 )
 FORMAL_RUN_AUTHORIZED = False
 RUN_AUTHORIZATION_NOTE = "implementation review gate is not open; formal CUDA run is NOT AUTHORIZED"
+FROZEN_INPUT_SHA256 = {
+    "k0_checkpoint": (K0_MODEL, "6c0e70058644e02671440ddf7dd2b41c637ae7c2132c9154595593ab690d49e0"),
+    "m0_index": (D1_PREP / "file_index_m0.pth", "755b1d5976e3837402eec708d160ede081605e2fcda37d9acdb1436d8a72fce2"),
+    "d1_index": (D1_PREP / "file_index_d1.pth", "e357bdb00d5bf3cd7e0afa6960ee43af656421cfed381a3320f6b83ac56087f0"),
+    "d2_index": (D2_DATASET / "file_index_d2.pth", "9c86b29204e86df0be8a5d3b0c4e211c010b07bd52e8e491fcdfc7e79e104bb1"),
+    "d3_index": (D3_INDEX, "174122d9ff12365bc37331364ea2372c7a80bf382de039a3298da2fa5a8201f4"),
+    "d2_mapping": (D2_DATASET / "player_names_by_file.json", "23b6d5a1589c4b3cba731332896dd33d3f23d50e8b987cb56de0789fdeca5970"),
+    "v2_report": (CROSS_CORPUS_OUTPUT / "cross_corpus_mechanism_audit.json", "57f03bbe5653fc3168341df790e0c3dc7ec87860efcd4803f0ba233476a383e0"),
+    "v2_route_cache_manifest": (CROSS_CORPUS_OUTPUT / "route_cache_manifest.json", "cd79b0a6c4cb19e48501a7ecaf762c54b80263aa6db1f0be12999f593a98fa44"),
+    "v2_training_exposure": (CROSS_CORPUS_OUTPUT / "training_exposure.json", "430cc9eef8fcf495619c115736a04abd6a1f003c764eb7e06368a22305f540e9"),
+    "riichi_extension": (Path(site.getsitepackages()[0]) / "riichi.so", "da687ececbae8c803c99fe58fb8f66d0e4b9e762eb2bb7257a2115c57e5dd82b"),
+}
+ROUTE_CACHE_EXPECTED_SHA256 = {
+    "M0": "61353d4d2910944bd9b7d02c8ded084268a09d152f98c60f0b20dfd29d869cbb",
+    "D1": "2ff175c1bf0e9358475110d453539c002d393b6f9242d5e28c956b079ed1e7be",
+    "D2": "22ac7d3ecef85d3e6a2fc4c34c17f9d4ded1972da825d39defb28ae997f01ea6",
+    "D3": "f7253d68f6adca241b45763d2e21a932ca718a1d0202d5ba7596fdcc994eca67",
+}
+
+
+def formal_preflight(device: torch.device, out_root: Path) -> dict[str, Any]:
+    """Fail-closed v1 Gate A and formal-run environment checks."""
+    checks: dict[str, bool] = {}
+    for key, (path, expected) in FROZEN_INPUT_SHA256.items():
+        checks[key] = path.is_file() and sha256(path) == expected
+    for route_name, expected in ROUTE_CACHE_EXPECTED_SHA256.items():
+        cache_path = CROSS_CORPUS_OUTPUT / "route_agg_cache" / f"{route_name}.json"
+        checks[f"route_cache_{route_name.lower()}"] = cache_path.is_file() and sha256(cache_path) == expected
+    worktree = git_worktree_metadata()
+    checks["git_worktree_clean"] = bool(worktree["git_worktree_clean"])
+    checks["device_is_cuda0"] = bool(device.type == "cuda" and getattr(device, "index", 0) == 0)
+    checks["torch_cuda_available"] = bool(torch.cuda.is_available())
+    checks["output_dir_absent_or_empty"] = not out_root.exists() or not any(out_root.iterdir())
+    gate_a = {
+        key: value
+        for key, value in checks.items()
+        if key not in {"git_worktree_clean", "device_is_cuda0", "torch_cuda_available", "output_dir_absent_or_empty"}
+    }
+    all_checks = all(checks.values())
+    return {
+        "checks": checks,
+        "gate_a": gate_a,
+        "gate_a_pass": all(gate_a.values()),
+        "all_pass": all_checks,
+        "worktree": worktree,
+    }
 
 
 def check_preregistration() -> dict[str, Any]:
@@ -233,24 +287,37 @@ def _d3_event_category_by_loader_row(
     for entry in recon["scenes"]:
         if entry["arena_index"] is not None and entry["loader_row_index"] is not None and entry["arena_consulted"]:
             arena_to_row[(entry["kyoku"], entry["arena_index"])] = entry["loader_row_index"]
-    event_by_context = {
-        (int(event["kyoku_index"]), int(event["decision_index"])): event for event in file_events
-    }
+    event_row_map: dict[tuple[int, int], dict[str, Any]] = {}
+    for event in file_events:
+        context = (int(event["kyoku_index"]), int(event["decision_index"]))
+        loader_idx = arena_to_row.get(context)
+        if loader_idx is not None:
+            key = (int(event["kyoku_index"]), loader_idx)
+            if key in event_row_map:
+                raise ValueError(f"duplicate D3 event/loader-row mapping in {path}: {key}")
+            event_row_map[key] = event
     result: dict[int, str] = {}
     loader_index_by_kyoku: dict[int, int] = {}
     for row_index, kyoku in enumerate(at_kyoku.tolist()):
-        loader_index = loader_index_by_kyoku.get(kyoku, 0)
-        loader_index_by_kyoku[kyoku] = loader_index + 1
-        event = event_by_context.get((int(kyoku), loader_index))
-        if event is not None:
-            category = (
-                "explored"
-                if event.get("explored")
-                else "hash_rejected"
-                if event.get("reason") == "hash_rejected"
-                else "budget_exhausted"
-            )
-            result[int(row_index)] = category
+        loader_index = loader_index_by_kyoku.get(int(kyoku), 0)
+        loader_index_by_kyoku[int(kyoku)] = loader_index + 1
+        event = event_row_map.pop((int(kyoku), loader_index), None)
+        if event is None:
+            continue
+        category = (
+            "explored"
+            if event.get("explored")
+            else "hash_rejected"
+            if event.get("reason") == "hash_rejected"
+            else "budget_exhausted"
+        )
+        if row_index in result:
+            raise ValueError(f"duplicate D3 loader-row mapping for {path}")
+        result[int(row_index)] = category
+    if event_row_map:
+        raise ValueError(f"unmapped D3 events remain for {path}: {len(event_row_map)}")
+    if len(result) != len(file_events):
+        raise ValueError(f"D3 event count mismatch for {path}: mapped={len(result)} events={len(file_events)}")
     return result
 
 
@@ -281,6 +348,19 @@ def _update_streaming_moments(
     return mean, outer_sum, new_count
 
 
+def _exposure_proxy_probabilities(
+    file_index_by_row: np.ndarray,
+    consumed_per_file: np.ndarray,
+) -> np.ndarray:
+    weights = np.asarray(consumed_per_file, dtype=np.float64)
+    if weights.sum() <= 0:
+        raise ValueError("consumed_per_file weights must have positive sum")
+    row_weights = weights[file_index_by_row]
+    if row_weights.sum() <= 0:
+        raise ValueError("selected row weights must have positive sum")
+    return row_weights / row_weights.sum()
+
+
 def _weighted_proxy_sample(
     file_index_by_row: np.ndarray,
     consumed_per_file: np.ndarray,
@@ -288,10 +368,7 @@ def _weighted_proxy_sample(
     seed: int,
     route_index: int,
 ) -> np.ndarray:
-    weights = np.asarray(consumed_per_file, dtype=np.float64)
-    if weights.sum() <= 0:
-        raise ValueError("consumed_per_file weights must have positive sum")
-    probabilities = weights[file_index_by_row] / weights.sum()
+    probabilities = _exposure_proxy_probabilities(file_index_by_row, consumed_per_file)
     rng = np.random.default_rng(seed + route_index * 1_000_000)
     return rng.choice(file_index_by_row.size, size=n_samples, replace=True, p=probabilities).astype(np.int64)
 
@@ -441,6 +518,11 @@ def extract_route_representation(
 
     if malformed or perspective_count != len(files) or len(hanchan_hashes) != len(files):
         raise ValueError(f"{route_name}: malformed={malformed[:5]} perspectives={perspective_count}/{len(files)}")
+    if route_name == "D3":
+        event_counts = Counter(row["event_category"] for row in event_rows)
+        expected_event_counts = {"explored": 27506, "hash_rejected": 82455, "budget_exhausted": 41321}
+        if dict(event_counts) != expected_event_counts:
+            raise ValueError(f"D3 event accounting mismatch: {dict(event_counts)} != {expected_event_counts}")
 
     def _save_rows(rows: list[dict[str, Any]], prefix: str) -> dict[str, Any]:
         if not rows:
@@ -455,15 +537,40 @@ def extract_route_representation(
         }
         np.save(route_dir / f"{prefix}_z.npy", z_array, allow_pickle=False)
         np.savez(route_dir / f"{prefix}_metadata.npz", **metadata)
+        labels_path = route_dir / f"{prefix}_perspective_labels.json"
+        labels_path.write_text(
+            json.dumps([row["perspective_label"] for row in rows], ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        hashes_path = route_dir / f"{prefix}_canonical_hanchan_hashes.json"
+        hashes_path.write_text(
+            json.dumps([row["canonical_hanchan_hash"] for row in rows], ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
         if prefix == "event":
             np.save(
                 route_dir / f"{prefix}_category.npy",
                 np.asarray([row.get("event_category", "ordinary") for row in rows]),
                 allow_pickle=False,
             )
-        return {"rows": len(rows), "z_sha256": sha256_array(z_array)}
+        return {
+            "rows": len(rows),
+            "z_sha256": sha256_array(z_array),
+            "perspective_labels_sha256": sha256(labels_path),
+            "canonical_hanchan_hashes_sha256": sha256(hashes_path),
+        }
 
     covariance = outer_phi / count_phi - np.outer(mean_phi, mean_phi)
+    moment_artifacts: dict[str, Any] = {}
+    for name, array in (("mean_phi", mean_phi), ("outer_phi", outer_phi), ("covariance", covariance)):
+        moment_path = route_dir / f"{name}.npy"
+        np.save(moment_path, array, allow_pickle=False)
+        moment_artifacts[name] = {
+            "path": str(moment_path),
+            "shape": list(array.shape),
+            "dtype": str(array.dtype),
+            "sha256": sha256_array(array),
+        }
     manifest = {
         "route": route_name,
         "perspectives": perspective_count,
@@ -473,9 +580,7 @@ def extract_route_representation(
         "canonical_rows": _save_rows(canonical_rows, "canonical"),
         "event_rows": _save_rows(event_rows, "event"),
         "downstream_rows": _save_rows(downstream_rows, "downstream"),
-        "mean_phi": mean_phi,
-        "outer_phi": outer_phi,
-        "covariance": covariance,
+        "moments": moment_artifacts,
     }
     (route_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return manifest
@@ -497,11 +602,37 @@ def _load_canonical_route(out_root: Path, route_name: str) -> dict[str, Any]:
     return {
         "z": z,
         "target": np.asarray(metadata["target"], dtype=np.float64),
+        "file_index": np.asarray(metadata["file_index"], dtype=np.int64),
         "hanchan_index": row_sorted_hanchan,
         "original_hanchan_index": row_original_hanchan,
         "sorted_hashes": sorted_hashes,
         "manifest": manifest,
     }
+
+
+def _load_extra_route_rows(out_root: Path, route_name: str, prefix: str) -> dict[str, Any]:
+    route_dir = out_root / "route_artifacts" / route_name
+    z_path = route_dir / f"{prefix}_z.npy"
+    if not z_path.is_file():
+        return {"z": np.empty((0, PROJECTION_DIM), dtype=np.float64), "rows": 0}
+    z = np.load(z_path).astype(np.float64)
+    metadata = np.load(route_dir / f"{prefix}_metadata.npz")
+    labels = json.loads((route_dir / f"{prefix}_perspective_labels.json").read_text(encoding="utf-8"))
+    hashes = json.loads((route_dir / f"{prefix}_canonical_hanchan_hashes.json").read_text(encoding="utf-8"))
+    result: dict[str, Any] = {
+        "z": z,
+        "target": np.asarray(metadata["target"], dtype=np.float64),
+        "file_index": np.asarray(metadata["file_index"], dtype=np.int64),
+        "row_index": np.asarray(metadata["row_index"], dtype=np.int64),
+        "hanchan_index": np.asarray(metadata["hanchan_index"], dtype=np.int32),
+        "perspective_labels": labels,
+        "canonical_hanchan_hashes": hashes,
+        "rows": int(z.shape[0]),
+    }
+    category_path = route_dir / f"{prefix}_category.npy"
+    if category_path.is_file():
+        result["event_category"] = np.load(category_path, allow_pickle=False)
+    return result
 
 
 def _weighted_mean(values: np.ndarray, weights: np.ndarray) -> float:
@@ -519,6 +650,7 @@ def _metric_bootstrap_deltas(
     bias: np.ndarray,
     knn_stats: dict[tuple[str, str], dict[str, np.ndarray]],
     draws: dict[str, np.ndarray],
+    reps: int = BOOTSTRAP_REPS,
 ) -> dict[str, Any]:
     """Frozen cluster-bootstrap metric/delta computation.
 
@@ -527,6 +659,55 @@ def _metric_bootstrap_deltas(
     reference rows.
     """
     row_hanchan = {name: routes[name]["hanchan_index"] for name in ROUTE_ORDER}
+    n_hanchans = int(max(int(np.max(value)) for value in row_hanchan.values()) + 1)
+    if any(int(np.min(value)) != 0 or int(np.max(value)) != n_hanchans - 1 for value in row_hanchan.values()):
+        raise ValueError("route-local hanchan indices must cover 0..n_hanchans-1")
+    sw_precomputed: dict[str, dict[str, np.ndarray]] = {}
+    rff_precomputed: dict[str, dict[str, np.ndarray]] = {}
+    for name in ROUTE_ORDER:
+        projected = routes[name]["z"] @ directions.T
+        sw_precomputed[name] = {
+            "projected": projected,
+            "order": np.argsort(projected, axis=0, kind="stable"),
+        }
+        scale = float(np.sqrt(2.0 / omega.shape[0]))
+        features = scale * np.cos(routes[name]["z"] @ omega.T + bias[None, :])
+        rff_precomputed[name] = {"features": features}
+        hanchan_sums = np.zeros((n_hanchans, features.shape[1]), dtype=np.float64)
+        for hanchan in range(n_hanchans):
+            rows = np.flatnonzero(row_hanchan[name] == hanchan)
+            if rows.size != 3:
+                raise ValueError(f"{name}: expected 3 canonical rows per hanchan, got {rows.size}")
+            hanchan_sums[hanchan] = features[rows].sum(axis=0)
+        rff_precomputed[name]["hanchan_sums"] = hanchan_sums
+
+    def sw_fast(left: str, right: str, weights_left: np.ndarray, weights_right: np.ndarray) -> float:
+        total = 0.0
+        left_order = sw_precomputed[left]["order"]
+        right_order = sw_precomputed[right]["order"]
+        left_projected = sw_precomputed[left]["projected"]
+        right_projected = sw_precomputed[right]["projected"]
+        left_sum = float(weights_left.sum())
+        right_sum = float(weights_right.sum())
+        for direction_index in range(directions.shape[0]):
+            left_order_col = left_order[:, direction_index]
+            right_order_col = right_order[:, direction_index]
+            q_left = weighted_quantile_values_from_sorted(
+                left_projected[left_order_col, direction_index],
+                weights_left[left_order_col] / left_sum,
+            )
+            q_right = weighted_quantile_values_from_sorted(
+                right_projected[right_order_col, direction_index],
+                weights_right[right_order_col] / right_sum,
+            )
+            total += float(np.abs(q_left - q_right).sum())
+        return total / float(directions.shape[0] * SW_QUANTILE_COUNT)
+
+    def mmd_fast(left: str, right: str, counts_left: np.ndarray, counts_right: np.ndarray) -> float:
+        left_mean = (counts_left @ rff_precomputed[left]["hanchan_sums"]) / (3.0 * counts_left.sum())
+        right_mean = (counts_right @ rff_precomputed[right]["hanchan_sums"]) / (3.0 * counts_right.sum())
+        return float(np.sum((left_mean - right_mean) ** 2))
+
     families = {
         "sliced_wasserstein": {},
         "rbf_mmd": {},
@@ -535,25 +716,25 @@ def _metric_bootstrap_deltas(
     }
     support_d1: list[float] = []
     support_d3: list[float] = []
-    for rep in range(BOOTSTRAP_REPS):
+    for rep in range(reps):
+        hanchan_counts = {
+            "M0": np.bincount(draws["m0"][rep], minlength=n_hanchans).astype(np.float64),
+            "D1": np.bincount(draws["d12"][rep], minlength=n_hanchans).astype(np.float64),
+            "D2": np.bincount(draws["d12"][rep], minlength=n_hanchans).astype(np.float64),
+            "D3": np.bincount(draws["d3"][rep], minlength=n_hanchans).astype(np.float64),
+        }
         weights = {
-            "M0": hanchan_multiplicity_weights(draws["m0"][rep], row_hanchan["M0"]),
-            "D1": hanchan_multiplicity_weights(draws["d12"][rep], row_hanchan["D1"]),
-            "D2": hanchan_multiplicity_weights(draws["d12"][rep], row_hanchan["D2"]),
-            "D3": hanchan_multiplicity_weights(draws["d3"][rep], row_hanchan["D3"]),
+            name: hanchan_multiplicity_weights(draws[group][rep], row_hanchan[name])
+            for name, group in (("M0", "m0"), ("D1", "d12"), ("D2", "d12"), ("D3", "d3"))
         }
         point: dict[str, dict[str, float]] = {}
         for family, family_values in families.items():
             point[family] = {}
             for left, right in (("M0", "D1"), ("M0", "D3"), ("D1", "D2")):
                 if family == "sliced_wasserstein":
-                    value = sliced_wasserstein_weighted(
-                        routes[left]["z"], weights[left], routes[right]["z"], weights[right], directions
-                    )
+                    value = sw_fast(left, right, weights[left], weights[right])
                 elif family == "rbf_mmd":
-                    value = rff_mmd2_weighted(
-                        routes[left]["z"], weights[left], routes[right]["z"], weights[right], omega, bias
-                    )
+                    value = mmd_fast(left, right, hanchan_counts[left], hanchan_counts[right])
                 elif family == "cross_knn_distance":
                     stats = knn_stats[(left, right)]
                     value = 0.5 * (
@@ -623,12 +804,18 @@ def _credit_route_result(
     z: np.ndarray,
     target: np.ndarray,
     row_hanchan: np.ndarray,
+    neighbor_hanchan: np.ndarray,
     permutation_indices: np.ndarray,
 ) -> dict[str, Any]:
-    """Frozen same-route credit ambiguity test for one route."""
+    """Frozen same-route credit ambiguity test for one route.
+
+    ``row_hanchan`` is the route-local bootstrap cluster index; kNN uses
+    ``neighbor_hanchan`` (global canonical-hash identity).
+    """
     if np.unique(row_hanchan).size != permutation_indices.shape[1]:
         raise ValueError("hanchan count does not match permutation shape")
     hanchan_index = np.asarray(row_hanchan, dtype=np.int64)
+    neighbor_hanchan = np.asarray(neighbor_hanchan)
     targets_per_hanchan = np.empty(int(hanchan_index.max()) + 1, dtype=np.float64)
     for hanchan in range(targets_per_hanchan.size):
         rows = np.flatnonzero(hanchan_index == hanchan)
@@ -638,7 +825,7 @@ def _credit_route_result(
         if values.size != 1:
             raise ValueError("reservoir target is not constant within hanchan")
         targets_per_hanchan[hanchan] = values[0]
-    neighbors = knn_neighbor_indices_blockwise(z, z, hanchan_index, hanchan_index, KNN_K)
+    neighbors = knn_neighbor_indices_blockwise(z, z, neighbor_hanchan, neighbor_hanchan, KNN_K)
     neighbor_targets = target[neighbors]
 
     def local_entropy(row_targets: np.ndarray) -> tuple[float, float]:
@@ -663,6 +850,100 @@ def _credit_route_result(
     }
 
 
+def _descriptive_d3_and_exposure(
+    out_root: Path,
+    routes: dict[str, dict[str, Any]],
+    neighbor_hanchan: dict[str, np.ndarray],
+    global_hash_to_id: dict[str, int],
+    directions: np.ndarray,
+    omega: np.ndarray,
+    bias: np.ndarray,
+    exposure_json_path: Path,
+) -> dict[str, Any]:
+    """Prereg groups 3 and 4: descriptive-only, never enter the four-state vote."""
+    event_rows = _load_extra_route_rows(out_root, "D3", "event")
+    downstream_rows = _load_extra_route_rows(out_root, "D3", "downstream")
+    event_global_ids = np.asarray(
+        [global_hash_to_id[value] for value in event_rows["canonical_hanchan_hashes"]],
+        dtype=np.int64,
+    )
+    downstream_global_ids = np.asarray(
+        [global_hash_to_id[value] for value in downstream_rows["canonical_hanchan_hashes"]],
+        dtype=np.int64,
+    )
+
+    def distance_summary(query: dict[str, Any], query_global_ids: np.ndarray, label: str) -> dict[str, Any]:
+        output: dict[str, Any] = {}
+        for reference_name in ("D1", "M0"):
+            reference = routes[reference_name]
+            stats = knn_row_stats_and_indicators(
+                query["z"],
+                reference["z"],
+                query_global_ids,
+                neighbor_hanchan[reference_name],
+                KNN_K,
+            )
+            output[reference_name] = {
+                "rows": int(query["z"].shape[0]),
+                "mean_cross_knn_distance": float(stats["a_to_b_mean"].mean()),
+                "missing_mass_in_reference": float(stats["a_missing_in_b"].mean()),
+            }
+        output["_row_kind"] = label
+        return output
+
+    d3_event_output: dict[str, Any] = {"rows": event_rows["rows"]}
+    if event_rows["rows"]:
+        categories = np.asarray(event_rows["event_category"])
+        for category in ("explored", "hash_rejected", "budget_exhausted"):
+            mask = categories == category
+            if not mask.any():
+                d3_event_output[category] = {"rows": 0}
+                continue
+            query = {key: value[mask] for key, value in event_rows.items() if isinstance(value, np.ndarray)}
+            query["perspective_labels"] = [value for index, value in enumerate(event_rows["perspective_labels"]) if mask[index]]
+            query["canonical_hanchan_hashes"] = [value for index, value in enumerate(event_rows["canonical_hanchan_hashes"]) if mask[index]]
+            d3_event_output[category] = distance_summary(query, event_global_ids[mask], category)
+    downstream_output = distance_summary(downstream_rows, downstream_global_ids, "explored_downstream")
+
+    exposure = read_json(exposure_json_path)
+    exposure_output: dict[str, Any] = {}
+    for route_name in ROUTE_ORDER:
+        route = routes[route_name]
+        exposure_output[route_name] = {}
+        for seed in SEEDS:
+            consumed = np.asarray(
+                exposure[route_name][str(seed)]["simulation"]["consumed_per_file"],
+                dtype=np.float64,
+            )
+            if consumed.shape[0] != 6000:
+                raise ValueError(f"{route_name} seed {seed}: exposure weights length != 6000")
+            sample_indices = _weighted_proxy_sample(
+                route["file_index"],
+                consumed,
+                EXPOSURE_PROXY_SIZE,
+                EXPOSURE_PROXY_SEED,
+                ROUTE_ORDER.index(route_name),
+            )
+            proxy_z = route["z"][sample_indices]
+            proxy_hanchan = neighbor_hanchan[route_name][sample_indices]
+            sw = sliced_wasserstein_weighted(
+                route["z"], np.ones(route["z"].shape[0]), proxy_z, np.ones(proxy_z.shape[0]), directions
+            )
+            mmd = rff_mmd2_weighted(
+                route["z"], np.ones(route["z"].shape[0]), proxy_z, np.ones(proxy_z.shape[0]), omega, bias
+            )
+            knn = knn_row_stats_and_indicators(
+                route["z"], proxy_z, neighbor_hanchan[route_name], proxy_hanchan, KNN_K
+            )
+            exposure_output[route_name][str(seed)] = {
+                "sliced_wasserstein": sw,
+                "rff_mmd2": mmd,
+                "mean_cross_knn_distance": float(knn["a_to_b_mean"].mean()),
+                "canonical_missing_in_proxy": float(knn["a_missing_in_b"].mean()),
+            }
+    return {"d3_event_rows": d3_event_output, "d3_downstream": downstream_output, "exposure_proxy": exposure_output}
+
+
 def analyze_route_artifacts(
     out_root: Path,
     exposure_json_path: Path,
@@ -676,6 +957,15 @@ def analyze_route_artifacts(
             raise ValueError(f"{name}: canonical reservoir shape mismatch")
     if routes["D1"]["sorted_hashes"] != routes["D2"]["sorted_hashes"]:
         raise ValueError("D1/D2 sorted canonical hanchan hashes are not identical")
+    global_hanchan_ids_by_route, global_hash_to_id = build_global_hanchan_ids(
+        {name: routes[name]["sorted_hashes"] for name in ROUTE_ORDER}
+    )
+    neighbor_hanchan = {
+        name: np.asarray(global_hanchan_ids_by_route[name], dtype=np.int64)[
+            np.asarray(routes[name]["hanchan_index"], dtype=np.int64)
+        ]
+        for name in ROUTE_ORDER
+    }
 
     projection = np.asarray(make_projection_matrix().numpy(), dtype=np.float64)
     directions = np.asarray(make_sw_directions().numpy(), dtype=np.float64)
@@ -694,24 +984,40 @@ def analyze_route_artifacts(
         knn_stats[(left, right)] = knn_row_stats_and_indicators(
             routes[left]["z"],
             routes[right]["z"],
-            routes[left]["hanchan_index"],
-            routes[right]["hanchan_index"],
+            neighbor_hanchan[left],
+            neighbor_hanchan[right],
             KNN_K,
         )
     coverage = _metric_bootstrap_deltas(routes, directions, omega, bias, knn_stats, draws)
     permutation_draws_all = permutation_draws(6000, PERMUTATION_REPS, PERMUTATION_SEED)
     credit_results = {
         "M0": _credit_route_result(
-            routes["M0"]["z"], routes["M0"]["target"], routes["M0"]["hanchan_index"], permutation_draws_all["m0"]
+            routes["M0"]["z"],
+            routes["M0"]["target"],
+            routes["M0"]["hanchan_index"],
+            neighbor_hanchan["M0"],
+            permutation_draws_all["m0"],
         ),
         "D1": _credit_route_result(
-            routes["D1"]["z"], routes["D1"]["target"], routes["D1"]["hanchan_index"], permutation_draws_all["d12"]
+            routes["D1"]["z"],
+            routes["D1"]["target"],
+            routes["D1"]["hanchan_index"],
+            neighbor_hanchan["D1"],
+            permutation_draws_all["d12"],
         ),
         "D2": _credit_route_result(
-            routes["D2"]["z"], routes["D2"]["target"], routes["D2"]["hanchan_index"], permutation_draws_all["d12"]
+            routes["D2"]["z"],
+            routes["D2"]["target"],
+            routes["D2"]["hanchan_index"],
+            neighbor_hanchan["D2"],
+            permutation_draws_all["d12"],
         ),
         "D3": _credit_route_result(
-            routes["D3"]["z"], routes["D3"]["target"], routes["D3"]["hanchan_index"], permutation_draws_all["d3"]
+            routes["D3"]["z"],
+            routes["D3"]["target"],
+            routes["D3"]["hanchan_index"],
+            neighbor_hanchan["D3"],
+            permutation_draws_all["d3"],
         ),
     }
     credit_signal = bool(
@@ -719,11 +1025,16 @@ def analyze_route_artifacts(
         and credit_results["D3"]["vote"]
         and (credit_results["D1"]["vote"] or credit_results["D2"]["vote"])
     )
-    exposure = read_json(exposure_json_path)
-    exposure_artifact = {
-        "sha256": sha256(exposure_json_path),
-        "routes": {name: exposure[name] for name in ROUTE_ORDER},
-    }
+    descriptive = _descriptive_d3_and_exposure(
+        out_root,
+        routes,
+        neighbor_hanchan,
+        global_hash_to_id,
+        directions,
+        omega,
+        bias,
+        exposure_json_path,
+    )
     return {
         "projection_sha256": sha256_array(projection),
         "sw_directions_sha256": sha256_array(directions),
@@ -734,18 +1045,22 @@ def analyze_route_artifacts(
         "credit": credit_results,
         "credit_signal": credit_signal,
         "verdict": combine_verdict(coverage["coverage_signal"], credit_signal),
-        "exposure_proxy_source": exposure_artifact,
+        "descriptive": descriptive,
     }
 
 
 def run_formal_audit(device: torch.device, out_root: Path) -> None:
     if not FORMAL_RUN_AUTHORIZED:
         raise RuntimeError(f"formal run is not authorized: {RUN_AUTHORIZATION_NOTE}")
+    preflight = formal_preflight(device, out_root)
+    if not preflight["all_pass"]:
+        raise RuntimeError(f"formal preflight failed: {json.dumps(preflight, ensure_ascii=False, indent=2)}")
     out_root.mkdir(parents=True, exist_ok=True)
     t0 = time.time()
     report: dict[str, Any] = {
         "schema": "keqing.mortal.k0_representation_space_audit.v1",
         "preregistration": check_preregistration(),
+        "formal_preflight": preflight,
         **git_worktree_metadata(),
         "device": str(device),
         "torch_version": torch.__version__,
