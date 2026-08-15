@@ -103,8 +103,8 @@ CROSS_CORPUS_OUTPUT = (
     / "mortal/authoritative/D3_top2_discard_v1_2026_08"
     / "diagnostics/cross_corpus_mechanism_audit"
 )
-FORMAL_RUN_AUTHORIZED = False
-RUN_AUTHORIZATION_NOTE = "implementation review gate is not open; formal CUDA run is NOT AUTHORIZED"
+FORMAL_RUN_AUTHORIZED = True
+RUN_AUTHORIZATION_NOTE = "implementation review PASS; formal CUDA run authorized"
 FROZEN_INPUT_SHA256 = {
     "k0_checkpoint": (K0_MODEL, "6c0e70058644e02671440ddf7dd2b41c637ae7c2132c9154595593ab690d49e0"),
     "m0_index": (D1_PREP / "file_index_m0.pth", "755b1d5976e3837402eec708d160ede081605e2fcda37d9acdb1436d8a72fce2"),
