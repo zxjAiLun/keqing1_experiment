@@ -22,7 +22,6 @@ from training.mortal.k0_representation_audit_core import (
     estimate_sigma_from_pairs,
     knn_neighbor_indices_blockwise,
     make_rff_features,
-    rff_mmd2_weighted,
 )
 
 # ---------------------------------------------------------------- frozen knobs
@@ -135,8 +134,68 @@ def centered_preference_pressure(
     }
 
 
+# ---------------------------------------------------------------- bootstrap draws
+def make_frozen_bootstrap_draws(
+    n_hanchans: int,
+    reps: int = BOOTSTRAP_REPS,
+    seed: int = BOOTSTRAP_SEED,
+) -> dict[str, np.ndarray]:
+    """Frozen decision-signal bootstrap draws.
+
+    ``M0`` and ``D3`` are independent; ``D1`` and ``D2`` share ``d12``.
+    """
+    if n_hanchans <= 0:
+        raise ValueError("n_hanchans must be positive")
+    rng = np.random.default_rng(seed)
+    m0 = rng.integers(0, n_hanchans, size=(reps, n_hanchans), dtype=np.int32)
+    d12 = rng.integers(0, n_hanchans, size=(reps, n_hanchans), dtype=np.int32)
+    d3 = rng.integers(0, n_hanchans, size=(reps, n_hanchans), dtype=np.int32)
+    return {"m0": m0, "d12": d12, "d3": d3}
+
+
+def build_pooled_anchor_weights(
+    anchor_routes: np.ndarray,
+    anchor_hanchan: np.ndarray,
+    draws: dict[str, np.ndarray],
+    reps: int,
+) -> np.ndarray:
+    """Build the frozen 72k pooled anchor weights.
+
+    ``anchor_routes`` is a string array of per-anchor route labels.
+    ``anchor_hanchan`` is the per-anchor route-local hanchan index.
+    For each replicate:
+
+        M0 anchors -> w_M0
+        D1 anchors -> w_D12
+        D2 anchors -> same w_D12
+        D3 anchors -> w_D3
+
+    Returns shape ``(reps, n_anchors)``.
+    """
+    anchor_routes = np.asarray(anchor_routes)
+    anchor_hanchan = np.asarray(anchor_hanchan, dtype=np.int64)
+    n_anchors = anchor_routes.shape[0]
+    if anchor_hanchan.shape != (n_anchors,):
+        raise ValueError("anchor_routes and anchor_hanchan must have equal length")
+    weights = np.zeros((reps, n_anchors), dtype=np.float64)
+    for route, key in (("M0", "m0"), ("D1", "d12"), ("D2", "d12"), ("D3", "d3")):
+        mask = anchor_routes == route
+        if not np.any(mask):
+            continue
+        local_hanchan = anchor_hanchan[mask]
+        draw = np.asarray(draws[key], dtype=np.int64)
+        if draw.shape[0] < reps:
+            raise ValueError(f"not enough replicates in draw {key}")
+        n_hanchans = int(draw.shape[1])
+        for rep in range(reps):
+            counts = np.bincount(draw[rep], minlength=n_hanchans).astype(np.float64)
+            weights[rep, mask] = counts[local_hanchan]
+    return weights
+
+
 # ---------------------------------------------------------------- support
 def compute_support_neighbors(
+
     anchor_z: np.ndarray,
     anchor_hanchan: np.ndarray,
     reference_z_by_route: dict[str, np.ndarray],
@@ -404,6 +463,39 @@ def estimate_g1_sigma(
     return estimate_sigma_from_pairs(z_by_route, hanchan_ids, pair_seed=pair_seed, pairs_per_route=pairs_per_route)
 
 
+def precompute_g1_rff_features(
+    values: np.ndarray,
+    omega: np.ndarray,
+    bias: np.ndarray,
+) -> np.ndarray:
+    """Compute the frozen RFF feature matrix once for G1."""
+    values = np.asarray(values, dtype=np.float64)
+    omega = np.asarray(omega, dtype=np.float64)
+    bias = np.asarray(bias, dtype=np.float64)
+    scale = float(np.sqrt(2.0 / omega.shape[0]))
+    return scale * np.cos(values @ omega.T + bias[None, :])
+
+
+def rff_mmd2_from_features(
+    features_a: np.ndarray,
+    weights_a: np.ndarray,
+    features_b: np.ndarray,
+    weights_b: np.ndarray,
+) -> float:
+    """RFF-MMD using precomputed feature rows (no repeated cos)."""
+    features_a = np.asarray(features_a, dtype=np.float64)
+    features_b = np.asarray(features_b, dtype=np.float64)
+    weights_a = np.asarray(weights_a, dtype=np.float64)
+    weights_b = np.asarray(weights_b, dtype=np.float64)
+    if weights_a.sum() <= 0 or weights_b.sum() <= 0:
+        raise ValueError("RFF-MMD requires positive weight sums")
+    weights_a = weights_a / weights_a.sum()
+    weights_b = weights_b / weights_b.sum()
+    mean_a = weights_a @ features_a
+    mean_b = weights_b @ features_b
+    return float(np.sum((mean_a - mean_b) ** 2))
+
+
 def g1_rff_mmd2_weighted(
     values_a: np.ndarray,
     weights_a: np.ndarray,
@@ -413,7 +505,61 @@ def g1_rff_mmd2_weighted(
     bias: np.ndarray,
 ) -> float:
     """Frozen G1 RFF-MMD distance on unit gradient directions."""
-    return rff_mmd2_weighted(values_a, weights_a, values_b, weights_b, omega, bias)
+    features_a = precompute_g1_rff_features(values_a, omega, bias)
+    features_b = precompute_g1_rff_features(values_b, omega, bias)
+    return rff_mmd2_from_features(features_a, weights_a, features_b, weights_b)
+
+
+def g1_bootstrap_deltas_from_features(
+    features_by_route: dict[str, np.ndarray],
+    row_hanchan_by_route: dict[str, np.ndarray],
+    draws: dict[str, np.ndarray],
+    reps: int,
+) -> dict[str, Any]:
+    """Optimized G1 bootstrap using precomputed RFF feature rows.
+
+    RFF features are computed once per route; each replicate only forms
+    multiplicity-weighted feature means from per-hanchan feature sums.
+    """
+    n_hanchans = int(max(int(np.max(row_hanchan_by_route[route])) for route in ROUTE_ORDER) + 1)
+    hanchan_sums: dict[str, np.ndarray] = {}
+    for route in ROUTE_ORDER:
+        features = np.asarray(features_by_route[route], dtype=np.float64)
+        row_hanchan = np.asarray(row_hanchan_by_route[route], dtype=np.int64)
+        sums = np.zeros((n_hanchans, features.shape[1]), dtype=np.float64)
+        for hanchan in range(n_hanchans):
+            rows = np.flatnonzero(row_hanchan == hanchan)
+            if rows.size == 0:
+                continue
+            sums[hanchan] = features[rows].sum(axis=0)
+        hanchan_sums[route] = sums
+
+    def _counts(key: str, rep: int) -> np.ndarray:
+        return np.bincount(draws[key][rep].astype(np.int64), minlength=n_hanchans).astype(np.float64)
+
+    def _mmd(route_a: str, route_b: str, rep: int) -> float:
+        key_a = "m0" if route_a == "M0" else "d12" if route_a in ("D1", "D2") else "d3"
+        key_b = "m0" if route_b == "M0" else "d12" if route_b in ("D1", "D2") else "d3"
+        counts_a = _counts(key_a, rep)
+        counts_b = _counts(key_b, rep)
+        mean_a = (counts_a @ hanchan_sums[route_a]) / (3.0 * counts_a.sum())
+        mean_b = (counts_b @ hanchan_sums[route_b]) / (3.0 * counts_b.sum())
+        return float(np.sum((mean_a - mean_b) ** 2))
+
+    d_m0_d1 = np.asarray([_mmd("M0", "D1", rep) for rep in range(reps)], dtype=np.float64)
+    d_m0_d3 = np.asarray([_mmd("M0", "D3", rep) for rep in range(reps)], dtype=np.float64)
+    d_d1_d2 = np.asarray([_mmd("D1", "D2", rep) for rep in range(reps)], dtype=np.float64)
+    delta1 = d_m0_d1 - d_d1_d2
+    delta3 = d_m0_d3 - d_d1_d2
+    return {
+        "d_m0_d1": d_m0_d1,
+        "d_m0_d3": d_m0_d3,
+        "d_d1_d2": d_d1_d2,
+        "delta1": delta1,
+        "delta3": delta3,
+        "delta1_ci": (float(np.percentile(delta1, 2.5)), float(np.percentile(delta1, 97.5))),
+        "delta3_ci": (float(np.percentile(delta3, 2.5)), float(np.percentile(delta3, 97.5))),
+    }
 
 
 def gradient_family_vote(result: dict[str, Any]) -> bool:
@@ -471,11 +617,15 @@ def action_credit_stats(
         total = sum(counts.values())
         return float(-sum((count / total) * np.log(count / total) for count in counts.values()))
 
+    total_eligible = float(np.count_nonzero(eligible))
     h_state = _entropy(neighbor_targets[eligible])
     h_state_action = 0.0
-    for action in valid_groups:
+    # Once eligible, all mutually-legal action groups enter the decomposition,
+    # including groups smaller than min_group_size.  min_group_size only gates
+    # whether the query has enough support for readout.
+    for action, count in groups.items():
         mask = eligible & (neighbor_actions == action)
-        weight = float(np.count_nonzero(mask)) / float(np.count_nonzero(eligible))
+        weight = float(count) / total_eligible
         h_state_action += weight * _entropy(neighbor_targets[mask])
     return {
         "eligible": True,
@@ -486,6 +636,76 @@ def action_credit_stats(
         "eligible_count": int(np.count_nonzero(eligible)),
         "valid_group_count": len(valid_groups),
     }
+
+
+def action_credit_route_stats(
+    z: np.ndarray,
+    actions: np.ndarray,
+    masks: np.ndarray,
+    targets: np.ndarray,
+    hanchan_ids: np.ndarray,
+    k: int = K_CREDIT,
+) -> dict[str, object]:
+    """Aggregate action-credit descriptive stats for one route.
+
+    Uses exact k=64 same-route neighborhoods with same-hanchan exclusion.
+    """
+    from training.mortal.k0_representation_audit_core import knn_neighbor_indices_blockwise
+
+    z = np.asarray(z, dtype=np.float64)
+    actions = np.asarray(actions, dtype=np.int64)
+    masks = np.asarray(masks, dtype=bool)
+    targets = np.asarray(targets, dtype=np.float64)
+    hanchan_ids = np.asarray(hanchan_ids, dtype=np.int64)
+    n = z.shape[0]
+    neighbor_indices = knn_neighbor_indices_blockwise(z, z, hanchan_ids, hanchan_ids, k=k)
+    h_state_values: list[float] = []
+    h_state_action_values: list[float] = []
+    ig_values: list[float] = []
+    eligible = 0
+    for i in range(n):
+        result = action_credit_stats(
+            int(actions[i]),
+            masks[i],
+            actions[neighbor_indices[i]],
+            masks[neighbor_indices[i]],
+            targets[neighbor_indices[i]],
+            k=k,
+        )
+        if result["eligible"]:
+            eligible += 1
+            h_state_values.append(float(result["h_state"]))
+            h_state_action_values.append(float(result["h_state_action"]))
+            ig_values.append(float(result["action_information_gain"]))
+    return {
+        "rows": n,
+        "eligible_queries": eligible,
+        "eligible_query_fraction": float(eligible) / float(n) if n else 0.0,
+        "h_state_mean": float(np.mean(h_state_values)) if h_state_values else None,
+        "h_state_action_mean": float(np.mean(h_state_action_values)) if h_state_action_values else None,
+        "action_information_gain_mean": float(np.mean(ig_values)) if ig_values else None,
+    }
+
+
+def adam_alignment_metrics(
+    grad_flat: np.ndarray,
+    exp_avg_flat: np.ndarray,
+    exp_avg_sq_flat: np.ndarray,
+    eps: float = 1e-8,
+) -> dict[str, float | None]:
+    """Descriptive Adam alignment metrics on flattened vectors."""
+    grad_flat = np.asarray(grad_flat, dtype=np.float64)
+    exp_avg_flat = np.asarray(exp_avg_flat, dtype=np.float64)
+    exp_avg_sq_flat = np.asarray(exp_avg_sq_flat, dtype=np.float64)
+    if grad_flat.shape != exp_avg_flat.shape or grad_flat.shape != exp_avg_sq_flat.shape:
+        raise ValueError("gradient and Adam state vectors must have equal shape")
+    g_norm = float(np.linalg.norm(grad_flat))
+    m_norm = float(np.linalg.norm(exp_avg_flat))
+    cos_m = float(np.dot(grad_flat, exp_avg_flat) / (g_norm * m_norm)) if g_norm > 0 and m_norm > 0 else None
+    denom = exp_avg_flat / (np.sqrt(exp_avg_sq_flat) + eps)
+    d_norm = float(np.linalg.norm(denom))
+    cos_m_den = float(np.dot(grad_flat, denom) / (g_norm * d_norm)) if g_norm > 0 and d_norm > 0 else None
+    return {"cos_g_m": cos_m, "cos_g_m_den": cos_m_den}
 
 
 # ---------------------------------------------------------------- rehydration gate
@@ -509,6 +729,17 @@ def row_rehydration_matches(
 
 
 # ---------------------------------------------------------------- verdict
+def authoritative_verdict(readout: str, gates_pass: bool, complete: bool) -> dict[str, object]:
+    """Gate-aware report verdict.
+
+    Any failed gate or incomplete analysis produces
+    ``no_verdict_gates_failed`` with ``authoritative=false``.
+    """
+    if not gates_pass or not complete or readout == "no_verdict_gates_failed":
+        return {"readout": "no_verdict_gates_failed", "authoritative": False}
+    return {"readout": readout, "authoritative": True}
+
+
 def combine_decision_verdict(support_signal: bool, q_gradient_signal: bool) -> str:
     if support_signal and q_gradient_signal:
         return "both_signals"

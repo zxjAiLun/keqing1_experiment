@@ -16,7 +16,10 @@ from training.mortal.k0_decision_signal_audit_core import (
     K_CREDIT,
     RFF_DIM,
     ROUTE_ORDER,
+    action_credit_route_stats,
     action_credit_stats,
+    adam_alignment_metrics,
+    build_pooled_anchor_weights,
     centered_preference_pressure,
     combine_decision_verdict,
     compute_row_gradients,
@@ -25,16 +28,23 @@ from training.mortal.k0_decision_signal_audit_core import (
     g1_rff_mmd2_weighted,
     gradient_family_bootstrap_deltas,
     gradient_family_vote,
+    make_frozen_bootstrap_draws,
     make_g1_rff_features,
     normalize_gradient_direction,
+    precompute_g1_rff_features,
     q_gradient_signal_from_family_votes,
+    rff_mmd2_from_features,
     row_rehydration_matches,
     support_bootstrap_deltas,
     support_metrics_for_anchor,
     support_signal_from_bootstrap,
     weighted_wasserstein_1d,
 )
-from training.mortal.k0_representation_audit_core import sha256_file
+from training.mortal.k0_representation_audit_core import (
+    build_global_hanchan_ids,
+    sha256_array,
+    sha256_file,
+)
 
 
 def _legal_mask(actions: int = 5) -> np.ndarray:
@@ -300,3 +310,138 @@ def test_formal_preflight_rejects_when_not_authorized(monkeypatch, tmp_path) -> 
     assert result["all_pass"] is False
     assert result["formal_run_authorized"] is False
     assert result["checks"]["device_is_cuda0"] is False
+
+
+def test_frozen_bootstrap_draws_and_pooled_anchor_weights() -> None:
+    n = 3
+    draws = make_frozen_bootstrap_draws(n_hanchans=n, reps=2)
+    assert draws["m0"].shape == (2, n)
+    assert draws["d12"].shape == (2, n)
+    assert draws["d3"].shape == (2, n)
+    # Deterministic under the frozen seed.
+    draws2 = make_frozen_bootstrap_draws(n_hanchans=n, reps=2)
+    for key in draws:
+        assert np.array_equal(draws[key], draws2[key])
+
+    routes = np.asarray(["M0", "D1", "D2", "D3"] * 2)
+    hanchan = np.asarray([0, 0, 0, 0, 1, 1, 1, 1])
+    weights = build_pooled_anchor_weights(routes, hanchan, draws, reps=2)
+    assert weights.shape == (2, 8)
+    # M0 anchors only depend on m0 draw; D1/D2 only on d12; D3 only on d3.
+    for rep in range(2):
+        for idx, route in enumerate(routes):
+            key = "m0" if route == "M0" else "d12" if route in ("D1", "D2") else "d3"
+            han = hanchan[idx]
+            expected = np.bincount(draws[key][rep], minlength=n)[han]
+            assert weights[rep, idx] == expected
+
+
+def test_action_credit_includes_small_groups_in_entropy_decomposition() -> None:
+    query_legal = _legal_mask(6)
+    query_action = 0
+    k = K_CREDIT
+    neighbor_actions = np.asarray([1] * 30 + [2] * 30 + [3] * 3 + [4] * 1, dtype=np.int64)
+    neighbor_legals = np.zeros((k, ACTION_DIM), dtype=bool)
+    neighbor_legals[:, :6] = True
+    neighbor_targets = np.linspace(-1.0, 1.0, k)
+    result = action_credit_stats(query_action, query_legal, neighbor_actions, neighbor_legals, neighbor_targets, k=k)
+    assert result["eligible"] is True
+    assert result["valid_group_count"] == 2
+    assert result["eligible_count"] == k
+    # Because all neighbors are eligible and we include every action group,
+    # the weighted group entropies must cover all 64 rows.
+    # Recompute expectation from all groups.
+    groups = {1: 30, 2: 30, 3: 3, 4: 1}
+    total = k
+
+    def ent(vals: np.ndarray) -> float:
+        counts = {}
+        for v in vals:
+            counts[v] = counts.get(v, 0) + 1
+        return -sum((c / len(vals)) * np.log(c / len(vals)) for c in counts.values())
+
+    expected = 0.0
+    for action, count in groups.items():
+        vals = neighbor_targets[neighbor_actions == action]
+        expected += (count / total) * ent(vals)
+    assert np.isclose(result["h_state_action"], expected)
+    assert np.isclose(result["h_state"], ent(neighbor_targets))
+
+
+def test_g1_optimized_rff_matches_naive() -> None:
+    omega, bias = make_g1_rff_features(sigma=0.7)
+    rng = np.random.default_rng(0)
+    a = rng.normal(size=(5, ACTION_DIM))
+    b = rng.normal(size=(5, ACTION_DIM))
+    a /= np.linalg.norm(a, axis=1, keepdims=True)
+    b /= np.linalg.norm(b, axis=1, keepdims=True)
+    wa = np.asarray([1.0, 2.0, 1.0, 0.5, 0.5])
+    wb = np.asarray([0.5, 0.5, 1.0, 2.0, 1.0])
+    naive = g1_rff_mmd2_weighted(a, wa, b, wb, omega, bias)
+    fa = precompute_g1_rff_features(a, omega, bias)
+    fb = precompute_g1_rff_features(b, omega, bias)
+    optimized = rff_mmd2_from_features(fa, wa, fb, wb)
+    assert np.isclose(naive, optimized)
+
+
+def test_global_hanchan_identity_avoids_route_local_collision() -> None:
+    ids, _ = build_global_hanchan_ids({"M0": ["aaa", "ccc"], "D1": ["bbb", "ccc"]})
+    assert ids["M0"][0] != ids["D1"][0]  # same local sorted position, different hash
+    assert ids["M0"][1] == ids["D1"][1]  # same global hash
+
+
+def test_formal_preflight_includes_prereg_and_array_hashes(monkeypatch, tmp_path) -> None:
+    import training.mortal.audit_k0_decision_signal_2026_08 as runner
+
+    monkeypatch.setattr(runner, "sha256", lambda path: "0" * 64)
+    monkeypatch.setattr(runner, "sha256_array", lambda arr: "0" * 64)
+    result = runner.formal_preflight(torch.device("cpu"), tmp_path / "absent")
+    assert result["checks"]["preregistration_sha"] is False
+    assert result["checks"]["output_dir_absent"] is True
+    assert result["all_pass"] is False
+
+
+def test_action_credit_route_stats_aggregates_eligible_fraction() -> None:
+    z = np.random.default_rng(0).normal(size=(18, 8)).astype(np.float64)
+    z /= np.linalg.norm(z, axis=1, keepdims=True)
+    hanchan = np.repeat(np.arange(6), 3).astype(np.int64)
+    actions = np.asarray([0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1], dtype=np.int64)
+    masks = np.zeros((18, ACTION_DIM), dtype=bool)
+    masks[:, :6] = True
+    targets = np.linspace(-1.0, 1.0, 18)
+    stats = action_credit_route_stats(z, actions, masks, targets, hanchan, k=8)
+    assert stats["rows"] == 18
+    assert 0.0 <= stats["eligible_query_fraction"] <= 1.0
+
+
+def test_adam_alignment_metrics_returns_cosines() -> None:
+    g = np.asarray([1.0, 0.0, 0.0])
+    m = np.asarray([1.0, 0.0, 0.0])
+    v = np.asarray([1.0, 0.0, 0.0])
+    out = adam_alignment_metrics(g, m, v)
+    assert out["cos_g_m"] == 1.0
+    assert out["cos_g_m_den"] == 1.0
+    out2 = adam_alignment_metrics(np.asarray([0.0, 1.0, 0.0]), m, v)
+    assert out2["cos_g_m"] == 0.0
+
+
+def test_formal_preflight_requires_output_dir_absent_not_merely_empty(monkeypatch, tmp_path) -> None:
+    import training.mortal.audit_k0_decision_signal_2026_08 as runner
+
+    monkeypatch.setattr(runner, "sha256", lambda path: "0" * 64)
+    monkeypatch.setattr(runner, "sha256_array", lambda arr: "0" * 64)
+    output = tmp_path / "output"
+    output.mkdir()
+    result = runner.formal_preflight(torch.device("cpu"), output)
+    assert result["checks"]["output_dir_absent"] is False
+    assert result["all_pass"] is False
+
+
+def test_rng_golden_hashes_for_bootstrap_and_g1() -> None:
+    draws = make_frozen_bootstrap_draws(n_hanchans=7, reps=3)
+    assert sha256_array(draws["m0"]) == "c4a75931942a49e248767729fc2b82c4eb0376cba9af8954517d5c95fa573108"
+    assert sha256_array(draws["d12"]) == "505f4195807dfc4411a1b8cb1d41ee071a2d41c618100f9bc9bf806038e77e57"
+    assert sha256_array(draws["d3"]) == "9f93ae373de132b5e18ad2a3afc02a97c87520f58e4e55856c4324906f23599c"
+    omega, bias = make_g1_rff_features(sigma=0.7)
+    assert sha256_array(omega) == "71e9746a49b68d8db1c17d8aaca1836934e4330b54e60e7c49478d22bc168e6d"
+    assert sha256_array(bias) == "02bbda40af71bba17181728941623c1cc5a13b813e1c67cb09f6dc3bbed5ae65"
