@@ -10,6 +10,7 @@ from training.mortal.audit_k0_decision_signal_2026_08 import (
     PREREG_FILE_SHA256,
     _adam_diagnostic_for_route,
     _adam_diagnostic_from_optimizer,
+    _build_preserved_optimizer,
     _compute_support_metrics,
     _flatten_group_gradient,
     _json_safe_report,
@@ -822,3 +823,57 @@ def test_outer_run_formal_audit_preflight_failure_does_not_write_scientific_repo
     else:
         raise AssertionError("expected RuntimeError on preflight failure")
     assert not (out_root / "report.json").exists()
+
+
+def _toy_optimizer_state_for_build_preserved():
+    from torch import nn
+
+    from training.mortal.preflight_optimizer_ab import make_optimizer, make_scheduler
+
+    brain = nn.Linear(4, 4)
+    dqn = nn.Linear(4, 4)
+    aux = nn.Linear(4, 4)
+    config = {
+        "optim": {
+            "weight_decay": 0.01,
+            "betas": [0.9, 0.999],
+            "eps": 1e-8,
+            "scheduler": {
+                "peak": 1e-4,
+                "final": 1e-5,
+                "warm_up_steps": 100,
+                "max_steps": 1000,
+                "init": 1e-8,
+            },
+        }
+    }
+    optimizer = make_optimizer(config, (brain, dqn, aux))
+    _ = make_scheduler(config, optimizer)
+    # Create optimizer state without needing real data.
+    for param in list(brain.parameters()) + list(dqn.parameters()) + list(aux.parameters()):
+        param.grad = torch.ones_like(param)
+    optimizer.step()
+    optimizer.zero_grad()
+    return brain, dqn, aux, config, optimizer.state_dict()
+
+
+def test_build_preserved_optimizer_accepts_matching_state() -> None:
+    brain, dqn, aux, config, state_dict = _toy_optimizer_state_for_build_preserved()
+    state = {"config": config, "optimizer": state_dict}
+    optimizer = _build_preserved_optimizer(state, brain, dqn, aux)
+    assert optimizer is not None
+
+
+def test_build_preserved_optimizer_rejects_tampered_group_metadata() -> None:
+    import copy
+
+    brain, dqn, aux, config, state_dict = _toy_optimizer_state_for_build_preserved()
+    state = {"config": config, "optimizer": copy.deepcopy(state_dict)}
+    # Tamper with eps in the preserved checkpoint param group.
+    for group in state["optimizer"]["param_groups"]:
+        group["eps"] = 9.9
+    try:
+        _build_preserved_optimizer(state, brain, dqn, aux)
+    except RuntimeError:
+        return
+    raise AssertionError("expected preserved optimizer validation to fail")

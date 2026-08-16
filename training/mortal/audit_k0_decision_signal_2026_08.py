@@ -839,7 +839,7 @@ def _build_preserved_optimizer(
     aux: torch.nn.Module,
 ) -> torch.optim.Optimizer:
     """Construct the production optimizer and load frozen preserved Adam state."""
-    from training.mortal.preflight_optimizer_ab import make_optimizer
+    from training.mortal.preflight_optimizer_ab import make_optimizer, make_scheduler
     from training.run_mortal_dqn_offline import (
         _optimizer_group_metadata,
         _validate_preserved_optimizer,
@@ -847,6 +847,10 @@ def _build_preserved_optimizer(
 
     config = state["config"]
     optimizer = make_optimizer(config, (brain, dqn, aux))
+    # Reproduce production fresh-optimizer recipe before capturing metadata.
+    # The scheduler may adjust optimizer param-group metadata (e.g. lr /
+    # initial_lr); we only need its construction side effect, not its state.
+    _scheduler = make_scheduler(config, optimizer)
     fresh_groups = _optimizer_group_metadata(optimizer)
     if "optimizer" not in state:
         raise RuntimeError("frozen K0 checkpoint has no preserved optimizer state")
