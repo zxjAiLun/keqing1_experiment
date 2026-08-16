@@ -64,11 +64,11 @@ def _legal_mask(actions: int = 5) -> np.ndarray:
     return mask
 
 
-def test_preregistration_is_frozen_and_formal_run_disabled() -> None:
+def test_preregistration_is_frozen_and_formal_run_authorized() -> None:
     assert PREREG_COMMIT == "7bee592c7c1d00614ca1f5083032dc16b1665d36"
     assert PREREG_FILE_SHA256 == "1e27e97e6efb509eba80299f644507fe025e4e66375183155f7190a76c639a9d"
     assert sha256_file(PREREG_FILE) == PREREG_FILE_SHA256
-    assert FORMAL_RUN_AUTHORIZED is False
+    assert FORMAL_RUN_AUTHORIZED is True
     result = check_preregistration()
     assert result["preregistration_sha_matches"] is True
 
@@ -319,7 +319,7 @@ def test_formal_preflight_rejects_on_sha_mismatch(monkeypatch, tmp_path) -> None
     monkeypatch.setattr(runner, "sha256", lambda path: "0" * 64)
     result = runner.formal_preflight(torch.device("cpu"), tmp_path / "absent")
     assert result["all_pass"] is False
-    assert result["formal_run_authorized"] is False
+    assert result["formal_run_authorized"] is True
     assert result["checks"]["device_is_cuda0"] is False
 
 
