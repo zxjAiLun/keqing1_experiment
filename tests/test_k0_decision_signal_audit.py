@@ -14,6 +14,7 @@ from training.mortal.audit_k0_decision_signal_2026_08 import (
     _compute_support_metrics,
     _flatten_group_gradient,
     _json_safe_report,
+    _rehydrate_canonical_rows,
     _run_decision_analysis,
     check_preregistration,
 )
@@ -63,11 +64,11 @@ def _legal_mask(actions: int = 5) -> np.ndarray:
     return mask
 
 
-def test_preregistration_is_frozen_and_formal_run_authorized() -> None:
+def test_preregistration_is_frozen_and_formal_run_disabled() -> None:
     assert PREREG_COMMIT == "7bee592c7c1d00614ca1f5083032dc16b1665d36"
     assert PREREG_FILE_SHA256 == "1e27e97e6efb509eba80299f644507fe025e4e66375183155f7190a76c639a9d"
     assert sha256_file(PREREG_FILE) == PREREG_FILE_SHA256
-    assert FORMAL_RUN_AUTHORIZED is True
+    assert FORMAL_RUN_AUTHORIZED is False
     result = check_preregistration()
     assert result["preregistration_sha_matches"] is True
 
@@ -318,7 +319,7 @@ def test_formal_preflight_rejects_on_sha_mismatch(monkeypatch, tmp_path) -> None
     monkeypatch.setattr(runner, "sha256", lambda path: "0" * 64)
     result = runner.formal_preflight(torch.device("cpu"), tmp_path / "absent")
     assert result["all_pass"] is False
-    assert result["formal_run_authorized"] is True
+    assert result["formal_run_authorized"] is False
     assert result["checks"]["device_is_cuda0"] is False
 
 
@@ -877,3 +878,79 @@ def test_build_preserved_optimizer_rejects_tampered_group_metadata() -> None:
     except RuntimeError:
         return
     raise AssertionError("expected preserved optimizer validation to fail")
+
+
+def test_rehydration_uses_batched_inference(monkeypatch) -> None:
+    from libriichi import dataset
+    from torch import nn
+
+    class FakeGRP:
+        def take_rank_by_player(self):
+            return [0, 1, 2, 3]
+
+    class FakeGame:
+        def __init__(self, n):
+            self.n = n
+
+        def take_obs(self):
+            return [np.zeros(4, dtype=np.float32) for _ in range(self.n)]
+
+        def take_actions(self):
+            return [0, 1, 2][: self.n]
+
+        def take_masks(self):
+            masks = np.zeros((self.n, ACTION_DIM), dtype=bool)
+            masks[:, :4] = True
+            return list(masks)
+
+        def take_grp(self):
+            return FakeGRP()
+
+        def take_player_id(self):
+            return 0
+
+    class FakeLoader:
+        def __init__(self, **kwargs):
+            pass
+
+        def load_gz_log_files(self, paths):
+            return [[FakeGame(3)]]
+
+    monkeypatch.setattr(dataset, "GameplayLoader", FakeLoader)
+
+    brain_batch_sizes = []
+    dqn_batch_sizes = []
+
+    class FakeBrain(nn.Module):
+        def forward(self, obs):
+            brain_batch_sizes.append(obs.shape[0])
+            return torch.ones(obs.shape[0], 1024, dtype=torch.float64)
+
+    class FakeDQN(nn.Module):
+        def forward(self, phi, mask):
+            dqn_batch_sizes.append(phi.shape[0])
+            q = torch.zeros(phi.shape[0], ACTION_DIM, dtype=torch.float64)
+            q[mask] = 0.5
+            q[~mask] = float("-inf")
+            return q
+
+    canonical = {
+        "file_index": np.asarray([0, 0, 0], dtype=np.int64),
+        "row_index": np.asarray([0, 1, 2], dtype=np.int64),
+        "target": np.asarray([3.0, 3.0, 3.0]),
+        "perspective_labels": ["M0", "M0", "M0"],
+        "z": np.tile(np.asarray([0.5, 0.5, 0.5, 0.5]), (3, 1)),
+    }
+    route_spec = {"index": ["dummy.json.gz"], "labels": ["M0"], "by_file": None}
+    result = _rehydrate_canonical_rows(
+        "M0",
+        route_spec,
+        canonical,
+        FakeBrain(),
+        FakeDQN(),
+        torch.device("cpu"),
+        np.eye(4, 1024, dtype=np.float64),
+    )
+    assert result["actions"].tolist() == [0, 1, 2]
+    assert brain_batch_sizes == [3]
+    assert dqn_batch_sizes == [3]

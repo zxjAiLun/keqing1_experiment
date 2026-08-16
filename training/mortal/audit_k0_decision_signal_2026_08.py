@@ -84,11 +84,10 @@ PREREG_FILE = (
 PREREG_FILE_SHA256 = "1e27e97e6efb509eba80299f644507fe025e4e66375183155f7190a76c639a9d"
 OUTPUT_ROOT = DATA_ROOT / "mortal/authoritative/K0_decision_signal_audit_2026_08"
 K0_REPR_OUTPUT = DATA_ROOT / "mortal/authoritative/K0_representation_audit_2026_08"
-FORMAL_RUN_AUTHORIZED = True
+FORMAL_RUN_AUTHORIZED = False
 RUN_AUTHORIZATION_NOTE = (
-    "implementation review PASS at "
-    "ede592d7f2cb590b9927c4b8bd4ad5daf5285730; "
-    "formal CUDA run authorized"
+    "Repair 7 implemented after failed formal attempt; "
+    "awaiting remote implementation review and new authorization"
 )
 
 FROZEN_INPUT_SHA256 = {
@@ -365,6 +364,38 @@ def _rehydrate_canonical_rows(
         final_rank = int(grp.take_rank_by_player()[player_id])
         expected_target = float(TRAIN_PTS[final_rank] - TRAIN_PTS.mean())
         actions_all = _to_i64(actions_all_raw, signed=True)
+        n_rows = len(obs_all)
+        # Reproduce the representation writer's inference path exactly:
+        # per-file all rows, Brain/DQN in batch_size=512, float64 CPU after
+        # forward.  Single-row inference is numerically different on CUDA.
+        phi_all = np.empty((n_rows, 1024), dtype=np.float64)
+        q_all = np.empty((n_rows, ACTION_DIM), dtype=np.float64)
+        batch_size = 512
+        for batch_start in range(0, n_rows, batch_size):
+            batch_stop = min(batch_start + batch_size, n_rows)
+            obs_batch = torch.as_tensor(
+                np.stack([
+                    np.ascontiguousarray(np.asarray(obs_all[r], dtype=np.float32))
+                    for r in range(batch_start, batch_stop)
+                ]),
+                device=device,
+            )
+            masks_batch = torch.as_tensor(
+                np.stack([
+                    np.asarray(masks_all[r], dtype=bool)
+                    for r in range(batch_start, batch_stop)
+                ]),
+                device=device,
+            )
+            with torch.inference_mode():
+                phi_batch = brain(obs_batch)
+                q_batch = dqn(phi_batch, masks_batch)
+            phi_all[batch_start:batch_stop] = (
+                phi_batch.detach().to("cpu", dtype=torch.float64).numpy()
+            )
+            q_all[batch_start:batch_stop] = (
+                q_batch.detach().to("cpu", dtype=torch.float64).numpy()
+            )
         for i in indices:
             row = int(row_index_arr[i])
             action = int(actions_all[row])
@@ -377,11 +408,7 @@ def _rehydrate_canonical_rows(
                 raise RuntimeError(f"{route_name}: target mismatch at file {file_index} row {row}")
             if label != perspective_arr[i]:
                 raise RuntimeError(f"{route_name}: perspective mismatch at file {file_index} row {row}")
-            obs_t = torch.as_tensor(np.asarray(obs_all[row], dtype=np.float32), device=device).unsqueeze(0)
-            mask_t = torch.as_tensor(mask[None, :], device=device)
-            with torch.inference_mode():
-                phi = brain(obs_t)
-                q_np = dqn(phi, mask_t).detach().cpu().numpy()[0].astype(np.float64)
+            q_np = q_all[row]
             if q_np.shape != (ACTION_DIM,):
                 raise RuntimeError(f"{route_name}: invalid DQN output shape at file {file_index} row {row}")
             if not np.isfinite(q_np[mask]).all():
@@ -389,7 +416,8 @@ def _rehydrate_canonical_rows(
             if not np.isneginf(q_np[~mask]).all():
                 raise RuntimeError(f"{route_name}: DQN output at illegal coordinates is not -inf at file {file_index} row {row}")
             q_out[i] = q_np
-            z_recomp_full = np.asarray(phi.detach().cpu().numpy()[0], dtype=np.float64) @ projection.T
+            phi_row = phi_all[row]
+            z_recomp_full = phi_row @ projection.T
             norm = np.linalg.norm(z_recomp_full)
             if norm <= 0 or not np.isfinite(z_recomp_full).all():
                 raise RuntimeError(f"{route_name}: invalid recomputed z at file {file_index} row {row}")
