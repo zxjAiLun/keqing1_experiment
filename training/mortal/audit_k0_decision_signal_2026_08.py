@@ -84,8 +84,12 @@ PREREG_FILE = (
 PREREG_FILE_SHA256 = "1e27e97e6efb509eba80299f644507fe025e4e66375183155f7190a76c639a9d"
 OUTPUT_ROOT = DATA_ROOT / "mortal/authoritative/K0_decision_signal_audit_2026_08"
 K0_REPR_OUTPUT = DATA_ROOT / "mortal/authoritative/K0_representation_audit_2026_08"
-FORMAL_RUN_AUTHORIZED = False
-RUN_AUTHORIZATION_NOTE = "implementation + synthetic/unit tests authorized; formal corpus run NOT authorized"
+FORMAL_RUN_AUTHORIZED = True
+RUN_AUTHORIZATION_NOTE = (
+    "implementation review PASS at "
+    "ede592d7f2cb590b9927c4b8bd4ad5daf5285730; "
+    "formal CUDA run authorized"
+)
 
 FROZEN_INPUT_SHA256 = {
     "k0_checkpoint": (K0_MODEL, "6c0e70058644e02671440ddf7dd2b41c637ae7c2132c9154595593ab690d49e0"),
