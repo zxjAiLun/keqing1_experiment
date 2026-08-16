@@ -571,6 +571,33 @@ def q_gradient_signal_from_family_votes(votes: list[bool]) -> bool:
     return sum(bool(vote) for vote in votes) >= 2
 
 
+def greedy_action_from_q(q: np.ndarray, legal_mask: np.ndarray) -> int:
+    """Frozen descriptive helper: argmax K0 Q over legal actions."""
+    q = np.asarray(q, dtype=np.float64)
+    legal_mask = np.asarray(legal_mask, dtype=bool)
+    legal_indices = np.flatnonzero(legal_mask)
+    if legal_indices.size == 0:
+        raise ValueError("legal_mask must contain at least one action")
+    return int(legal_indices[int(np.argmax(q[legal_indices]))])
+
+
+def alternative_action_from_q(
+    q: np.ndarray,
+    legal_mask: np.ndarray,
+    behavior_action: int,
+) -> int:
+    """Frozen descriptive helper: argmax K0 Q among legal excluding behavior."""
+    q = np.asarray(q, dtype=np.float64)
+    legal_mask = np.asarray(legal_mask, dtype=bool)
+    if not legal_mask[behavior_action]:
+        raise ValueError("behavior_action must be legal")
+    legal_indices = np.flatnonzero(legal_mask)
+    alt_indices = legal_indices[legal_indices != behavior_action]
+    if alt_indices.size == 0:
+        raise ValueError("no alternative legal action")
+    return int(alt_indices[int(np.argmax(q[alt_indices]))])
+
+
 # ---------------------------------------------------------------- action credit
 def action_credit_stats(
     query_action: int,

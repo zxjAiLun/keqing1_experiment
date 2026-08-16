@@ -22,6 +22,7 @@ from training.mortal.k0_decision_signal_audit_core import (
     action_credit_route_stats,
     action_credit_stats,
     adam_alignment_metrics,
+    alternative_action_from_q,
     build_pooled_anchor_weights,
     centered_preference_pressure,
     combine_decision_verdict,
@@ -31,6 +32,7 @@ from training.mortal.k0_decision_signal_audit_core import (
     g1_rff_mmd2_weighted,
     gradient_family_bootstrap_deltas,
     gradient_family_vote,
+    greedy_action_from_q,
     make_frozen_bootstrap_draws,
     make_g1_rff_features,
     normalize_gradient_direction,
@@ -524,3 +526,17 @@ def test_g1_pair_and_microbatch_golden_hashes() -> None:
     row_hanchan = np.repeat(np.arange(10), 3)
     samples = sample_microbatch_rows(row_hanchan, batch_size=5, n_batches=3, seed=20260824)
     assert sha256_array(samples) == "ba5a15d5fbcff7bb440c3eb1717a2faf8f8f0ed64badaf0ece34e46ce26ba540"
+
+
+def test_greedy_and_alt_are_selected_from_q_not_gradient() -> None:
+    q = np.zeros(ACTION_DIM)
+    q[:5] = [0.1, 0.9, 0.2, 0.8, 0.0]
+    legal = np.zeros(ACTION_DIM, dtype=bool)
+    legal[:5] = True
+    # Gradient has largest at index 0, but Q has largest at index 1.
+    g_total = np.zeros(ACTION_DIM)
+    g_total[0] = 10.0
+    g_total[1] = 0.0
+    assert greedy_action_from_q(q, legal) == 1
+    assert alternative_action_from_q(q, legal, behavior_action=1) == 3
+    assert int(np.argmax(g_total[legal])) == 0

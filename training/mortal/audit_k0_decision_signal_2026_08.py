@@ -44,6 +44,7 @@ from training.mortal.k0_decision_signal_audit_core import (
     SUPPORT_K,
     action_credit_route_stats,
     adam_alignment_metrics,
+    alternative_action_from_q,
     authoritative_verdict,
     build_pooled_anchor_weights,
     centered_preference_pressure,
@@ -55,16 +56,22 @@ from training.mortal.k0_decision_signal_audit_core import (
     g1_bootstrap_deltas_from_features,
     gradient_family_bootstrap_deltas,
     gradient_family_vote,
+    greedy_action_from_q,
     make_frozen_bootstrap_draws,
     make_g1_rff_features,
     precompute_g1_rff_features,
     q_gradient_signal_from_family_votes,
+    rff_mmd2_from_features,
     support_bootstrap_deltas,
     support_metrics_for_anchor,
     support_signal_from_bootstrap,
     weighted_wasserstein_1d,
 )
-from training.mortal.k0_representation_audit_core import sha256_array, sha256_file
+from training.mortal.k0_representation_audit_core import (
+    entropy,
+    sha256_array,
+    sha256_file,
+)
 
 # ---------------------------------------------------------------- prereg gate
 PREREG_COMMIT = "7bee592c7c1d00614ca1f5083032dc16b1665d36"
@@ -199,11 +206,16 @@ def checkpoint_smoke(device: torch.device) -> dict[str, object]:
     shape = obs_shape(version)
     obs = torch.zeros(8, *shape, device=device)
     masks = torch.ones(8, 46, dtype=torch.bool, device=device)
+    # Include illegal actions to verify the Mortal DQN contract: legal finite,
+    # illegal -inf.
+    masks[:, 30:] = False
     with torch.inference_mode():
         phi = brain(obs)
         q = dqn(phi, masks)
     phi_np = phi.detach().cpu().numpy()
     q_np = q.detach().cpu().numpy()
+    legal_finite = bool(np.isfinite(q_np[masks.cpu().numpy()]).all())
+    illegal_neginf = bool(np.isneginf(q_np[~masks.cpu().numpy()]).all())
     result = {
         "checkpoint_sha256": sha256(K0_MODEL),
         "version": version,
@@ -214,13 +226,16 @@ def checkpoint_smoke(device: torch.device) -> dict[str, object]:
         "phi_finite_fraction": float(np.isfinite(phi_np).mean()),
         "q_shape": list(q_np.shape),
         "q_finite_fraction": float(np.isfinite(q_np).mean()),
+        "legal_q_finite": legal_finite,
+        "illegal_q_neginf": illegal_neginf,
         "smoke_pass": bool(
             phi_np.ndim == 2
             and phi_np.shape[1] == 1024
             and float(np.isfinite(phi_np).mean()) == 1.0
             and q_np.ndim == 2
             and q_np.shape[1] == 46
-            and float(np.isfinite(q_np).mean()) == 1.0
+            and legal_finite
+            and illegal_neginf
         ),
     }
     if not result["smoke_pass"]:
@@ -362,8 +377,12 @@ def _rehydrate_canonical_rows(
             with torch.inference_mode():
                 phi = brain(obs_t)
                 q_np = dqn(phi, mask_t).detach().cpu().numpy()[0].astype(np.float64)
-            if q_np.shape != (ACTION_DIM,) or not np.isfinite(q_np).all():
-                raise RuntimeError(f"{route_name}: invalid DQN output at file {file_index} row {row}")
+            if q_np.shape != (ACTION_DIM,):
+                raise RuntimeError(f"{route_name}: invalid DQN output shape at file {file_index} row {row}")
+            if not np.isfinite(q_np[mask]).all():
+                raise RuntimeError(f"{route_name}: illegal DQN output at legal coordinates at file {file_index} row {row}")
+            if not np.isneginf(q_np[~mask]).all():
+                raise RuntimeError(f"{route_name}: DQN output at illegal coordinates is not -inf at file {file_index} row {row}")
             q_out[i] = q_np
             z_recomp_full = np.asarray(phi.detach().cpu().numpy()[0], dtype=np.float64) @ projection.T
             norm = np.linalg.norm(z_recomp_full)
@@ -517,6 +536,38 @@ def _run_decision_analysis(
     anchor_weights = build_pooled_anchor_weights(
         anchor_data["routes"], anchor_data["hanchan_local"], draws, BOOTSTRAP_REPS
     )
+    # Local Action Support descriptive: raw 46-action entropy on the same
+    # frozen 16-neighbor panels, and behavior agreement on route canonical rows.
+    local_entropy_by_route: dict[str, np.ndarray] = {}
+    effective_count_by_route: dict[str, np.ndarray] = {}
+    for route in ROUTE_ORDER:
+        actions = rehydrated_by_route[route]["actions"]
+        entropies: list[float] = []
+        effective: list[float] = []
+        for anchor_index in range(anchor_actions.shape[0]):
+            neighbor_positions = neighbor_indices[route][anchor_index]
+            neighbor_actions = actions[neighbor_positions]
+            h = entropy(neighbor_actions)
+            entropies.append(h)
+            effective.append(float(np.exp(h)))
+        local_entropy_by_route[route] = np.asarray(entropies, dtype=np.float64)
+        effective_count_by_route[route] = np.asarray(effective, dtype=np.float64)
+
+    behavior_agreement: dict[str, dict[str, float]] = {}
+    for route in ROUTE_ORDER:
+        q_route = q_by_route[route]
+        masks = rehydrated_by_route[route]["masks"]
+        actions = rehydrated_by_route[route]["actions"]
+        agreements = 0
+        for i in range(q_route.shape[0]):
+            legal_indices = np.flatnonzero(masks[i])
+            greedy = int(legal_indices[int(np.argmax(q_route[i][legal_indices]))])
+            agreements += int(greedy == int(actions[i]))
+        behavior_agreement[route] = {
+            "count": agreements,
+            "rate": float(agreements / q_route.shape[0]) if q_route.shape[0] else 0.0,
+        }
+
     support_s1 = support_bootstrap_deltas(
         {route: support_metrics[route]["s1"] for route in ROUTE_ORDER}, anchor_weights, BOOTSTRAP_REPS
     )
@@ -554,6 +605,7 @@ def _run_decision_analysis(
         flip_pressure: list[float] = []
         alt_suppression: list[float] = []
         alt_defined: list[bool] = []
+        q_route = q_by_route[route]
         for i in range(gt.shape[0]):
             g_norm = float(np.linalg.norm(gt[i]))
             if g_norm <= GRAD_EPS:
@@ -570,11 +622,13 @@ def _run_decision_analysis(
             legal = masks[i]
             legal_indices = np.flatnonzero(legal)
             if legal_indices.size >= 2:
-                a_greedy = int(legal_indices[np.argmax(gt[i][legal_indices])])
+                # Frozen prereg: greedy and alternative are selected from K0 Q,
+                # not from the Q-gradient.
+                a_greedy = greedy_action_from_q(q_route[i], legal)
                 flip_pressure.append(float(-(gt[i][a] - gt[i][a_greedy])))
                 alt_indices = legal_indices[legal_indices != a]
                 if alt_indices.size:
-                    a_alt = int(alt_indices[np.argmax(gt[i][alt_indices])])
+                    a_alt = alternative_action_from_q(q_route[i], legal, a)
                     alt_suppression.append(float(gt[i][a_alt]))
                     alt_defined.append(True)
                 else:
@@ -626,6 +680,42 @@ def _run_decision_analysis(
         gradient_family_vote(g2),
         gradient_family_vote(g3),
     ]
+    # Full-sample point estimates (P2 provenance convenience).
+    s1_point = {route: float(np.mean(support_metrics[route]["s1"])) for route in ROUTE_ORDER}
+    s2_point = {route: float(np.mean(support_metrics[route]["s2"])) for route in ROUTE_ORDER}
+    support_point = {
+        "s1": s1_point,
+        "s2": s2_point,
+        "view_gap_s1": abs(s1_point["D1"] - s1_point["D2"]),
+        "view_gap_s2": abs(s2_point["D1"] - s2_point["D2"]),
+        "delta1_s1": (s1_point["M0"] - s1_point["D1"]) - abs(s1_point["D1"] - s1_point["D2"]),
+        "delta3_s1": (s1_point["M0"] - s1_point["D3"]) - abs(s1_point["D1"] - s1_point["D2"]),
+        "delta1_s2": (s2_point["M0"] - s2_point["D1"]) - abs(s2_point["D1"] - s2_point["D2"]),
+        "delta3_s2": (s2_point["M0"] - s2_point["D3"]) - abs(s2_point["D1"] - s2_point["D2"]),
+    }
+
+    def _w1_point(values: dict[str, np.ndarray], left: str, right: str) -> float:
+        return weighted_wasserstein_1d(values[left], np.ones(values[left].shape[0]), values[right], np.ones(values[right].shape[0]))
+
+    g2_point = {
+        "d_m0_d1": _w1_point(c_by_route, "M0", "D1"),
+        "d_m0_d3": _w1_point(c_by_route, "M0", "D3"),
+        "d_d1_d2": _w1_point(c_by_route, "D1", "D2"),
+    }
+    g3_point = {
+        "d_m0_d1": _w1_point(m_by_route, "M0", "D1"),
+        "d_m0_d3": _w1_point(m_by_route, "M0", "D3"),
+        "d_d1_d2": _w1_point(m_by_route, "D1", "D2"),
+    }
+    g1_point = {
+        "d_m0_d1": rff_mmd2_from_features(features_g1["M0"], np.ones(features_g1["M0"].shape[0]), features_g1["D1"], np.ones(features_g1["D1"].shape[0])),
+        "d_m0_d3": rff_mmd2_from_features(features_g1["M0"], np.ones(features_g1["M0"].shape[0]), features_g1["D3"], np.ones(features_g1["D3"].shape[0])),
+        "d_d1_d2": rff_mmd2_from_features(features_g1["D1"], np.ones(features_g1["D1"].shape[0]), features_g1["D2"], np.ones(features_g1["D2"].shape[0])),
+    }
+    for name, point in (("g1", g1_point), ("g2", g2_point), ("g3", g3_point)):
+        point["delta1"] = point["d_m0_d1"] - point["d_d1_d2"]
+        point["delta3"] = point["d_m0_d3"] - point["d_d1_d2"]
+
     q_gradient_signal = q_gradient_signal_from_family_votes(family_votes)
 
     verdict_readout = combine_decision_verdict(support_signal, q_gradient_signal)
@@ -645,11 +735,16 @@ def _run_decision_analysis(
             "s1": support_s1,
             "s2": support_s2,
             "support_signal": support_signal,
+            "point": support_point,
+            "local_action_entropy": local_entropy_by_route,
+            "effective_action_count": effective_count_by_route,
+            "behavior_agreement": behavior_agreement,
         },
         "gradient": {
             "g1": g1,
             "g2": g2,
             "g3": g3,
+            "point": {"g1": g1_point, "g2": g2_point, "g3": g3_point},
             "family_votes": family_votes,
             "q_gradient_signal": q_gradient_signal,
             "cosine_defined_rows": cosine_defined_counts,
@@ -744,13 +839,12 @@ def run_formal_audit(device: torch.device, out_root: Path) -> None:
     out_root.mkdir(parents=True, exist_ok=True)
     from training.mortal.audit_k0_representation_space_2026_08 import build_route_table
     from training.mortal.audit_replay_distribution import load_model
-    from training.mortal.k0_representation_audit_core import make_projection_matrix
 
     state = load_checkpoint(K0_MODEL)
     brain, dqn, _version = load_model(state, device)
     route_table = build_route_table()
     canonical_by_route = _load_decision_canonical(K0_REPR_OUTPUT)
-    projection = np.asarray(make_projection_matrix().numpy(), dtype=np.float64)
+    projection = np.load(K0_REPR_OUTPUT / "projection_matrix.npy", allow_pickle=False).astype(np.float64)
     rehydrated_by_route: dict[str, dict[str, np.ndarray]] = {}
     q_by_route: dict[str, np.ndarray] = {}
     for route in ROUTE_ORDER:
@@ -767,11 +861,23 @@ def run_formal_audit(device: torch.device, out_root: Path) -> None:
         q_by_route[route] = rehydrated["q"]
     analysis = _run_decision_analysis(K0_REPR_OUTPUT, canonical_by_route, rehydrated_by_route, q_by_route, projection)
     verdict = authoritative_verdict(analysis["verdict"], bool(preflight["all_pass"]), complete=True)
+    riichi_path = Path(riichi.__file__).resolve()
     report = {
         "schema": "keqing.mortal.k0_decision_signal_audit.v1",
         "preregistration": check_preregistration(),
         "formal_preflight": preflight,
         **git_worktree_metadata(),
+        "runtime": {
+            "python_executable": str(Path(sys.executable).resolve()),
+            "python_version": sys.version,
+            "torch_version": torch.__version__,
+            "torch_cuda_version": torch.version.cuda,
+            "device": str(device),
+            "cuda_device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+            "amp": False,
+            "riichi_extension_path": str(riichi_path),
+            "riichi_extension_sha256": sha256(riichi_path),
+        },
         "verdict": verdict,
         "analysis": _json_safe_report(analysis, out_root),
         "status": "complete",
