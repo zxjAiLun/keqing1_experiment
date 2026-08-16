@@ -8,8 +8,10 @@ from training.mortal.audit_k0_decision_signal_2026_08 import (
     PREREG_COMMIT,
     PREREG_FILE,
     PREREG_FILE_SHA256,
+    _adam_diagnostic_for_route,
     _adam_diagnostic_from_optimizer,
     _compute_support_metrics,
+    _flatten_group_gradient,
     _json_safe_report,
     _run_decision_analysis,
     check_preregistration,
@@ -632,3 +634,191 @@ def test_tiny_analysis_orchestration_and_json_report(monkeypatch, tmp_path) -> N
     text = json.dumps(safe, ensure_ascii=False, indent=2)
     assert "ndarray" not in text
     assert (tmp_path / "report_out" / "bootstrap").is_dir()
+
+
+def test_flatten_group_gradient_uses_exact_full_tuple_slicing() -> None:
+    from torch import nn
+
+    brain = nn.Linear(2, 2)
+    dqn = nn.Linear(2, 2)
+    aux = nn.Linear(2, 2)
+    all_params = list(brain.parameters()) + list(dqn.parameters()) + list(aux.parameters())
+    assert len(all_params) == 6
+    grads = tuple(torch.ones_like(p) * i for i, p in enumerate(all_params))
+    grads_none = list(grads)
+    grads_none[0] = None
+    grads_none = tuple(grads_none)
+
+    brain_flat = _flatten_group_gradient(all_params, grads_none, list(brain.parameters()))
+    assert brain_flat.shape[0] == sum(p.numel() for p in brain.parameters())
+    assert brain_flat[0] == 0.0
+    assert brain_flat[-1] == 1.0
+
+    dqn_flat = _flatten_group_gradient(all_params, grads, list(dqn.parameters()))
+    assert dqn_flat.shape[0] == sum(p.numel() for p in dqn.parameters())
+    assert dqn_flat[0] == 2.0
+
+    aux_flat = _flatten_group_gradient(all_params, grads, list(aux.parameters()))
+    assert aux_flat.shape[0] == sum(p.numel() for p in aux.parameters())
+    assert aux_flat[0] == 4.0
+
+    bd_flat = _flatten_group_gradient(all_params, grads, list(brain.parameters()) + list(dqn.parameters()))
+    assert bd_flat.shape[0] == sum(p.numel() for p in brain.parameters()) + sum(p.numel() for p in dqn.parameters())
+    assert bd_flat[0] == 0.0
+    assert bd_flat[-1] == 3.0
+
+
+def test_adam_diagnostic_for_route_toy_smoke() -> None:
+    from torch import nn, optim
+
+    class ToyBrain(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc = nn.Linear(4, 8)
+
+        def forward(self, x):
+            return self.fc(x)
+
+    class ToyDQN(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc = nn.Linear(8, ACTION_DIM)
+
+        def forward(self, phi, mask):
+            q = self.fc(phi)
+            q = q.masked_fill(~mask, float("-inf"))
+            return q
+
+    class ToyAux(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.fc = nn.Linear(8, 4)
+
+        def forward(self, phi):
+            return (self.fc(phi),)
+
+    class Rec:
+        def __init__(self):
+            self.obs = np.random.default_rng(0).normal(size=4).astype(np.float32)
+            self.mask = np.zeros(ACTION_DIM, dtype=bool)
+            self.mask[:4] = True
+            self.action = 1
+            self.q_target = 0.5
+            self.player_rank = 0
+
+    brain = ToyBrain()
+    dqn = ToyDQN()
+    aux = ToyAux()
+    optimizer = optim.AdamW(list(brain.parameters()) + list(dqn.parameters()) + list(aux.parameters()), lr=0.01)
+    dummy = torch.zeros(4)
+    phi = brain(dummy)
+    mask = torch.zeros(1, ACTION_DIM, dtype=torch.bool)
+    mask[0, :4] = True
+    loss = dqn(phi, mask).sum() + aux(phi)[0].sum()
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+
+    config = {
+        "cql": {"min_q_weight": 5.0},
+        "aux": {"next_rank_weight": 0.2},
+        "optim": {"eps": 1e-8},
+    }
+    records = [Rec() for _ in range(64)]
+    result = _adam_diagnostic_for_route("M0", records, brain, dqn, aux, optimizer, config, torch.device("cpu"))
+    assert result["batch_count"] == 2
+    assert "brain" in result["summary"]
+    assert "dqn" in result["summary"]
+    assert "aux" in result["summary"]
+    assert "brain_dqn" in result["summary"]
+    assert result["dqn_cql_parameter_cosine"]["brain"]["cos_mean"] is not None
+
+
+def test_outer_run_formal_audit_synthetic_e2e(monkeypatch, tmp_path) -> None:
+    import training.mortal.audit_k0_decision_signal_2026_08 as runner
+
+    monkeypatch.setattr(runner, "FORMAL_RUN_AUTHORIZED", True)
+    monkeypatch.setattr(runner, "formal_preflight", lambda device, out: {"all_pass": True})
+    def fake_canonical(root):
+        return {
+            route: {
+                "canonical_hanchan_hashes": [f"{route}-h"],
+                "file_index": np.asarray([0], dtype=np.int64),
+                "row_index": np.asarray([0], dtype=np.int64),
+                "perspective_labels": [route],
+            }
+            for route in ROUTE_ORDER
+        }
+    monkeypatch.setattr(runner, "_load_decision_canonical", fake_canonical)
+    monkeypatch.setattr(
+        runner,
+        "_rehydrate_canonical_rows",
+        lambda *a, **k: {
+            "actions": np.asarray([0], dtype=np.int64),
+            "masks": np.eye(1, ACTION_DIM, dtype=bool),
+            "targets": np.asarray([0.0]),
+            "q": np.zeros((1, ACTION_DIM)),
+        },
+    )
+    monkeypatch.setattr(runner, "_collect_microbatch_records", lambda *a, **k: [])
+    monkeypatch.setattr(
+        runner,
+        "_adam_diagnostic_for_route",
+        lambda *a, **k: {"summary": {"brain": {"cos_g_m_mean": 0.5}}, "per_batch": []},
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_decision_analysis",
+        lambda *a, **k: {
+            "verdict": "inconclusive",
+            "support": {"x": np.asarray([1.0, 2.0])},
+            "gradient": {"y": np.asarray([3.0])},
+            "action_credit": {},
+        },
+    )
+    import training.mortal.audit_k0_representation_space_2026_08 as repr_runner
+    import training.mortal.audit_objective_learnability as obj_runner
+    import training.mortal.audit_replay_distribution as replay_runner
+    monkeypatch.setattr(obj_runner, "_build_model", lambda state, device: (None, None, None, 4))
+    monkeypatch.setattr(replay_runner, "load_model", lambda state, device: (None, None, 4))
+    monkeypatch.setattr(runner, "_build_preserved_optimizer", lambda *a, **k: None)
+    monkeypatch.setattr(
+        repr_runner,
+        "_load_canonical_route",
+        lambda root, route: {
+            "z": np.zeros((1, 8)),
+            "hanchan_index": np.asarray([0], dtype=np.int64),
+            "sorted_hashes": ["h"],
+        },
+    )
+    monkeypatch.setattr(runner, "sample_microbatch_rows", lambda *a, **k: np.zeros((1, 1), dtype=np.int64))
+    out_root = tmp_path / "formal_out"
+    runner.run_formal_audit(torch.device("cpu"), out_root)
+
+    report_path = out_root / "report.json"
+    assert report_path.is_file()
+    import json
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["status"] == "complete"
+    assert report["verdict"]["authoritative"] is True
+    assert report["verdict"]["readout"] == "inconclusive"
+    assert "runtime" in report
+    assert "adam_diagnostic" in report["analysis"]
+    # Arrays should have been artifactized, not leaked as ndarray.
+    assert (out_root / "bootstrap" / "support_x.npy").is_file()
+    assert (out_root / "bootstrap" / "gradient_y.npy").is_file()
+
+
+def test_outer_run_formal_audit_preflight_failure_does_not_write_scientific_report(monkeypatch, tmp_path) -> None:
+    import training.mortal.audit_k0_decision_signal_2026_08 as runner
+
+    monkeypatch.setattr(runner, "FORMAL_RUN_AUTHORIZED", True)
+    monkeypatch.setattr(runner, "formal_preflight", lambda device, out: {"all_pass": False})
+    out_root = tmp_path / "formal_fail"
+    try:
+        runner.run_formal_audit(torch.device("cpu"), out_root)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("expected RuntimeError on preflight failure")
+    assert not (out_root / "report.json").exists()

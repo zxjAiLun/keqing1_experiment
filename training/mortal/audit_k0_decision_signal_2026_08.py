@@ -847,10 +847,10 @@ def _build_preserved_optimizer(
 
     config = state["config"]
     optimizer = make_optimizer(config, (brain, dqn, aux))
+    fresh_groups = _optimizer_group_metadata(optimizer)
     if "optimizer" not in state:
         raise RuntimeError("frozen K0 checkpoint has no preserved optimizer state")
     optimizer.load_state_dict(state["optimizer"])
-    fresh_groups = _optimizer_group_metadata(optimizer)
     expected_tensors = sum(1 for module in (brain, dqn, aux) for _ in module.parameters())
     _validate_preserved_optimizer(
         optimizer,
@@ -915,6 +915,28 @@ def _collect_microbatch_records(
     return [records_by_pos[int(pos)] for pos in sampled_positions.tolist()]
 
 
+def _flatten_group_gradient(
+    all_params: list[torch.nn.Parameter],
+    grads: tuple[torch.Tensor | None, ...],
+    group_params: list[torch.nn.Parameter],
+) -> torch.Tensor | None:
+    """Flatten a module group's gradient from the full autograd tuple.
+
+    ``None`` gradients are replaced by zero vectors so the flattened gradient
+    remains in the same parameter space as Adam state.
+    """
+    parts: list[torch.Tensor] = []
+    for param in group_params:
+        index = next((i for i, candidate in enumerate(all_params) if candidate is param), None)
+        if index is None:
+            raise RuntimeError("module param not found in all_params")
+        grad = grads[index]
+        if grad is None:
+            grad = torch.zeros_like(param)
+        parts.append(grad.detach().float().reshape(-1))
+    return torch.cat(parts) if parts else None
+
+
 def _module_gradient_cosines(
     brain: torch.nn.Module,
     dqn: torch.nn.Module,
@@ -925,7 +947,7 @@ def _module_gradient_cosines(
     grad_cql: tuple[torch.Tensor | None, ...],
 ) -> dict[str, float | None]:
     """DQN-vs-CQL parameter-gradient cosine per requested module group."""
-    from training.mortal.audit_objective_learnability import _cosine, _flatten_gradients
+    from training.mortal.audit_objective_learnability import _cosine
 
     groups = {
         "brain": slices["brain"],
@@ -934,8 +956,8 @@ def _module_gradient_cosines(
     }
     out: dict[str, float | None] = {}
     for name, params in groups.items():
-        flat_dqn = _flatten_gradients(params, grad_dqn)
-        flat_cql = _flatten_gradients(params, grad_cql)
+        flat_dqn = _flatten_group_gradient(all_params, grad_dqn, params)
+        flat_cql = _flatten_group_gradient(all_params, grad_cql, params)
         out[name] = _cosine(flat_dqn, flat_cql)
     return out
 
@@ -953,7 +975,6 @@ def _adam_diagnostic_for_route(
     """Compute frozen descriptive Adam/microbatch diagnostics for one route."""
     from training.mortal.audit_objective_learnability import (
         _cosine,
-        _flatten_gradients,
     )
 
     all_params = list(brain.parameters()) + list(dqn.parameters()) + list(aux.parameters())
@@ -994,7 +1015,7 @@ def _adam_diagnostic_for_route(
 
         group_values: dict[str, dict[str, float | None]] = {}
         for group_name, params in slices.items():
-            flat_g = _flatten_gradients(params, grad_total)
+            flat_g = _flatten_group_gradient(all_params, grad_total, params)
             flat_m_parts = []
             flat_v_parts = []
             for param in params:
@@ -1062,10 +1083,10 @@ def run_formal_audit(device: torch.device, out_root: Path) -> None:
         build_route_table,
     )
     from training.mortal.audit_objective_learnability import _build_model
+    from training.mortal.audit_replay_distribution import load_model
 
     state = load_checkpoint(K0_MODEL)
-    brain, dqn, aux, _version = _build_model(state, device)
-    optimizer = _build_preserved_optimizer(state, brain, dqn, aux)
+    analysis_brain, analysis_dqn, _version = load_model(state, device)
     route_table = build_route_table()
     canonical_by_route = _load_decision_canonical(K0_REPR_OUTPUT)
     projection = np.load(K0_REPR_OUTPUT / "projection_matrix.npy", allow_pickle=False).astype(np.float64)
@@ -1080,12 +1101,15 @@ def run_formal_audit(device: torch.device, out_root: Path) -> None:
         sampled_positions = sample_microbatch_rows(
             sorted_hanchan, batch_size=32, n_batches=32, seed=20260824
         ).reshape(-1)
+        # Fresh per-route Adam models prevent route-order contamination.
+        adam_brain, adam_dqn, adam_aux, _ = _build_model(state, device)
+        adam_optimizer = _build_preserved_optimizer(state, adam_brain, adam_dqn, adam_aux)
         rehydrated = _rehydrate_canonical_rows(
             route,
             route_table[route],
             canonical_by_route[route],
-            brain,
-            dqn,
+            analysis_brain,
+            analysis_dqn,
             device,
             projection,
         )
@@ -1114,7 +1138,7 @@ def run_formal_audit(device: torch.device, out_root: Path) -> None:
             json.dumps(identities, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()
         adam_diagnostics[route] = _adam_diagnostic_for_route(
-            route, records, brain, dqn, aux, optimizer, state["config"], device
+            route, records, adam_brain, adam_dqn, adam_aux, adam_optimizer, state["config"], device
         )
         adam_diagnostics[route]["sampled_rows_sha256"] = sampled_sha
     analysis = _run_decision_analysis(K0_REPR_OUTPUT, canonical_by_route, rehydrated_by_route, q_by_route, projection)
