@@ -43,6 +43,7 @@ from training.mortal.k0_decision_signal_audit_core import (
     ROUTE_ORDER,
     SUPPORT_K,
     action_credit_route_stats,
+    adam_alignment_metrics,
     authoritative_verdict,
     build_pooled_anchor_weights,
     centered_preference_pressure,
@@ -63,7 +64,7 @@ from training.mortal.k0_decision_signal_audit_core import (
     support_signal_from_bootstrap,
     weighted_wasserstein_1d,
 )
-from training.mortal.k0_representation_audit_core import sha256_array
+from training.mortal.k0_representation_audit_core import sha256_array, sha256_file
 
 # ---------------------------------------------------------------- prereg gate
 PREREG_COMMIT = "7bee592c7c1d00614ca1f5083032dc16b1665d36"
@@ -318,6 +319,7 @@ def _rehydrate_canonical_rows(
     masks_out = np.zeros((z_arr.shape[0], ACTION_DIM), dtype=bool)
     targets_out = np.zeros(z_arr.shape[0], dtype=np.float64)
     z_out = np.zeros_like(z_arr)
+    q_out = np.zeros((z_arr.shape[0], ACTION_DIM), dtype=np.float64)
 
     for file_index, path in enumerate(files):
         indices = rows_by_file.get(int(file_index), [])
@@ -356,9 +358,13 @@ def _rehydrate_canonical_rows(
             if label != perspective_arr[i]:
                 raise RuntimeError(f"{route_name}: perspective mismatch at file {file_index} row {row}")
             obs_t = torch.as_tensor(np.asarray(obs_all[row], dtype=np.float32), device=device).unsqueeze(0)
+            mask_t = torch.as_tensor(mask[None, :], device=device)
             with torch.inference_mode():
                 phi = brain(obs_t)
-                _ = dqn(phi, torch.as_tensor(mask[None, :], device=device))
+                q_np = dqn(phi, mask_t).detach().cpu().numpy()[0].astype(np.float64)
+            if q_np.shape != (ACTION_DIM,) or not np.isfinite(q_np).all():
+                raise RuntimeError(f"{route_name}: invalid DQN output at file {file_index} row {row}")
+            q_out[i] = q_np
             z_recomp_full = np.asarray(phi.detach().cpu().numpy()[0], dtype=np.float64) @ projection.T
             norm = np.linalg.norm(z_recomp_full)
             if norm <= 0 or not np.isfinite(z_recomp_full).all():
@@ -370,33 +376,41 @@ def _rehydrate_canonical_rows(
             masks_out[i] = mask
             targets_out[i] = expected_target
             z_out[i] = z_recomp
-    return {"actions": actions_out, "masks": masks_out, "targets": targets_out, "z": z_out}
+    return {"actions": actions_out, "masks": masks_out, "targets": targets_out, "z": z_out, "q": q_out}
 
 
 def _compute_support_metrics(
     anchor_data: dict[str, np.ndarray],
+    anchor_actions: np.ndarray,
+    anchor_masks: np.ndarray,
     neighbor_indices: dict[str, np.ndarray],
     actions_by_route: dict[str, np.ndarray],
     masks_by_route: dict[str, np.ndarray],
 ) -> dict[str, dict[str, np.ndarray]]:
-    """Per-route S1/S2 arrays over the pooled anchors."""
+    """Per-route S1/S2 arrays over the pooled anchors.
+
+    Query action/legal always come from the pooled anchor row itself; only
+    neighbor action/legal come from the per-route reference reservoir.
+    """
     n_anchors = anchor_data["routes"].shape[0]
+    if anchor_actions.shape != (n_anchors,) or anchor_masks.shape != (n_anchors, ACTION_DIM):
+        raise ValueError("anchor_actions/anchor_masks must match pooled anchor count")
     out: dict[str, dict[str, np.ndarray]] = {}
-    for route in ROUTE_ORDER:
+    for route, actions in actions_by_route.items():
         s1 = np.zeros(n_anchors, dtype=np.float64)
         s2 = np.zeros(n_anchors, dtype=np.float64)
-        actions = actions_by_route[route]
         masks = masks_by_route[route]
+        k = int(neighbor_indices[route].shape[1])
         for anchor_index in range(n_anchors):
-            query_action = int(actions[anchor_index])
-            query_legal = masks[anchor_index]
+            query_action = int(anchor_actions[anchor_index])
+            query_legal = anchor_masks[anchor_index]
             neighbor_positions = neighbor_indices[route][anchor_index]
             result = support_metrics_for_anchor(
                 query_action,
                 query_legal,
                 actions[neighbor_positions],
                 masks[neighbor_positions],
-                k=SUPPORT_K,
+                k=k,
             )
             s1[anchor_index] = result["switchable_rate"]
             s2[anchor_index] = result["distinct_alt"]
@@ -431,20 +445,24 @@ def _compute_route_gradients(
 
 
 def _run_decision_analysis(
-    out_root: Path,
+    repr_artifact_root: Path,
     canonical_by_route: dict[str, dict[str, object]],
     rehydrated_by_route: dict[str, dict[str, np.ndarray]],
     q_by_route: dict[str, np.ndarray],
     projection: np.ndarray,
 ) -> dict[str, object]:
-    """Frozen decision-signal analysis over already-rehydrated rows."""
+    """Frozen decision-signal analysis over already-rehydrated rows.
+
+    ``repr_artifact_root`` must be the prior K0 representation audit output
+    root, not the new decision-signal output root.
+    """
     from training.mortal.audit_k0_representation_space_2026_08 import (
         _load_canonical_route,
     )
     from training.mortal.k0_representation_audit_core import build_global_hanchan_ids
 
     routes_for_neighbors = {
-        route: _load_canonical_route(out_root, route) for route in ROUTE_ORDER
+        route: _load_canonical_route(repr_artifact_root, route) for route in ROUTE_ORDER
     }
     hashes_by_route = {route: routes_for_neighbors[route]["sorted_hashes"] for route in ROUTE_ORDER}
     global_ids_by_route, _ = build_global_hanchan_ids(hashes_by_route)
@@ -454,7 +472,15 @@ def _run_decision_analysis(
         ]
         for route in ROUTE_ORDER
     }
-    anchor_data = _build_pooled_anchors(canonical_by_route)
+
+    # Bootstrap identity must be per-route sorted canonical hash index, not
+    # original file-order hanchan index.  D1/D2 share the same sorted hash
+    # ordering and therefore the same bootstrap cluster indices.
+    canonical_for_anchors = {route: dict(canonical_by_route[route]) for route in ROUTE_ORDER}
+    for route in ROUTE_ORDER:
+        canonical_for_anchors[route]["hanchan_index"] = routes_for_neighbors[route]["hanchan_index"]
+
+    anchor_data = _build_pooled_anchors(canonical_for_anchors)
     anchor_z = anchor_data["z"]
     anchor_global = anchor_data["hanchan_global"]
     reference_z = {route: routes_for_neighbors[route]["z"] for route in ROUTE_ORDER}
@@ -462,8 +488,21 @@ def _run_decision_analysis(
     neighbor_indices = compute_support_neighbors(
         anchor_z, anchor_global, reference_z, reference_hanchan, k=SUPPORT_K
     )
+
+    # Pooled anchor action/mask come from the anchor source route, not from the
+    # reference route being queried.
+    anchor_actions = np.concatenate(
+        [rehydrated_by_route[route]["actions"] for route in ROUTE_ORDER]
+    ).astype(np.int64)
+    anchor_masks = np.concatenate(
+        [rehydrated_by_route[route]["masks"] for route in ROUTE_ORDER]
+    ).astype(bool)
+
     support_metrics = _compute_support_metrics(
-        anchor_data, neighbor_indices,
+        anchor_data,
+        anchor_actions,
+        anchor_masks,
+        neighbor_indices,
         {route: rehydrated_by_route[route]["actions"] for route in ROUTE_ORDER},
         {route: rehydrated_by_route[route]["masks"] for route in ROUTE_ORDER},
     )
@@ -474,7 +513,6 @@ def _run_decision_analysis(
         {route: rehydrated_by_route[route]["targets"] for route in ROUTE_ORDER},
     )
 
-    # Bootstrap draws and pooled anchor weights.
     draws = make_frozen_bootstrap_draws(6000, BOOTSTRAP_REPS, BOOTSTRAP_SEED)
     anchor_weights = build_pooled_anchor_weights(
         anchor_data["routes"], anchor_data["hanchan_local"], draws, BOOTSTRAP_REPS
@@ -487,33 +525,89 @@ def _run_decision_analysis(
     )
     support_signal = support_signal_from_bootstrap(support_s1, support_s2)
 
-    # Gradient families.
-    # G2/G3 scalar values.
+    # G2/G3 scalar values and G2 defined-row masks.
     c_by_route: dict[str, np.ndarray] = {}
     m_by_route: dict[str, np.ndarray] = {}
+    g2_hanchan: dict[str, np.ndarray] = {}
+    g3_hanchan: dict[str, np.ndarray] = {}
+    cosine_defined_counts: dict[str, int] = {}
+    cosine_defined_rates: dict[str, float] = {}
+    conflict_rates: dict[str, float] = {}
+    zero_gradient_rates: dict[str, float] = {}
+    behavior_push_by_route: dict[str, np.ndarray] = {}
+    flip_pressure_by_route: dict[str, np.ndarray] = {}
+    alt_suppression_by_route: dict[str, np.ndarray] = {}
+    alt_suppression_defined_rates: dict[str, float] = {}
     for route in ROUTE_ORDER:
         gv = gradients[route]["g_value"]
         gc = gradients[route]["g_cql"]
         gt = gradients[route]["g_total"]
+        masks = rehydrated_by_route[route]["masks"]
+        actions = rehydrated_by_route[route]["actions"]
+        row_hanchan_route = np.asarray(routes_for_neighbors[route]["hanchan_index"], dtype=np.int64)
         c_vals: list[float] = []
+        c_defined: list[bool] = []
         m_vals: list[float] = []
+        zero_count = 0
+        conflict_count = 0
+        behavior_push: list[float] = []
+        flip_pressure: list[float] = []
+        alt_suppression: list[float] = []
+        alt_defined: list[bool] = []
         for i in range(gt.shape[0]):
+            g_norm = float(np.linalg.norm(gt[i]))
+            if g_norm <= GRAD_EPS:
+                zero_count += 1
             cos, defined = cosine_defined(gv[i], gc[i])
+            c_defined.append(defined)
             if defined:
                 c_vals.append(float(cos))
-            m_vals.append(float(centered_preference_pressure(gt[i], masks_by_route_for_gradient(route, canonical_by_route, rehydrated_by_route, i))))
-        c_by_route[route] = np.asarray(c_vals, dtype=np.float64)
-        m_by_route[route] = np.asarray(m_vals, dtype=np.float64)
-    # TODO: row_hanchan for gradient bootstrap must use global hanchan ids from canonical metadata.
-    # For implementation completeness this is wired through canonical_by_route hanchan_index.
-    row_hanchan = {route: np.asarray(canonical_by_route[route]["hanchan_index"], dtype=np.int64) for route in ROUTE_ORDER}
+                if cos < 0.0:
+                    conflict_count += 1
+            m_vals.append(float(centered_preference_pressure(gt[i], masks[i])["m_centered"]))
+            a = int(actions[i])
+            behavior_push.append(float(-gt[i][a]))
+            legal = masks[i]
+            legal_indices = np.flatnonzero(legal)
+            if legal_indices.size >= 2:
+                a_greedy = int(legal_indices[np.argmax(gt[i][legal_indices])])
+                flip_pressure.append(float(-(gt[i][a] - gt[i][a_greedy])))
+                alt_indices = legal_indices[legal_indices != a]
+                if alt_indices.size:
+                    a_alt = int(alt_indices[np.argmax(gt[i][alt_indices])])
+                    alt_suppression.append(float(gt[i][a_alt]))
+                    alt_defined.append(True)
+                else:
+                    alt_suppression.append(float("nan"))
+                    alt_defined.append(False)
+            else:
+                flip_pressure.append(float("nan"))
+                alt_suppression.append(float("nan"))
+                alt_defined.append(False)
+        c_arr = np.asarray(c_vals, dtype=np.float64)
+        m_arr = np.asarray(m_vals, dtype=np.float64)
+        c_mask = np.asarray(c_defined, dtype=bool)
+        c_by_route[route] = c_arr
+        m_by_route[route] = m_arr
+        g2_hanchan[route] = row_hanchan_route[c_mask]
+        g3_hanchan[route] = row_hanchan_route
+        cosine_defined_counts[route] = int(c_mask.sum())
+        cosine_defined_rates[route] = float(c_mask.mean()) if c_mask.size else 0.0
+        conflict_rates[route] = float(conflict_count / c_mask.sum()) if c_mask.sum() else 0.0
+        zero_gradient_rates[route] = float(zero_count / gt.shape[0]) if gt.shape[0] else 0.0
+        behavior_push_by_route[route] = np.asarray(behavior_push, dtype=np.float64)
+        flip_pressure_by_route[route] = np.asarray(flip_pressure, dtype=np.float64)
+        alt_suppression_by_route[route] = np.asarray(alt_suppression, dtype=np.float64)
+        alt_suppression_defined_rates[route] = float(np.mean(alt_defined)) if alt_defined else 0.0
+
+    row_hanchan = {route: np.asarray(routes_for_neighbors[route]["hanchan_index"], dtype=np.int64) for route in ROUTE_ORDER}
     g2 = gradient_family_bootstrap_deltas(
-        c_by_route, row_hanchan, draws, lambda a, wa, b, wb: weighted_wasserstein_1d(a, wa, b, wb), BOOTSTRAP_REPS
+        c_by_route, g2_hanchan, draws, lambda a, wa, b, wb: weighted_wasserstein_1d(a, wa, b, wb), BOOTSTRAP_REPS
     )
     g3 = gradient_family_bootstrap_deltas(
-        m_by_route, row_hanchan, draws, lambda a, wa, b, wb: weighted_wasserstein_1d(a, wa, b, wb), BOOTSTRAP_REPS
+        m_by_route, g3_hanchan, draws, lambda a, wa, b, wb: weighted_wasserstein_1d(a, wa, b, wb), BOOTSTRAP_REPS
     )
-    # G1 optimized RFF from unit gradient directions.
+
     gdirs = {
         route: np.stack([
             (gradients[route]["g_total"][i] / np.linalg.norm(gradients[route]["g_total"][i])
@@ -547,16 +641,97 @@ def _run_decision_analysis(
         for route in ROUTE_ORDER
     }
     analysis = {
-        "support": {"s1": support_s1, "s2": support_s2, "support_signal": support_signal},
-        "gradient": {"g1": g1, "g2": g2, "g3": g3, "family_votes": family_votes, "q_gradient_signal": q_gradient_signal},
+        "support": {
+            "s1": support_s1,
+            "s2": support_s2,
+            "support_signal": support_signal,
+        },
+        "gradient": {
+            "g1": g1,
+            "g2": g2,
+            "g3": g3,
+            "family_votes": family_votes,
+            "q_gradient_signal": q_gradient_signal,
+            "cosine_defined_rows": cosine_defined_counts,
+            "cosine_defined_rate": cosine_defined_rates,
+            "conflict_rate": conflict_rates,
+            "zero_total_gradient_rate": zero_gradient_rates,
+            "behavior_push": behavior_push_by_route,
+            "flip_pressure": flip_pressure_by_route,
+            "alt_suppression": alt_suppression_by_route,
+            "alt_suppression_defined_rate": alt_suppression_defined_rates,
+        },
         "action_credit": action_credit,
         "verdict": verdict_readout,
     }
     return analysis
 
 
-def masks_by_route_for_gradient(route: str, canonical_by_route: dict[str, dict[str, object]], rehydrated_by_route: dict[str, dict[str, np.ndarray]], i: int) -> np.ndarray:
-    return rehydrated_by_route[route]["masks"][i]
+
+def _adam_diagnostic_from_optimizer(
+    optimizer: torch.optim.Optimizer,
+    gradients: dict[torch.nn.Parameter, torch.Tensor],
+) -> dict[str, object]:
+    """Descriptive Adam alignment using live optimizer state.
+
+    This intentionally uses ``optimizer.state[param]`` keyed by the live
+    Parameter object, avoiding integer-id guessing.
+    """
+    results: dict[str, object] = {}
+    for group_index, group in enumerate(optimizer.param_groups):
+        cos_m: list[float] = []
+        cos_m_den: list[float] = []
+        for param in group["params"]:
+            if param not in gradients or param not in optimizer.state:
+                continue
+            state = optimizer.state[param]
+            if "exp_avg" not in state or "exp_avg_sq" not in state:
+                continue
+            grad_flat = gradients[param].detach().float().reshape(-1)
+            exp_avg_flat = state["exp_avg"].detach().float().reshape(-1)
+            exp_avg_sq_flat = state["exp_avg_sq"].detach().float().reshape(-1)
+            metrics = adam_alignment_metrics(
+                grad_flat.numpy(), exp_avg_flat.numpy(), exp_avg_sq_flat.numpy()
+            )
+            if metrics["cos_g_m"] is not None:
+                cos_m.append(float(metrics["cos_g_m"]))
+            if metrics["cos_g_m_den"] is not None:
+                cos_m_den.append(float(metrics["cos_g_m_den"]))
+        results[f"group_{group_index}"] = {
+            "cos_g_m_mean": float(np.mean(cos_m)) if cos_m else None,
+            "cos_g_m_den_mean": float(np.mean(cos_m_den)) if cos_m_den else None,
+            "param_count": len(group["params"]),
+        }
+    return results
+
+
+def _json_safe_report(value: object, out_root: Path, path_parts: tuple[str, ...] = ()) -> object:
+    """Recursively convert analysis arrays into JSON-safe artifact references."""
+    if isinstance(value, np.ndarray):
+        artifact_dir = out_root / "bootstrap"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        name = "_".join(path_parts) if path_parts else "array"
+        path = artifact_dir / f"{name}.npy"
+        np.save(path, value, allow_pickle=False)
+        return {
+            "artifact": str(path),
+            "shape": list(value.shape),
+            "dtype": str(value.dtype),
+            "sha256": sha256_file(path),
+        }
+    if isinstance(value, dict):
+        return {str(key): _json_safe_report(item, out_root, path_parts + (str(key),)) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_report(item, out_root, path_parts + (str(i),)) for i, item in enumerate(value)]
+    if isinstance(value, (np.integer,)):
+        return int(value)
+    if isinstance(value, (np.floating,)):
+        return float(value)
+    if isinstance(value, (np.bool_,)):
+        return bool(value)
+    if isinstance(value, Path):
+        return str(value)
+    return value
 
 
 def run_formal_audit(device: torch.device, out_root: Path) -> None:
@@ -574,7 +749,7 @@ def run_formal_audit(device: torch.device, out_root: Path) -> None:
     state = load_checkpoint(K0_MODEL)
     brain, dqn, _version = load_model(state, device)
     route_table = build_route_table()
-    canonical_by_route = _load_decision_canonical(out_root)
+    canonical_by_route = _load_decision_canonical(K0_REPR_OUTPUT)
     projection = np.asarray(make_projection_matrix().numpy(), dtype=np.float64)
     rehydrated_by_route: dict[str, dict[str, np.ndarray]] = {}
     q_by_route: dict[str, np.ndarray] = {}
@@ -590,7 +765,7 @@ def run_formal_audit(device: torch.device, out_root: Path) -> None:
         )
         rehydrated_by_route[route] = rehydrated
         q_by_route[route] = rehydrated["q"]
-    analysis = _run_decision_analysis(out_root, canonical_by_route, rehydrated_by_route, q_by_route, projection)
+    analysis = _run_decision_analysis(K0_REPR_OUTPUT, canonical_by_route, rehydrated_by_route, q_by_route, projection)
     verdict = authoritative_verdict(analysis["verdict"], bool(preflight["all_pass"]), complete=True)
     report = {
         "schema": "keqing.mortal.k0_decision_signal_audit.v1",
@@ -598,7 +773,7 @@ def run_formal_audit(device: torch.device, out_root: Path) -> None:
         "formal_preflight": preflight,
         **git_worktree_metadata(),
         "verdict": verdict,
-        "analysis": analysis,
+        "analysis": _json_safe_report(analysis, out_root),
         "status": "complete",
     }
     (out_root / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n", encoding="utf-8")
@@ -609,6 +784,7 @@ def main() -> None:
     parser.add_argument("--check-prereg", action="store_true", help="verify prereg document SHA")
     parser.add_argument("--checkpoint-smoke", action="store_true", help="run checkpoint-only phi smoke")
     parser.add_argument("--formal-preflight", action="store_true", help="run provenance preflight without corpus access")
+    parser.add_argument("--formal-run", action="store_true", help="run formal audit (requires FORMAL_RUN_AUTHORIZED)")
     parser.add_argument("--device", default="cuda:0")
     args = parser.parse_args()
 
@@ -633,10 +809,22 @@ def main() -> None:
             raise SystemExit(1)
         return
 
+    if args.formal_run:
+        device = torch.device(args.device)
+        if not FORMAL_RUN_AUTHORIZED:
+            print(json.dumps({
+                "status": "formal_run_not_authorized",
+                "formal_run_authorized": False,
+                "note": RUN_AUTHORIZATION_NOTE,
+            }, ensure_ascii=False, indent=2), flush=True)
+            raise SystemExit(1)
+        run_formal_audit(device, OUTPUT_ROOT)
+        return
+
     parser.print_help()
     raise SystemExit(
         "Formal corpus audit is NOT AUTHORIZED in this phase. "
-        "Use --check-prereg, --checkpoint-smoke, or --formal-preflight."
+        "Use --check-prereg, --checkpoint-smoke, --formal-preflight, or --formal-run."
     )
 
 

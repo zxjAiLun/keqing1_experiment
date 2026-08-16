@@ -8,6 +8,9 @@ from training.mortal.audit_k0_decision_signal_2026_08 import (
     PREREG_COMMIT,
     PREREG_FILE,
     PREREG_FILE_SHA256,
+    _adam_diagnostic_from_optimizer,
+    _compute_support_metrics,
+    _json_safe_report,
     check_preregistration,
 )
 from training.mortal.k0_decision_signal_audit_core import (
@@ -35,6 +38,7 @@ from training.mortal.k0_decision_signal_audit_core import (
     q_gradient_signal_from_family_votes,
     rff_mmd2_from_features,
     row_rehydration_matches,
+    sample_microbatch_rows,
     support_bootstrap_deltas,
     support_metrics_for_anchor,
     support_signal_from_bootstrap,
@@ -445,3 +449,78 @@ def test_rng_golden_hashes_for_bootstrap_and_g1() -> None:
     omega, bias = make_g1_rff_features(sigma=0.7)
     assert sha256_array(omega) == "71e9746a49b68d8db1c17d8aaca1836934e4330b54e60e7c49478d22bc168e6d"
     assert sha256_array(bias) == "02bbda40af71bba17181728941623c1cc5a13b813e1c67cb09f6dc3bbed5ae65"
+
+
+def test_support_metrics_use_anchor_query_not_reference_query() -> None:
+    # 4 anchors, each from M0/D1/D2/D3; reference D1 has only 2 rows here but
+    # we test the query semantics directly with k=2.
+    anchor_data = {
+        "routes": np.asarray(["M0", "D1", "D2", "D3"]),
+    }
+    anchor_actions = np.asarray([0, 1, 2, 3], dtype=np.int64)
+    anchor_masks = np.zeros((4, ACTION_DIM), dtype=bool)
+    anchor_masks[:, :6] = True
+    # Reference D1 has 2 rows.  Neighbor indices map both anchors to [0,1].
+    neighbor_indices = {"D1": np.asarray([[0, 1], [0, 1], [0, 1], [0, 1]])}
+    actions_by_route = {"D1": np.asarray([4, 5], dtype=np.int64)}
+    masks_by_route = {"D1": np.zeros((2, ACTION_DIM), dtype=bool)}
+    masks_by_route["D1"][:, :6] = True
+    out = _compute_support_metrics(
+        anchor_data,
+        anchor_actions,
+        anchor_masks,
+        neighbor_indices,
+        actions_by_route,
+        masks_by_route,
+    )
+    # Anchor 0 is M0 with query action 0; D1 neighbors are actions 4,5.
+    # Both are legal in query (query_legal[:6]) and 0 is legal in D1,
+    # so both are eligible and switchable => 2/16.
+    assert out["D1"]["s1"][0] == 2.0 / 16.0
+    # Anchor 1 is D1 with query action 1; same neighbors => also 2/16.
+    assert out["D1"]["s1"][1] == 2.0 / 16.0
+
+
+def test_json_safe_report_converts_ndarray_to_artifact(tmp_path) -> None:
+    analysis = {
+        "a": np.asarray([1.0, 2.0]),
+        "nested": {"b": np.asarray([[1, 2]], dtype=np.int64), "c": 3},
+        "list": [np.asarray([True, False])],
+    }
+    safe = _json_safe_report(analysis, tmp_path)
+    import json
+    text = json.dumps(safe, ensure_ascii=False, indent=2)
+    assert "ndarray" not in text
+    assert (tmp_path / "bootstrap" / "a.npy").is_file()
+    assert (tmp_path / "bootstrap" / "nested_b.npy").is_file()
+    assert (tmp_path / "bootstrap" / "list_0.npy").is_file()
+
+
+def test_adam_diagnostic_uses_live_parameter_objects() -> None:
+    from torch import nn, optim
+
+    model = nn.Linear(2, 1)
+    optimizer = optim.AdamW(model.parameters(), lr=0.01)
+    # Initialize optimizer state so state[param] has exp_avg/exp_avg_sq.
+    dummy = torch.zeros(2, requires_grad=True)
+    loss = model(dummy).sum()
+    loss.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+    grads = {param: torch.ones_like(param) for param in model.parameters()}
+    result = _adam_diagnostic_from_optimizer(optimizer, grads)
+    assert "group_0" in result
+    assert result["group_0"]["param_count"] == 2
+    assert result["group_0"]["cos_g_m_mean"] is not None
+
+
+def test_g1_pair_and_microbatch_golden_hashes() -> None:
+    from training.mortal.k0_representation_audit_core import sample_cross_hanchan_pairs
+
+    hanchan = np.repeat(np.arange(10), 3)
+    pairs = sample_cross_hanchan_pairs(hanchan, n_pairs=20, seed=20260822, route_index=0)
+    assert sha256_array(pairs) == "03e2d2c0fdbca832df5b1121660beef6df82ee247a1230186f1297288f3b465a"
+
+    row_hanchan = np.repeat(np.arange(10), 3)
+    samples = sample_microbatch_rows(row_hanchan, batch_size=5, n_batches=3, seed=20260824)
+    assert sha256_array(samples) == "ba5a15d5fbcff7bb440c3eb1717a2faf8f8f0ed64badaf0ece34e46ce26ba540"

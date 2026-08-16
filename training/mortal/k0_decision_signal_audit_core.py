@@ -245,7 +245,8 @@ def support_metrics_for_anchor(
         a_j = int(neighbor_actions[j])
         eligible[j] = bool(query_legal[a_j] and neighbor_legals[j, query_action])
     switched = eligible & (neighbor_actions != query_action)
-    switchable_rate = float(np.count_nonzero(switched)) / float(k)
+    # Denominator is fixed to SUPPORT_K per prereg, not the supplied k.
+    switchable_rate = float(np.count_nonzero(switched)) / float(SUPPORT_K)
     distinct_alt = float(len({int(neighbor_actions[j]) for j in range(k) if switched[j]}))
     return {
         "switchable_rate": switchable_rate,
@@ -650,7 +651,9 @@ def action_credit_route_stats(
 
     Uses exact k=64 same-route neighborhoods with same-hanchan exclusion.
     """
-    from training.mortal.k0_representation_audit_core import knn_neighbor_indices_blockwise
+    from training.mortal.k0_representation_audit_core import (
+        knn_neighbor_indices_blockwise,
+    )
 
     z = np.asarray(z, dtype=np.float64)
     actions = np.asarray(actions, dtype=np.int64)
@@ -706,6 +709,32 @@ def adam_alignment_metrics(
     d_norm = float(np.linalg.norm(denom))
     cos_m_den = float(np.dot(grad_flat, denom) / (g_norm * d_norm)) if g_norm > 0 and d_norm > 0 else None
     return {"cos_g_m": cos_m, "cos_g_m_den": cos_m_den}
+
+
+def sample_microbatch_rows(
+    row_hanchan: np.ndarray,
+    batch_size: int = 32,
+    n_batches: int = 32,
+    seed: int = MICROBATCH_SEED,
+) -> np.ndarray:
+    """Deterministic hanchan-balanced microbatch row sampling.
+
+    Each batch draws distinct hanchans when possible and then selects one row
+    from each selected hanchan.  This is used by the descriptive Adam
+    diagnostic to fix sample identities.
+    """
+    row_hanchan = np.asarray(row_hanchan)
+    unique = np.unique(row_hanchan)
+    if unique.size == 0:
+        raise ValueError("row_hanchan must be non-empty")
+    rng = np.random.default_rng(seed)
+    out = np.empty((n_batches, batch_size), dtype=np.int64)
+    for batch_index in range(n_batches):
+        selected = rng.choice(unique, size=batch_size, replace=unique.size < batch_size)
+        for j, hanchan in enumerate(selected):
+            rows = np.flatnonzero(row_hanchan == hanchan)
+            out[batch_index, j] = int(rng.choice(rows))
+    return out
 
 
 # ---------------------------------------------------------------- rehydration gate
