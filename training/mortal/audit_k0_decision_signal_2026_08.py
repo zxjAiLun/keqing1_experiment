@@ -84,13 +84,11 @@ PREREG_FILE = (
 PREREG_FILE_SHA256 = "1e27e97e6efb509eba80299f644507fe025e4e66375183155f7190a76c639a9d"
 OUTPUT_ROOT = DATA_ROOT / "mortal/authoritative/K0_decision_signal_audit_2026_08"
 K0_REPR_OUTPUT = DATA_ROOT / "mortal/authoritative/K0_representation_audit_2026_08"
-FORMAL_RUN_AUTHORIZED = True
+FORMAL_RUN_AUTHORIZED = False
 RUN_AUTHORIZATION_NOTE = (
-    "Repair 7 implementation review PASS at "
-    "83ed4aae4899570198a7952101839a3436eea76a; "
-    "prior 76d17cc formal attempt failed fail-closed on "
-    "single-row vs batch-512 representation fidelity; "
-    "formal CUDA rerun authorized"
+    "K0_DECISION_SIGNAL_AUDIT_2026_08 formal run COMPLETE and "
+    "authoritative objective_gradient_shift_signal recorded; "
+    "formal gate closed to prevent accidental rerun"
 )
 
 FROZEN_INPUT_SHA256 = {
