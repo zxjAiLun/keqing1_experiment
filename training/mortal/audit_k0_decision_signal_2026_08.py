@@ -62,6 +62,7 @@ from training.mortal.k0_decision_signal_audit_core import (
     precompute_g1_rff_features,
     q_gradient_signal_from_family_votes,
     rff_mmd2_from_features,
+    sample_microbatch_rows,
     support_bootstrap_deltas,
     support_metrics_for_anchor,
     support_signal_from_bootstrap,
@@ -829,6 +830,225 @@ def _json_safe_report(value: object, out_root: Path, path_parts: tuple[str, ...]
     return value
 
 
+
+# ---------------------------------------------------------------- Adam formal
+def _build_preserved_optimizer(
+    state: dict[str, object],
+    brain: torch.nn.Module,
+    dqn: torch.nn.Module,
+    aux: torch.nn.Module,
+) -> torch.optim.Optimizer:
+    """Construct the production optimizer and load frozen preserved Adam state."""
+    from training.mortal.preflight_optimizer_ab import make_optimizer
+    from training.run_mortal_dqn_offline import (
+        _optimizer_group_metadata,
+        _validate_preserved_optimizer,
+    )
+
+    config = state["config"]
+    optimizer = make_optimizer(config, (brain, dqn, aux))
+    if "optimizer" not in state:
+        raise RuntimeError("frozen K0 checkpoint has no preserved optimizer state")
+    optimizer.load_state_dict(state["optimizer"])
+    fresh_groups = _optimizer_group_metadata(optimizer)
+    expected_tensors = sum(1 for module in (brain, dqn, aux) for _ in module.parameters())
+    _validate_preserved_optimizer(
+        optimizer,
+        fresh_groups=fresh_groups,
+        expected_parameter_tensors=expected_tensors,
+    )
+    return optimizer
+
+
+def _collect_microbatch_records(
+    route_name: str,
+    route_spec: dict[str, object],
+    canonical: dict[str, object],
+    sampled_positions: np.ndarray,
+    config: dict[str, object],
+) -> list[object]:
+    """Collect LearnabilityRecord objects for the frozen 32x32 sampled rows."""
+    from libriichi.dataset import GameplayLoader
+
+    from training.mortal.audit_cross_corpus_mechanisms_2026_08 import TRAIN_PTS
+    from training.mortal.audit_objective_learnability import _record_game
+
+    files = route_spec["index"]
+    labels = route_spec["labels"]
+    by_file = route_spec.get("by_file")
+    file_index_arr = np.asarray(canonical["file_index"], dtype=np.int64)
+    row_index_arr = np.asarray(canonical["row_index"], dtype=np.int64)
+    sampled_positions = np.asarray(sampled_positions, dtype=np.int64)
+    needed_by_file: dict[int, set[int]] = {}
+    for pos in sampled_positions.tolist():
+        file_index = int(file_index_arr[pos])
+        needed_by_file.setdefault(file_index, set()).add(int(row_index_arr[pos]))
+
+    records_by_pos: dict[int, object] = {}
+    for file_index, path in enumerate(files):
+        needed_rows = needed_by_file.get(int(file_index))
+        if not needed_rows:
+            continue
+        label = by_file[str(path.resolve())] if by_file is not None else labels[0]
+        loader = GameplayLoader(
+            version=int(config["control"].get("version", 4)),
+            oracle=False,
+            player_names=[label],
+            excludes=None,
+            augmented=False,
+        )
+        loaded = loader.load_gz_log_files([str(path)])
+        if len(loaded) != 1 or len(loaded[0]) != 1:
+            raise RuntimeError(f"{route_name}: Adam microbatch loader mismatch for {path.name}")
+        game = loaded[0][0]
+        gamma = float(config["env"].get("gamma", 1.0))
+        for row_index, record in enumerate(_record_game(game, TRAIN_PTS, gamma)):
+            if row_index in needed_rows:
+                # Find the canonical position for this (file, row).
+                for pos in sampled_positions.tolist():
+                    if int(file_index_arr[pos]) == int(file_index) and int(row_index_arr[pos]) == row_index:
+                        records_by_pos[int(pos)] = record
+                        break
+    missing = [int(pos) for pos in sampled_positions.tolist() if int(pos) not in records_by_pos]
+    if missing:
+        raise RuntimeError(f"{route_name}: failed to collect {len(missing)} Adam microbatch rows")
+    return [records_by_pos[int(pos)] for pos in sampled_positions.tolist()]
+
+
+def _module_gradient_cosines(
+    brain: torch.nn.Module,
+    dqn: torch.nn.Module,
+    aux: torch.nn.Module,
+    all_params: list[torch.nn.Parameter],
+    slices: dict[str, list[torch.nn.Parameter]],
+    grad_dqn: tuple[torch.Tensor | None, ...],
+    grad_cql: tuple[torch.Tensor | None, ...],
+) -> dict[str, float | None]:
+    """DQN-vs-CQL parameter-gradient cosine per requested module group."""
+    from training.mortal.audit_objective_learnability import _cosine, _flatten_gradients
+
+    groups = {
+        "brain": slices["brain"],
+        "dqn": slices["dqn"],
+        "brain_dqn": slices["brain"] + slices["dqn"],
+    }
+    out: dict[str, float | None] = {}
+    for name, params in groups.items():
+        flat_dqn = _flatten_gradients(params, grad_dqn)
+        flat_cql = _flatten_gradients(params, grad_cql)
+        out[name] = _cosine(flat_dqn, flat_cql)
+    return out
+
+
+def _adam_diagnostic_for_route(
+    route_name: str,
+    records: list[object],
+    brain: torch.nn.Module,
+    dqn: torch.nn.Module,
+    aux: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    config: dict[str, object],
+    device: torch.device,
+) -> dict[str, object]:
+    """Compute frozen descriptive Adam/microbatch diagnostics for one route."""
+    from training.mortal.audit_objective_learnability import (
+        _cosine,
+        _flatten_gradients,
+    )
+
+    all_params = list(brain.parameters()) + list(dqn.parameters()) + list(aux.parameters())
+    slices = {
+        "brain": list(brain.parameters()),
+        "dqn": list(dqn.parameters()),
+        "aux": list(aux.parameters()),
+        "brain_dqn": list(brain.parameters()) + list(dqn.parameters()),
+    }
+    cql_weight = float(config["cql"]["min_q_weight"])
+    aux_weight = float(config["aux"]["next_rank_weight"])
+    eps = float(config["optim"]["eps"])
+    criterion = torch.nn.CrossEntropyLoss()
+    batch_size = 32
+    n_batches = len(records) // batch_size
+    per_batch: list[dict[str, object]] = []
+
+    for batch_index in range(n_batches):
+        batch = records[batch_index * batch_size : (batch_index + 1) * batch_size]
+        obs = torch.as_tensor(np.stack([r.obs for r in batch]), device=device, dtype=torch.float32)
+        masks = torch.as_tensor(np.stack([r.mask for r in batch]), device=device, dtype=torch.bool)
+        actions = torch.as_tensor([r.action for r in batch], device=device, dtype=torch.int64)
+        targets = torch.as_tensor([r.q_target for r in batch], device=device, dtype=torch.float32)
+        player_ranks = torch.as_tensor([r.player_rank for r in batch], device=device, dtype=torch.int64)
+
+        phi = brain(obs)
+        q_out = dqn(phi, masks)
+        q = q_out[torch.arange(batch_size, device=device), actions]
+        dqn_loss = 0.5 * torch.mean((q - targets) ** 2)
+        cql_loss = q_out.logsumexp(-1).mean() - q.mean()
+        (next_rank_logits,) = aux(phi)
+        aux_loss = criterion(next_rank_logits, player_ranks)
+        total_loss = dqn_loss + cql_weight * cql_loss + aux_weight * aux_loss
+
+        grad_dqn = torch.autograd.grad(dqn_loss, all_params, retain_graph=True, allow_unused=True)
+        grad_cql = torch.autograd.grad(cql_loss, all_params, retain_graph=True, allow_unused=True)
+        grad_total = torch.autograd.grad(total_loss, all_params, allow_unused=True)
+
+        group_values: dict[str, dict[str, float | None]] = {}
+        for group_name, params in slices.items():
+            flat_g = _flatten_gradients(params, grad_total)
+            flat_m_parts = []
+            flat_v_parts = []
+            for param in params:
+                state = optimizer.state.get(param)
+                if state is None or "exp_avg" not in state or "exp_avg_sq" not in state:
+                    raise RuntimeError(f"{route_name}: missing Adam state for a live parameter in {group_name}")
+                flat_m_parts.append(state["exp_avg"].detach().float().reshape(-1))
+                flat_v_parts.append(state["exp_avg_sq"].detach().float().reshape(-1))
+            flat_m = torch.cat(flat_m_parts) if flat_m_parts else None
+            flat_v = torch.cat(flat_v_parts) if flat_v_parts else None
+            if flat_g is not None and flat_m is not None and flat_v is not None:
+                denom = flat_m / (torch.sqrt(flat_v) + eps)
+                group_values[group_name] = {
+                    "cos_g_m": _cosine(flat_g, flat_m),
+                    "cos_g_m_den": _cosine(flat_g, denom),
+                }
+            else:
+                group_values[group_name] = {"cos_g_m": None, "cos_g_m_den": None}
+
+        per_batch.append({
+            "batch_index": batch_index,
+            "dqn_cql_cosines": _module_gradient_cosines(
+                brain, dqn, aux, all_params, slices, grad_dqn, grad_cql
+            ),
+            "adam": group_values,
+        })
+
+    summary: dict[str, object] = {}
+    for group_name in slices:
+        cos_m_values = [float(b["adam"][group_name]["cos_g_m"]) for b in per_batch if b["adam"][group_name]["cos_g_m"] is not None]
+        cos_m_den_values = [float(b["adam"][group_name]["cos_g_m_den"]) for b in per_batch if b["adam"][group_name]["cos_g_m_den"] is not None]
+        summary[group_name] = {
+            "cos_g_m_mean": float(np.mean(cos_m_values)) if cos_m_values else None,
+            "cos_g_m_median": float(np.median(cos_m_values)) if cos_m_values else None,
+            "cos_g_m_den_mean": float(np.mean(cos_m_den_values)) if cos_m_den_values else None,
+            "cos_g_m_den_median": float(np.median(cos_m_den_values)) if cos_m_den_values else None,
+            "defined_batches": len(cos_m_values),
+        }
+    dqn_cql_summary: dict[str, object] = {}
+    for group_name in ("brain", "dqn", "brain_dqn"):
+        values = [float(b["dqn_cql_cosines"][group_name]) for b in per_batch if b["dqn_cql_cosines"][group_name] is not None]
+        dqn_cql_summary[group_name] = {
+            "cos_mean": float(np.mean(values)) if values else None,
+            "defined_batches": len(values),
+        }
+    return {
+        "per_batch": per_batch,
+        "summary": summary,
+        "dqn_cql_parameter_cosine": dqn_cql_summary,
+        "batch_count": n_batches,
+        "batch_size": batch_size,
+    }
+
+
 def run_formal_audit(device: torch.device, out_root: Path) -> None:
     """Formal decision-signal audit pipeline. Gated by FORMAL_RUN_AUTHORIZED."""
     if not FORMAL_RUN_AUTHORIZED:
@@ -837,17 +1057,29 @@ def run_formal_audit(device: torch.device, out_root: Path) -> None:
     if not preflight["all_pass"]:
         raise RuntimeError("formal preflight failed")
     out_root.mkdir(parents=True, exist_ok=True)
-    from training.mortal.audit_k0_representation_space_2026_08 import build_route_table
-    from training.mortal.audit_replay_distribution import load_model
+    from training.mortal.audit_k0_representation_space_2026_08 import (
+        _load_canonical_route,
+        build_route_table,
+    )
+    from training.mortal.audit_objective_learnability import _build_model
 
     state = load_checkpoint(K0_MODEL)
-    brain, dqn, _version = load_model(state, device)
+    brain, dqn, aux, _version = _build_model(state, device)
+    optimizer = _build_preserved_optimizer(state, brain, dqn, aux)
     route_table = build_route_table()
     canonical_by_route = _load_decision_canonical(K0_REPR_OUTPUT)
     projection = np.load(K0_REPR_OUTPUT / "projection_matrix.npy", allow_pickle=False).astype(np.float64)
+    routes_for_neighbors = {
+        route: _load_canonical_route(K0_REPR_OUTPUT, route) for route in ROUTE_ORDER
+    }
     rehydrated_by_route: dict[str, dict[str, np.ndarray]] = {}
     q_by_route: dict[str, np.ndarray] = {}
+    adam_diagnostics: dict[str, object] = {}
     for route in ROUTE_ORDER:
+        sorted_hanchan = np.asarray(routes_for_neighbors[route]["hanchan_index"], dtype=np.int64)
+        sampled_positions = sample_microbatch_rows(
+            sorted_hanchan, batch_size=32, n_batches=32, seed=20260824
+        ).reshape(-1)
         rehydrated = _rehydrate_canonical_rows(
             route,
             route_table[route],
@@ -859,7 +1091,34 @@ def run_formal_audit(device: torch.device, out_root: Path) -> None:
         )
         rehydrated_by_route[route] = rehydrated
         q_by_route[route] = rehydrated["q"]
+        records = _collect_microbatch_records(
+            route,
+            route_table[route],
+            canonical_by_route[route],
+            sampled_positions,
+            state["config"],
+        )
+        canonical_hashes = canonical_by_route[route]["canonical_hanchan_hashes"]
+        perspective_labels = canonical_by_route[route]["perspective_labels"]
+        identities = [
+            (
+                route,
+                str(canonical_hashes[int(pos)]),
+                int(canonical_by_route[route]["file_index"][pos]),
+                int(canonical_by_route[route]["row_index"][pos]),
+                str(perspective_labels[int(pos)]),
+            )
+            for pos in sampled_positions.tolist()
+        ]
+        sampled_sha = __import__("hashlib").sha256(
+            json.dumps(identities, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+        adam_diagnostics[route] = _adam_diagnostic_for_route(
+            route, records, brain, dqn, aux, optimizer, state["config"], device
+        )
+        adam_diagnostics[route]["sampled_rows_sha256"] = sampled_sha
     analysis = _run_decision_analysis(K0_REPR_OUTPUT, canonical_by_route, rehydrated_by_route, q_by_route, projection)
+    analysis["adam_diagnostic"] = adam_diagnostics
     verdict = authoritative_verdict(analysis["verdict"], bool(preflight["all_pass"]), complete=True)
     riichi_path = Path(riichi.__file__).resolve()
     report = {

@@ -11,6 +11,7 @@ from training.mortal.audit_k0_decision_signal_2026_08 import (
     _adam_diagnostic_from_optimizer,
     _compute_support_metrics,
     _json_safe_report,
+    _run_decision_analysis,
     check_preregistration,
 )
 from training.mortal.k0_decision_signal_audit_core import (
@@ -540,3 +541,94 @@ def test_greedy_and_alt_are_selected_from_q_not_gradient() -> None:
     assert greedy_action_from_q(q, legal) == 1
     assert alternative_action_from_q(q, legal, behavior_action=1) == 3
     assert int(np.argmax(g_total[legal])) == 0
+
+
+def test_tiny_analysis_orchestration_and_json_report(monkeypatch, tmp_path) -> None:
+    import training.mortal.audit_k0_decision_signal_2026_08 as runner
+
+    n = 12
+    rng = np.random.default_rng(123)
+    z = rng.normal(size=(n, 8))
+    z /= np.linalg.norm(z, axis=1, keepdims=True)
+    hanchan = np.repeat(np.arange(4), 3).astype(np.int64)
+    hashes = [f"h-{h}" for h in hanchan]
+
+    def fake_load_canonical_route(root, route):
+        return {
+            "z": z,
+            "hanchan_index": hanchan,
+            "sorted_hashes": sorted(set(hashes)),
+            "manifest": {},
+        }
+
+    import training.mortal.audit_k0_representation_space_2026_08 as repr_runner
+    monkeypatch.setattr(repr_runner, "_load_canonical_route", fake_load_canonical_route)
+    monkeypatch.setattr(runner, "estimate_g1_sigma", lambda *a, **k: 1.0)
+    monkeypatch.setattr(
+        runner,
+        "make_g1_rff_features",
+        lambda sigma: (
+            np.random.default_rng(0).normal(size=(4, ACTION_DIM)),
+            np.random.default_rng(1).uniform(0, 2 * np.pi, size=4),
+        ),
+    )
+    monkeypatch.setattr(runner, "BOOTSTRAP_REPS", 3)
+    monkeypatch.setattr(runner, "SUPPORT_K", 2)
+    monkeypatch.setattr(runner, "K_CREDIT", 4)
+    small_draws = {
+        "m0": np.asarray([[0, 1, 2, 3]] * 3, dtype=np.int32),
+        "d12": np.asarray([[0, 1, 2, 3]] * 3, dtype=np.int32),
+        "d3": np.asarray([[0, 1, 2, 3]] * 3, dtype=np.int32),
+    }
+    monkeypatch.setattr(runner, "make_frozen_bootstrap_draws", lambda n, reps, seed: small_draws)
+
+    canonical_by_route = {}
+    rehydrated_by_route = {}
+    q_by_route = {}
+    actions = np.asarray([0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3], dtype=np.int64)
+    masks = np.zeros((n, ACTION_DIM), dtype=bool)
+    masks[:, :6] = True
+    targets = np.linspace(-1.0, 1.0, n)
+    q = rng.normal(size=(n, ACTION_DIM))
+    q[:, 6:] = -np.inf
+    for route in ROUTE_ORDER:
+        canonical_by_route[route] = {
+            "rows": n,
+            "hanchan_index": hanchan,
+            "file_index": np.arange(n, dtype=np.int64),
+            "row_index": np.arange(n, dtype=np.int64),
+            "target": targets,
+            "z": z,
+            "canonical_hanchan_hashes": hashes,
+            "perspective_labels": [route] * n,
+        }
+        rehydrated_by_route[route] = {
+            "actions": actions.copy(),
+            "masks": masks.copy(),
+            "targets": targets.copy(),
+            "z": z.copy(),
+            "q": q.copy(),
+        }
+        q_by_route[route] = q.copy()
+
+    analysis = _run_decision_analysis(
+        tmp_path / "repr",
+        canonical_by_route,
+        rehydrated_by_route,
+        q_by_route,
+        z,
+    )
+    assert "support" in analysis
+    assert "gradient" in analysis
+    assert "action_credit" in analysis
+    assert analysis["verdict"] in {
+        "inconclusive",
+        "state_action_support_signal",
+        "objective_gradient_shift_signal",
+        "both_signals",
+    }
+    safe = _json_safe_report(analysis, tmp_path / "report_out")
+    import json
+    text = json.dumps(safe, ensure_ascii=False, indent=2)
+    assert "ndarray" not in text
+    assert (tmp_path / "report_out" / "bootstrap").is_dir()
