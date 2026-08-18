@@ -17,6 +17,7 @@ if str(SCRIPT_REPO_ROOT) not in sys.path:
 
 from training.mortal.prepare_c1_training_2026_08 import (
     C1_ID,
+    HISTORICAL_MORTAL_REVISION,
     LOADER_SHA256,
     LOADER_STREAM_SHA256,
     PREREG_COMMIT,
@@ -34,10 +35,14 @@ from training.mortal.prepare_c1_training_2026_08 import (
     load_json,
     load_toml,
     map_dataset_paths,
+    mortal_source_provenance,
+    validate_historical_mortal_checkpoint,
     sha256_file,
+    validate_label_binding,
     validate_generated_config,
     validate_git_scope,
     validate_runtime_file_index,
+    validate_runtime_provenance,
     validate_source_inputs,
 )
 
@@ -129,6 +134,16 @@ def validate_manifest_contract(manifest_path: Path) -> tuple[dict[str, Any], dic
         raise ContractError("manifest does not bind authoritative argv")
     if manifest.get("training_command_policy", {}).get("shell") is not False:
         raise ContractError("manifest shell policy is not false")
+    frozen_executable = manifest.get("training_command_policy", {}).get("frozen_executable")
+    if frozen_executable != manifest.get("runtime_provenance", {}).get("sys_executable"):
+        raise ContractError("manifest frozen executable does not match runtime provenance")
+    if not manifest.get("runtime_provenance") or not manifest.get("mortal_provenance"):
+        raise ContractError("manifest is missing runtime or Mortal provenance")
+    historical = manifest.get("historical_mortal_checkpoints", [])
+    if len(historical) != 6 or {
+        item.get("mortal_revision") for item in historical
+    } != {HISTORICAL_MORTAL_REVISION}:
+        raise ContractError("manifest historical Mortal checkpoint revision matrix mismatch")
     if manifest.get("execution_boundary", {}).get("formal_config_equals_smoke_config") is not True:
         raise ContractError("manifest formal/smoke config binding is not exact")
     runtime_inputs = manifest.get("runtime_inputs", {})
@@ -158,6 +173,14 @@ def run_preflight(manifest_path: Path) -> dict[str, Any]:
         raise ContractError("manifest loader SHA mismatch")
     if governance["loader_contract"] != manifest["governance"]["loader_contract"]:
         raise ContractError("manifest loader contract differs from authoritative report")
+    current_runtime = validate_runtime_provenance(manifest["runtime_provenance"])
+    current_mortal = mortal_source_provenance()
+    if current_mortal != manifest["mortal_provenance"]:
+        raise ContractError("current Mortal source provenance differs from the frozen manifest")
+    historical_by_key = {
+        (str(item["route"]), int(item["seed"])): item
+        for item in manifest["historical_mortal_checkpoints"]
+    }
     parent_path = Path(manifest["parent"]["path"]).resolve()
     parent = inspect_parent(parent_path)
     if parent["digest"] != manifest["parent"]["digest"] or not parent["optimizer_moments_covered"]:
@@ -178,6 +201,12 @@ def run_preflight(manifest_path: Path) -> dict[str, Any]:
             source = load_toml(source_path)
             generated = load_toml(generated_path)
             source_inputs = validate_source_inputs(source, route=route, seed=seed)
+            historical = validate_historical_mortal_checkpoint(
+                historical_by_key[(route, seed)],
+                source_path,
+                route=route,
+                seed=seed,
+            )
             validate_runtime_file_index(
                 runtime_spec,
                 expected_source_path=Path(source_inputs["file_index_path"]),
@@ -187,6 +216,13 @@ def run_preflight(manifest_path: Path) -> dict[str, Any]:
                 raise ContractError(f"file index binding mismatch: {route}/{seed}")
             if source_inputs["label_files"] != run["label_files"]:
                 raise ContractError(f"label binding mismatch: {route}/{seed}")
+            label_binding = validate_label_binding(source, generated, run["label_binding"])
+            if label_binding != source_inputs["label_binding"]:
+                raise ContractError(f"label content binding mismatch: {route}/{seed}")
+            if run.get("historical_mortal_revision") != historical["mortal_revision"]:
+                raise ContractError(f"historical Mortal revision binding mismatch: {route}/{seed}")
+            if run.get("historical_checkpoint_sha256") != historical["sha256"]:
+                raise ContractError(f"historical checkpoint SHA binding mismatch: {route}/{seed}")
             if run.get("runtime_file_index_path") != runtime_spec["runtime_file_index_path"]:
                 raise ContractError(f"runtime file index route binding mismatch: {route}/{seed}")
             if run.get("runtime_file_index_sha256") != runtime_spec["runtime_file_index_sha256"]:
@@ -195,6 +231,18 @@ def run_preflight(manifest_path: Path) -> dict[str, Any]:
                 "ordered_path_mapping_sha256"
             ]:
                 raise ContractError(f"runtime file index mapping digest mismatch: {route}/{seed}")
+            for key in (
+                "source_file_index_path",
+                "source_file_index_sha256",
+                "runtime_file_index_path",
+                "runtime_file_index_sha256",
+                "file_count",
+                "ordered_path_mapping_sha256",
+                "source_payload_without_file_list_sha256",
+                "runtime_payload_without_file_list_sha256",
+            ):
+                if run.get(key) != runtime_spec.get(key):
+                    raise ContractError(f"runtime file index field binding mismatch: {route}/{seed}/{key}")
             runtime_dataset = map_dataset_paths(source)
             runtime_dataset["file_index"] = runtime_spec["runtime_file_index_path"]
             if run.get("runtime_dataset") != runtime_dataset:
@@ -266,6 +314,9 @@ def run_preflight(manifest_path: Path) -> dict[str, Any]:
             "streams_exact_match": True,
         },
         "parent": parent,
+        "runtime_provenance": current_runtime,
+        "mortal_provenance": current_mortal,
+        "historical_mortal_checkpoints": manifest["historical_mortal_checkpoints"],
         "runtime_inputs": list(manifest["runtime_inputs"].values()),
         "zero_step_smokes": zero_step_reports,
         "training_authorized": False,
@@ -281,6 +332,11 @@ def run_preflight(manifest_path: Path) -> dict[str, Any]:
             "six_cql_off_config_sha_exact": True,
             "semantic_diff_gate_six_runs": True,
             "runtime_index_relocation_exact": True,
+            "runtime_index_source_and_mapping_digest_exact": True,
+            "label_paths_and_content_sha_exact": True,
+            "historical_mortal_revisions_exact": True,
+            "historical_current_mortal_content_exact": True,
+            "native_runtime_and_python_exact": True,
             "formal_config_equals_smoke_config": True,
             "output_safety": True,
             "implementation_sources_exact": True,

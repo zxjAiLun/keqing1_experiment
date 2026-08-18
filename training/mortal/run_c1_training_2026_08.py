@@ -18,15 +18,26 @@ if str(SCRIPT_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_REPO_ROOT))
 
 from training.mortal.prepare_c1_training_2026_08 import (
+    HISTORICAL_MORTAL_REVISION,
     IMPLEMENTATION_SOURCES,
     K0_PARENT_SHA256,
     REPO_ROOT,
     ROUTES,
     SEEDS,
+    SOURCE_CONFIG_SHA256,
+    ContractError,
     future_training_argv,
     inspect_parent,
     load_toml,
+    map_dataset_paths,
+    mortal_source_provenance,
     sha256_file,
+    validate_generated_config,
+    validate_historical_mortal_checkpoint,
+    validate_label_binding,
+    validate_runtime_file_index,
+    validate_runtime_provenance,
+    validate_source_inputs,
 )
 
 DEFAULT_MANIFEST = (
@@ -197,6 +208,82 @@ def validate_authorized_launch(
     if "allow_legacy_data_replay" in config:
         raise AuthorizationError("legacy replay override is present")
 
+    source_path = Path(run["source_current_config"]).resolve()
+    expected_source_sha256 = SOURCE_CONFIG_SHA256[(route, seed)]
+    if run.get("source_current_config_sha256") != expected_source_sha256:
+        raise AuthorizationError("source CURRENT config SHA is not the frozen six-run binding")
+    if not source_path.is_file() or sha256_file(source_path) != expected_source_sha256:
+        raise AuthorizationError("source CURRENT config content/SHA mismatch")
+    source = load_toml(source_path)
+    source_inputs = validate_source_inputs(source, route=route, seed=seed)
+    if source_inputs["file_index_path"] != run.get("source_file_index_path"):
+        raise AuthorizationError("source file index path binding mismatch")
+    if source_inputs["file_index_sha256"] != run.get("source_file_index_sha256"):
+        raise AuthorizationError("source file index SHA binding mismatch")
+
+    route_key = route.split("_", maxsplit=1)[0]
+    runtime_spec = manifest.get("runtime_inputs", {}).get(route_key)
+    if not isinstance(runtime_spec, dict):
+        raise AuthorizationError(f"runtime index binding is missing for route {route_key}")
+    validate_runtime_file_index(
+        runtime_spec,
+        expected_source_path=Path(source_inputs["file_index_path"]),
+        expected_source_sha256=source_inputs["file_index_sha256"],
+    )
+    for key in (
+        "source_file_index_path",
+        "source_file_index_sha256",
+        "runtime_file_index_path",
+        "runtime_file_index_sha256",
+        "file_count",
+        "ordered_path_mapping_sha256",
+        "source_payload_without_file_list_sha256",
+        "runtime_payload_without_file_list_sha256",
+    ):
+        if run.get(key) != runtime_spec.get(key):
+            raise AuthorizationError(f"runtime file index field binding mismatch: {key}")
+    runtime_dataset = map_dataset_paths(source)
+    runtime_dataset["file_index"] = runtime_spec["runtime_file_index_path"]
+    if run.get("runtime_dataset") != runtime_dataset:
+        raise AuthorizationError("runtime dataset relocation binding mismatch")
+    semantic = validate_generated_config(
+        source,
+        config,
+        route=route,
+        seed=seed,
+        run_dir=Path(run["run_output_dir"]),
+        source_sha256=expected_source_sha256,
+        runtime_dataset=runtime_dataset,
+    )
+    if run.get("semantic_diff") != semantic:
+        raise AuthorizationError("formal config semantic diff binding mismatch")
+    label_binding = validate_label_binding(source, config, run["label_binding"])
+    if label_binding != source_inputs["label_binding"] or run.get("label_files") != source_inputs["label_files"]:
+        raise AuthorizationError("label path/content SHA binding mismatch")
+
+    historical_records = {
+        (str(item["route"]), int(item["seed"])): item
+        for item in manifest.get("historical_mortal_checkpoints", [])
+    }
+    if len(historical_records) != 6 or set(historical_records) != {
+        (candidate_route, candidate_seed)
+        for candidate_route in ROUTES
+        for candidate_seed in SEEDS
+    }:
+        raise AuthorizationError("historical Mortal checkpoint matrix is not exactly six runs")
+    historical = validate_historical_mortal_checkpoint(
+        historical_records[(route, seed)],
+        source_path,
+        route=route,
+        seed=seed,
+    )
+    if historical["mortal_revision"] != HISTORICAL_MORTAL_REVISION:
+        raise AuthorizationError("historical Mortal revision mismatch")
+    if run.get("historical_mortal_revision") != historical["mortal_revision"]:
+        raise AuthorizationError("run historical Mortal revision binding mismatch")
+    if run.get("historical_checkpoint_sha256") != historical["sha256"]:
+        raise AuthorizationError("run historical checkpoint SHA binding mismatch")
+
     parent_record = manifest.get("parent", {})
     parent_path = Path(parent_record.get("path", "")).resolve()
     if parent_record.get("sha256") != K0_PARENT_SHA256:
@@ -218,12 +305,27 @@ def validate_authorized_launch(
     if manifest.get("implementation_sources") != current_implementation_sources():
         raise AuthorizationError("implementation source content/blob binding mismatch")
 
+    frozen_mortal = manifest.get("mortal_provenance")
+    if not isinstance(frozen_mortal, dict) or frozen_mortal.get("historical_mortal_revision") != HISTORICAL_MORTAL_REVISION:
+        raise AuthorizationError("manifest Mortal provenance is missing or historically unbound")
+    if mortal_source_provenance() != frozen_mortal:
+        raise AuthorizationError("current Mortal source provenance differs from the frozen manifest")
+    frozen_runtime = manifest.get("runtime_provenance")
+    if not isinstance(frozen_runtime, dict):
+        raise AuthorizationError("manifest runtime provenance is missing")
+    if manifest.get("training_command_policy", {}).get("frozen_executable") != frozen_runtime.get("sys_executable"):
+        raise AuthorizationError("frozen executable binding is inconsistent")
+    current_runtime = validate_runtime_provenance(frozen_runtime)
+
     expected_argv = future_training_argv(
         config_path=config_path,
         parent_path=parent_path,
         seed=seed,
         run_dir=run_dir,
+        executable=frozen_runtime["sys_executable"],
     )
+    if current_runtime["sys_executable"] != frozen_runtime["sys_executable"]:
+        raise AuthorizationError("current sys.executable differs from the frozen executable")
     if run.get("future_training_argv") != expected_argv:
         raise AuthorizationError("future training argv differs from the frozen argv")
     if run.get("future_training_command") != shlex.join(expected_argv):
@@ -264,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
             seed=args.seed,
             supplied_token=args.confirmation_token,
         )
-    except (AuthorizationError, OSError, ValueError, KeyError) as exc:
+    except (AuthorizationError, ContractError, OSError, ValueError, KeyError) as exc:
         raise SystemExit(str(exc)) from exc
     if args.print_command:
         print(shlex.join(command_argv))

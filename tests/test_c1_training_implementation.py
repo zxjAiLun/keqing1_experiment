@@ -279,34 +279,159 @@ def _authorized_launcher_fixture(tmp_path: Path, monkeypatch) -> dict[str, objec
         "optimizer_moments_covered": True,
     }
 
-    run_dir = tmp_path / "run"
-    config_path = tmp_path / "formal_config.toml"
-    config = {
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    source_paths = []
+    for index in range(6000):
+        path = data_dir / f"sample_{index:04d}.json.gz"
+        path.touch()
+        source_paths.append(str(path.resolve()))
+    source_index = tmp_path / "source_index.pth"
+    runtime_index = tmp_path / "runtime_inputs" / "M0_file_index_linux.pth"
+    torch.save({"file_list": source_paths}, source_index)
+    label_path = tmp_path / "player_names.txt"
+    label_path.write_text("fixture-player\n", encoding="utf-8")
+    source_config_path = tmp_path / "source_config.toml"
+    source = {
         "control": {
-            "state_file": str((run_dir / "mortal.pth").resolve()),
-            "best_state_file": str((run_dir / "mortal_best.pth").resolve()),
-            "tensorboard_dir": str((run_dir / "tb_mortal").resolve()),
+            "state_file": str((tmp_path / "historical_mortal.pth").resolve()),
+            "best_state_file": str((tmp_path / "historical_best.pth").resolve()),
+            "tensorboard_dir": str((tmp_path / "historical_tb").resolve()),
+            "batch_size": 512,
+            "enable_amp": False,
+        },
+        "dataset": {
+            "globs": [str((data_dir / "*.json.gz").resolve())],
+            "file_index": str(source_index.resolve()),
+            "file_batch_size": 512,
+            "reserve_ratio": 0.0,
+            "num_workers": 0,
+            "player_names_files": [str(label_path.resolve())],
+            "num_epochs": 1,
+            "enable_augmentation": False,
+            "augmented_first": False,
         },
         "cql": {"min_q_weight": 0.0},
+        "experiment": {
+            "route": "M0_control",
+            "trainable_label": "ext_mortal",
+            "training_seed": seed,
+            "parent_steps": 70000,
+            "reward_mode": "final_rank_mc",
+        },
         "objective": {"mode": "behavior_action_mc"},
         "reward": {"mode": "final_rank_mc"},
     }
+    source["cql"]["min_q_weight"] = 5.0
+    source_config_path.write_text(toml.dumps(source), encoding="utf-8")
+    source_sha256 = prepare.sha256_file(source_config_path)
+    runtime_record = prepare.build_runtime_file_index(source_path=source_index, runtime_path=runtime_index)
+    runtime_dataset = prepare.map_dataset_paths(source)
+    runtime_dataset["file_index"] = runtime_record["runtime_file_index_path"]
+    run_dir = tmp_path / "run"
+    config = prepare.build_c1_config(
+        source,
+        route=route,
+        seed=seed,
+        run_dir=run_dir,
+        source_sha256=source_sha256,
+        runtime_dataset=runtime_dataset,
+    )
+    config_path = tmp_path / "formal_config.toml"
     config_path.write_text(toml.dumps(config), encoding="utf-8")
     config_sha256 = prepare.sha256_file(config_path)
+    semantic = prepare.validate_generated_config(
+        source,
+        config,
+        route=route,
+        seed=seed,
+        run_dir=run_dir,
+        source_sha256=source_sha256,
+        runtime_dataset=runtime_dataset,
+    )
+    label_binding = prepare.build_label_binding(source)
+    runtime_provenance = prepare.runtime_provenance()
+    mortal_provenance = {
+        "repo": str((prepare.REPO_ROOT / "third_party/Mortal").resolve()),
+        "current_mortal_revision": "fixture-current-mortal",
+        "historical_mortal_revision": prepare.HISTORICAL_MORTAL_REVISION,
+        "content_matches_historical": True,
+        "sources": [
+            {
+                "path": "mortal/model.py",
+                "current_sha256": "model-fixture",
+                "current_git_blob_oid": "model-blob",
+                "historical_sha256": "model-fixture",
+                "historical_git_blob_oid": "model-blob",
+                "content_matches_historical": True,
+            },
+            {
+                "path": "mortal/lr_scheduler.py",
+                "current_sha256": "lr-fixture",
+                "current_git_blob_oid": "lr-blob",
+                "historical_sha256": "lr-fixture",
+                "historical_git_blob_oid": "lr-blob",
+                "content_matches_historical": True,
+            },
+            {
+                "path": "mortal/config.py",
+                "current_sha256": "config-fixture",
+                "current_git_blob_oid": "config-blob",
+                "historical_sha256": "config-fixture",
+                "historical_git_blob_oid": "config-blob",
+                "content_matches_historical": True,
+            },
+        ],
+    }
+    historical_records = [
+        {
+            "route": candidate_route,
+            "seed": candidate_seed,
+            "path": str((tmp_path / f"historical_{candidate_route}_{candidate_seed}.pth").resolve()),
+            "sha256": f"historical-{candidate_route}-{candidate_seed}",
+            "steps": 72000,
+            "mortal_revision": prepare.HISTORICAL_MORTAL_REVISION,
+        }
+        for candidate_route in prepare.ROUTES
+        for candidate_seed in prepare.SEEDS
+    ]
     command_argv = prepare.future_training_argv(
         config_path=config_path,
         parent_path=parent_path,
         seed=seed,
         run_dir=run_dir,
+        executable=runtime_provenance["sys_executable"],
     )
     selected = {
         "route": route,
         "seed": seed,
+        "source_current_config": str(source_config_path.resolve()),
+        "source_current_config_sha256": source_sha256,
         "cql_off_config": str(config_path.resolve()),
         "cql_off_config_sha256": config_sha256,
         "formal_training_config_sha256": config_sha256,
         "smoke_config_sha256": config_sha256,
         "exact_same_config": True,
+        "semantic_diff": semantic,
+        "source_file_index_path": runtime_record["source_file_index_path"],
+        "source_file_index_sha256": runtime_record["source_file_index_sha256"],
+        "runtime_file_index_path": runtime_record["runtime_file_index_path"],
+        "runtime_file_index_sha256": runtime_record["runtime_file_index_sha256"],
+        "file_count": runtime_record["file_count"],
+        "ordered_path_mapping_sha256": runtime_record["ordered_path_mapping_sha256"],
+        "source_payload_without_file_list_sha256": runtime_record[
+            "source_payload_without_file_list_sha256"
+        ],
+        "runtime_payload_without_file_list_sha256": runtime_record[
+            "runtime_payload_without_file_list_sha256"
+        ],
+        "file_index": runtime_record["source_file_index_path"],
+        "file_index_sha256": runtime_record["source_file_index_sha256"],
+        "label_files": label_binding["player_names_files"],
+        "label_binding": label_binding,
+        "historical_mortal_revision": prepare.HISTORICAL_MORTAL_REVISION,
+        "historical_checkpoint_sha256": historical_records[0]["sha256"],
+        "runtime_dataset": runtime_dataset,
         "run_output_dir": str(run_dir.resolve()),
         "future_training_argv": command_argv,
         "future_training_command": " ".join(command_argv),
@@ -327,6 +452,18 @@ def _authorized_launcher_fixture(tmp_path: Path, monkeypatch) -> dict[str, objec
         "implementation_commit": implementation_commit,
         "implementation_sources": sources,
         "parent": parent_record,
+        "runtime_provenance": runtime_provenance,
+        "mortal_provenance": mortal_provenance,
+        "historical_mortal_checkpoints": historical_records,
+        "runtime_inputs": {
+            "M0": dict(runtime_record, route="M0"),
+            "D1": dict(runtime_record, route="D1"),
+        },
+        "training_command_policy": {
+            "authoritative_field": "future_training_argv",
+            "frozen_executable": runtime_provenance["sys_executable"],
+            "shell": False,
+        },
         "runs": runs,
     }
     manifest_path = tmp_path / "training_manifest.json"
@@ -362,6 +499,25 @@ def _authorized_launcher_fixture(tmp_path: Path, monkeypatch) -> dict[str, objec
     monkeypatch.setattr(launcher, "AUTHORIZED_PREFLIGHT_SHA256", preflight_sha256)
     monkeypatch.setattr(launcher, "AUTHORIZED_MANIFEST_SHA256", manifest_sha256)
     monkeypatch.setattr(launcher, "inspect_parent", fake_inspect)
+    monkeypatch.setattr(launcher, "SOURCE_CONFIG_SHA256", {(route, seed): source_sha256})
+    monkeypatch.setattr(
+        launcher,
+        "validate_source_inputs",
+        lambda config, *, route, seed: {
+            "file_index_path": str(source_index.resolve()),
+            "file_index_sha256": prepare.sha256_file(source_index),
+            "file_count": 6000,
+            "label_files": label_binding["player_names_files"],
+            "label_binding": label_binding,
+            "mapped_file_count": 6000,
+        },
+    )
+    monkeypatch.setattr(launcher, "mortal_source_provenance", lambda: copy.deepcopy(mortal_provenance))
+    monkeypatch.setattr(
+        launcher,
+        "validate_historical_mortal_checkpoint",
+        lambda expected, source_config_path_value, *, route, seed: copy.deepcopy(expected),
+    )
     monkeypatch.setattr(launcher, "subprocess", CaptureSubprocess)
     return {
         "route": route,
@@ -377,8 +533,13 @@ def _authorized_launcher_fixture(tmp_path: Path, monkeypatch) -> dict[str, objec
         "manifest_path": manifest_path,
         "preflight_path": preflight_path,
         "config_path": config_path,
+        "source_index": source_index,
+        "runtime_index": runtime_index,
+        "label_path": label_path,
         "parent_path": parent_path,
         "sources": sources,
+        "mortal_provenance": mortal_provenance,
+        "runtime_provenance": runtime_provenance,
     }
 
 
@@ -405,7 +566,24 @@ def test_launcher_simulated_authorization_calls_exact_argv(monkeypatch, tmp_path
     assert kwargs["shell"] is False
 
 
-@pytest.mark.parametrize("tamper", ["preflight", "manifest", "config", "parent", "source", "token"])
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "preflight",
+        "manifest",
+        "config",
+        "parent",
+        "source",
+        "token",
+        "runtime_index",
+        "source_index",
+        "label",
+        "mortal_model",
+        "mortal_lr_scheduler",
+        "native",
+        "python",
+    ],
+)
 def test_launcher_tamper_guards_never_call_subprocess(monkeypatch, tmp_path: Path, tamper: str) -> None:
     fixture = _authorized_launcher_fixture(tmp_path, monkeypatch)
     if tamper == "preflight":
@@ -421,6 +599,28 @@ def test_launcher_tamper_guards_never_call_subprocess(monkeypatch, tmp_path: Pat
         fixture["parent_path"].write_bytes(b"tampered parent")
     elif tamper == "source":
         monkeypatch.setattr(launcher, "current_implementation_sources", lambda: fixture["sources"] + [{"tampered": "1"}])
+    elif tamper == "runtime_index":
+        payload, _ = prepare.load_file_index(fixture["runtime_index"])
+        payload["file_list"][0] = str(tmp_path / "tampered-runtime-file")
+        torch.save(payload, fixture["runtime_index"])
+    elif tamper == "source_index":
+        payload, _ = prepare.load_file_index(fixture["source_index"])
+        payload["file_list"][0] = str(tmp_path / "tampered-source-file")
+        torch.save(payload, fixture["source_index"])
+    elif tamper == "label":
+        fixture["label_path"].write_text("tampered-player\n", encoding="utf-8")
+    elif tamper in {"mortal_model", "mortal_lr_scheduler"}:
+        tampered_mortal = copy.deepcopy(fixture["mortal_provenance"])
+        target_path = "mortal/model.py" if tamper == "mortal_model" else "mortal/lr_scheduler.py"
+        for record in tampered_mortal["sources"]:
+            if record["path"] == target_path:
+                record["current_sha256"] = "tampered-content"
+        monkeypatch.setattr(launcher, "mortal_source_provenance", lambda: tampered_mortal)
+    elif tamper in {"native", "python"}:
+        def runtime_tamper(_expected, *, tamper=tamper):
+            raise launcher.AuthorizationError(f"tampered {tamper} runtime provenance")
+
+        monkeypatch.setattr(launcher, "validate_runtime_provenance", runtime_tamper)
     else:
         fixture["token"] = "wrong-token"
     with pytest.raises(SystemExit):

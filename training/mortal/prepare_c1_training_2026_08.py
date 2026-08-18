@@ -6,9 +6,12 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
+import importlib
 import json
+import platform
 import shlex
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -28,6 +31,14 @@ START_STEP = 70000
 TARGET_STEP = 72000
 OPTIMIZER_STEPS = 2000
 ARCHIVE_STEPS = (70001, 70010, 70100, 70500, 71000, 72000)
+HISTORICAL_MORTAL_REVISION = "0cff2b52982be5b1163aa9a62fb01f03ce91e0d2"
+MORTAL_REPO_ROOT = REPO_ROOT / "third_party/Mortal"
+MORTAL_SOURCE_FILES = (
+    "mortal/config.py",
+    "mortal/model.py",
+    "mortal/lr_scheduler.py",
+)
+NATIVE_RUNTIME_MODULE = "riichi"
 
 SOURCE_CONFIG_SHA256 = {
     ("M0_CQL_OFF", 20260806): "89d8a9947402d12aaa879c561f1729f2c671358ac8639e723209308834f05d93",
@@ -175,6 +186,104 @@ def git_info() -> dict[str, Any]:
     }
 
 
+def _mortal_git(*args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=MORTAL_REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _git_blob_oid_bytes(content: bytes) -> str:
+    header = f"blob {len(content)}\0".encode("ascii")
+    return hashlib.sha1(header + content).hexdigest()
+
+
+def runtime_provenance() -> dict[str, Any]:
+    """Capture the exact Python, torch, CUDA, and loaded native runtime."""
+
+    try:
+        native_module = importlib.import_module(NATIVE_RUNTIME_MODULE)
+    except Exception as exc:  # pragma: no cover - the failure is environment-specific
+        raise ContractError(f"unable to import native runtime {NATIVE_RUNTIME_MODULE}: {exc}") from exc
+    native_file = getattr(native_module, "__file__", None)
+    if not native_file:
+        raise ContractError(f"native runtime {NATIVE_RUNTIME_MODULE} has no __file__")
+    native_path = Path(native_file).resolve()
+    if not native_path.is_file():
+        raise ContractError(f"native runtime path is missing: {native_path}")
+    cuda_available = bool(torch.cuda.is_available())
+    cuda_device_name = torch.cuda.get_device_name(0) if cuda_available else None
+    return {
+        "native_module": NATIVE_RUNTIME_MODULE,
+        "native_path": str(native_path),
+        "native_sha256": sha256_file(native_path),
+        "sys_executable": str(sys.executable),
+        "python_version": platform.python_version(),
+        "torch_version": str(torch.__version__),
+        "torch_cuda_version": str(torch.version.cuda) if torch.version.cuda is not None else None,
+        "cuda_available": cuda_available,
+        "cuda_device_name": str(cuda_device_name) if cuda_device_name is not None else None,
+    }
+
+
+def validate_runtime_provenance(expected: dict[str, Any]) -> dict[str, Any]:
+    actual = runtime_provenance()
+    if actual != expected:
+        raise ContractError(f"runtime provenance mismatch: expected={expected}, actual={actual}")
+    if actual.get("cuda_available") is not True or not actual.get("cuda_device_name"):
+        raise ContractError("C1 training runtime does not have the frozen CUDA device available")
+    return actual
+
+
+def mortal_source_provenance() -> dict[str, Any]:
+    """Freeze current Mortal revision/blob/content provenance against the historical revision."""
+
+    if not MORTAL_REPO_ROOT.is_dir():
+        raise ContractError(f"Mortal repository is missing: {MORTAL_REPO_ROOT}")
+    current_revision = _mortal_git("rev-parse", "HEAD")
+    source_records: list[dict[str, Any]] = []
+    for relative_path in MORTAL_SOURCE_FILES:
+        current_path = MORTAL_REPO_ROOT / relative_path
+        if not current_path.is_file():
+            raise ContractError(f"Mortal source is missing: {current_path}")
+        current_content = current_path.read_bytes()
+        historical_content = subprocess.run(
+            ["git", "show", f"{HISTORICAL_MORTAL_REVISION}:{relative_path}"],
+            cwd=MORTAL_REPO_ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout
+        current_sha256 = sha256_bytes(current_content)
+        historical_sha256 = sha256_bytes(historical_content)
+        current_blob_oid = _git_blob_oid_bytes(current_content)
+        historical_blob_oid = _git_blob_oid_bytes(historical_content)
+        if current_sha256 != historical_sha256 or current_blob_oid != historical_blob_oid:
+            raise ContractError(
+                f"Mortal source content mismatch against {HISTORICAL_MORTAL_REVISION}: {relative_path}"
+            )
+        source_records.append(
+            {
+                "path": relative_path,
+                "current_sha256": current_sha256,
+                "current_git_blob_oid": current_blob_oid,
+                "historical_sha256": historical_sha256,
+                "historical_git_blob_oid": historical_blob_oid,
+                "content_matches_historical": True,
+            }
+        )
+    return {
+        "repo": str(MORTAL_REPO_ROOT.resolve()),
+        "current_mortal_revision": current_revision,
+        "historical_mortal_revision": HISTORICAL_MORTAL_REVISION,
+        "content_matches_historical": True,
+        "sources": source_records,
+    }
+
+
 def validate_git_scope(info: dict[str, Any]) -> None:
     unexpected_untracked = sorted(set(info.get("untracked", [])) - ALLOWED_UNTRACKED)
     if info.get("branch") != "main" or info.get("tracked_changes"):
@@ -243,6 +352,111 @@ def map_dataset_paths(config: dict[str, Any]) -> dict[str, Any]:
     if "player_names_by_file" in dataset:
         mapped["player_names_by_file"] = map_path_structure(dataset["player_names_by_file"])
     return mapped
+
+
+def _is_windows_rooted_path(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = value.replace("\\", "/").lower()
+    return any(normalized == prefix or normalized.startswith(prefix + "/") for prefix, _ in WINDOWS_ROOT_MAP)
+
+
+def _collect_external_path_bindings(
+    source_value: Any,
+    runtime_value: Any,
+    *,
+    location: str,
+) -> list[dict[str, str]]:
+    if isinstance(source_value, str) and _is_windows_rooted_path(source_value):
+        runtime_path = Path(str(runtime_value)).resolve()
+        if not runtime_path.is_file():
+            raise ContractError(f"mapped label path is missing: {runtime_path}")
+        return [
+            {
+                "location": location,
+                "source_path": source_value,
+                "path": str(runtime_path),
+                "sha256": sha256_file(runtime_path),
+            }
+        ]
+    if isinstance(source_value, list) and isinstance(runtime_value, list):
+        records: list[dict[str, str]] = []
+        for index, (source_item, runtime_item) in enumerate(zip(source_value, runtime_value, strict=True)):
+            records.extend(
+                _collect_external_path_bindings(
+                    source_item,
+                    runtime_item,
+                    location=f"{location}[{index}]",
+                )
+            )
+        return records
+    if isinstance(source_value, dict) and isinstance(runtime_value, dict):
+        records = []
+        for key, source_item in source_value.items():
+            if key not in runtime_value:
+                raise ContractError(f"mapped label structure is missing {location}.{key}")
+            records.extend(
+                _collect_external_path_bindings(
+                    source_item,
+                    runtime_value[key],
+                    location=f"{location}.{key}",
+                )
+            )
+        return records
+    return []
+
+
+def build_label_binding(config: dict[str, Any]) -> dict[str, Any]:
+    """Bind every label path and any optional player_names_by_file path to content SHA."""
+
+    dataset = config.get("dataset", {})
+    if "player_names_files" not in dataset:
+        raise ContractError("source dataset.player_names_files is missing")
+    mapped_dataset = map_dataset_paths(config)
+    source_files = list(dataset["player_names_files"])
+    runtime_files = list(mapped_dataset.get("player_names_files", []))
+    if len(source_files) != len(runtime_files):
+        raise ContractError("source/runtime player_names_files lengths differ")
+    file_records: list[dict[str, str]] = []
+    for index, (source_path, runtime_path) in enumerate(zip(source_files, runtime_files, strict=True)):
+        mapped_path = Path(str(runtime_path)).resolve()
+        if not mapped_path.is_file():
+            raise ContractError(f"source label file missing: {mapped_path}")
+        file_records.append(
+            {
+                "location": f"dataset.player_names_files[{index}]",
+                "source_path": str(source_path),
+                "path": str(mapped_path),
+                "sha256": sha256_file(mapped_path),
+            }
+        )
+    by_file_records: list[dict[str, str]] | None = None
+    if "player_names_by_file" in dataset:
+        by_file_records = _collect_external_path_bindings(
+            dataset["player_names_by_file"],
+            mapped_dataset.get("player_names_by_file"),
+            location="dataset.player_names_by_file",
+        )
+    return {
+        "player_names_files": file_records,
+        "player_names_by_file": by_file_records,
+    }
+
+
+def validate_label_binding(
+    source: dict[str, Any],
+    generated: dict[str, Any],
+    expected_binding: dict[str, Any],
+) -> dict[str, Any]:
+    actual_binding = build_label_binding(source)
+    if actual_binding != expected_binding:
+        raise ContractError("label path/content binding mismatch")
+    source_dataset = map_dataset_paths(source)
+    generated_dataset = generated.get("dataset", {})
+    for key in ("player_names_files", "player_names_by_file"):
+        if key in source_dataset and generated_dataset.get(key) != source_dataset[key]:
+            raise ContractError(f"generated label relocation mismatch: dataset.{key}")
+    return actual_binding
 
 
 def ordered_path_mapping_sha256(source_paths: list[str], runtime_paths: list[str]) -> str:
@@ -363,6 +577,48 @@ def load_file_index(path: Path) -> tuple[dict[str, Any], list[str]]:
     return payload, values
 
 
+def inspect_historical_mortal_checkpoint(
+    source_config_path_value: Path,
+    *,
+    route: str,
+    seed: int,
+) -> dict[str, Any]:
+    source = load_toml(source_config_path_value)
+    raw_state_file = source.get("control", {}).get("state_file")
+    if not raw_state_file:
+        raise ContractError(f"historical source config has no control.state_file: {source_config_path_value}")
+    checkpoint_path = Path(map_external_value(str(raw_state_file))).resolve()
+    if not checkpoint_path.is_file():
+        raise ContractError(f"historical CURRENT checkpoint is missing: {checkpoint_path}")
+    state = torch.load(checkpoint_path, weights_only=False, map_location="cpu")
+    contract = state.get("training_contract")
+    if not isinstance(contract, dict) or not contract.get("mortal_revision"):
+        raise ContractError(f"historical checkpoint has no training_contract.mortal_revision: {checkpoint_path}")
+    return {
+        "route": route,
+        "seed": seed,
+        "path": str(checkpoint_path),
+        "sha256": sha256_file(checkpoint_path),
+        "steps": int(state.get("steps", -1)),
+        "mortal_revision": str(contract["mortal_revision"]),
+    }
+
+
+def validate_historical_mortal_checkpoint(
+    expected: dict[str, Any],
+    source_config_path_value: Path,
+    *,
+    route: str,
+    seed: int,
+) -> dict[str, Any]:
+    actual = inspect_historical_mortal_checkpoint(source_config_path_value, route=route, seed=seed)
+    if actual != expected:
+        raise ContractError(f"historical checkpoint provenance mismatch: {route}/{seed}")
+    if actual["steps"] != TARGET_STEP or actual["mortal_revision"] != HISTORICAL_MORTAL_REVISION:
+        raise ContractError(f"historical checkpoint contract mismatch: {route}/{seed}")
+    return actual
+
+
 def validate_source_inputs(config: dict[str, Any], *, route: str, seed: int) -> dict[str, Any]:
     if float(config["cql"]["min_q_weight"]) != 5.0:
         raise ContractError(f"source CURRENT CQL weight is not 5.0: {route}/{seed}")
@@ -389,17 +645,13 @@ def validate_source_inputs(config: dict[str, Any], *, route: str, seed: int) -> 
     missing = next((value for value in mapped_files if not Path(value).is_file()), None)
     if missing is not None:
         raise ContractError(f"source file index points to missing data: {missing}")
-    label_records = []
-    for raw_path in config["dataset"]["player_names_files"]:
-        label_path = Path(map_external_value(str(raw_path)))
-        if not label_path.is_file():
-            raise ContractError(f"source label file missing: {label_path}")
-        label_records.append({"path": str(label_path.resolve()), "sha256": sha256_file(label_path)})
+    label_binding = build_label_binding(config)
     return {
         "file_index_path": str(index_path.resolve()),
         "file_index_sha256": index_sha256,
         "file_count": len(file_list),
-        "label_files": label_records,
+        "label_files": label_binding["player_names_files"],
+        "label_binding": label_binding,
         "mapped_file_count": len(mapped_files),
     }
 
@@ -653,10 +905,17 @@ def implementation_sources() -> list[dict[str, str]]:
     return records
 
 
-def future_training_argv(*, config_path: Path, parent_path: Path, seed: int, run_dir: Path) -> list[str]:
+def future_training_argv(
+    *,
+    config_path: Path,
+    parent_path: Path,
+    seed: int,
+    run_dir: Path,
+    executable: str | None = None,
+) -> list[str]:
     archive_steps = ",".join(str(step) for step in ARCHIVE_STEPS)
     return [
-        "python",
+        str(executable or sys.executable),
         "training/run_mortal_dqn_offline.py",
         "--config",
         str(config_path.resolve()),
@@ -683,8 +942,23 @@ def future_training_argv(*, config_path: Path, parent_path: Path, seed: int, run
     ]
 
 
-def future_training_command(*, config_path: Path, parent_path: Path, seed: int, run_dir: Path) -> str:
-    return shlex.join(future_training_argv(config_path=config_path, parent_path=parent_path, seed=seed, run_dir=run_dir))
+def future_training_command(
+    *,
+    config_path: Path,
+    parent_path: Path,
+    seed: int,
+    run_dir: Path,
+    executable: str | None = None,
+) -> str:
+    return shlex.join(
+        future_training_argv(
+            config_path=config_path,
+            parent_path=parent_path,
+            seed=seed,
+            run_dir=run_dir,
+            executable=executable,
+        )
+    )
 
 
 def load_governance(registry_path: Path, prereg_path: Path, loader_path: Path) -> dict[str, Any]:
@@ -721,6 +995,22 @@ def prepare(
     git = git_info()
     validate_git_scope(git)
     parent = inspect_parent(parent_path)
+    frozen_runtime = runtime_provenance()
+    frozen_mortal = mortal_source_provenance()
+    historical_mortal_checkpoints: dict[tuple[str, int], dict[str, Any]] = {}
+    for route in ROUTES:
+        for seed in SEEDS:
+            historical_path = source_config_path(source_root, route, seed).resolve()
+            historical_mortal_checkpoints[(route, seed)] = inspect_historical_mortal_checkpoint(
+                historical_path,
+                route=route,
+                seed=seed,
+            )
+    historical_revisions = {
+        item["mortal_revision"] for item in historical_mortal_checkpoints.values()
+    }
+    if historical_revisions != {HISTORICAL_MORTAL_REVISION}:
+        raise ContractError(f"six historical CURRENT Mortal revisions are not identical: {historical_revisions}")
     source_records: dict[str, dict[str, Any]] = {}
     run_records: list[dict[str, Any]] = []
     runtime_inputs: dict[str, dict[str, Any]] = {}
@@ -761,6 +1051,7 @@ def prepare(
                 source_sha256=expected_source_sha,
                 runtime_dataset=runtime_dataset,
             )
+            validate_label_binding(source, generated, source_inputs["label_binding"])
             gate = validate_generated_config(
                 source,
                 generated,
@@ -783,6 +1074,7 @@ def prepare(
                 parent_path=parent_path,
                 seed=seed,
                 run_dir=run_dir,
+                executable=frozen_runtime["sys_executable"],
             )
             run_records.append(
                 {
@@ -811,6 +1103,11 @@ def prepare(
                     "file_index": runtime_spec["source_file_index_path"],
                     "file_index_sha256": runtime_spec["source_file_index_sha256"],
                     "label_files": source_inputs["label_files"],
+                    "label_binding": source_inputs["label_binding"],
+                    "historical_mortal_revision": historical_mortal_checkpoints[(route, seed)][
+                        "mortal_revision"
+                    ],
+                    "historical_checkpoint_sha256": historical_mortal_checkpoints[(route, seed)]["sha256"],
                     "runtime_dataset": runtime_dataset,
                     "loader_stream_sha256": LOADER_STREAM_SHA256[(route_key, seed)],
                     "run_output_dir": str(run_dir.resolve()),
@@ -843,6 +1140,13 @@ def prepare(
             "loader_contract": governance["loader_contract"],
         },
         "parent": parent,
+        "runtime_provenance": frozen_runtime,
+        "mortal_provenance": frozen_mortal,
+        "historical_mortal_checkpoints": [
+            historical_mortal_checkpoints[(route, seed)]
+            for route in ROUTES
+            for seed in SEEDS
+        ],
         "runtime_inputs": runtime_inputs,
         "fixed_contract": {
             "factor_a": ["M0_operational_control", "D1_project_owned_k0_view"],
@@ -878,6 +1182,7 @@ def prepare(
             "data_seed_equals_training_seed": True,
             "user_scientific_overrides": False,
             "authoritative_field": "future_training_argv",
+            "frozen_executable": frozen_runtime["sys_executable"],
             "shell": False,
         },
     }
