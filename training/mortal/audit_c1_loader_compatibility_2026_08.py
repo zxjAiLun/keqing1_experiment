@@ -436,12 +436,12 @@ def compare_stream_hashes(
 
 
 def source_record(repo: Path, commit: str, source_path: str) -> dict[str, str]:
-    content, blob_sha = git_source(repo, commit, source_path)
+    content, blob_oid = git_source(repo, commit, source_path)
     return {
         "repository": str(repo.resolve()),
         "commit": commit,
         "source_path": source_path,
-        "git_blob_sha256": blob_sha,
+        "git_blob_oid": blob_oid,
         "content_sha256": sha256_bytes(content),
     }
 

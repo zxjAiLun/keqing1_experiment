@@ -123,3 +123,19 @@ def test_separate_stream_comparator_locates_component_mismatch(monkeypatch) -> N
     assert result["exact_match"] is False
     assert result["first_mismatch_batch"] == 1
     assert result["first_mismatch_tensor"] == "actions"
+
+
+def test_source_record_distinguishes_git_oid_from_content_sha256(monkeypatch) -> None:
+    git_oid = "deadbeef" * 5
+    monkeypatch.setattr(audit, "git_source", lambda repo, commit, source_path: (b"frozen source", git_oid))
+
+    record = audit.source_record(
+        audit.Path("/tmp/fake-c1-repo"),
+        "frozen-commit",
+        "loader.py",
+    )
+
+    assert record["git_blob_oid"] == git_oid
+    assert "git_blob_sha256" not in record
+    assert len(record["content_sha256"]) == 64
+    int(record["content_sha256"], 16)

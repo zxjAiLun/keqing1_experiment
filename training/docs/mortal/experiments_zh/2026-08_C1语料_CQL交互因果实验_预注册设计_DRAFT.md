@@ -303,7 +303,7 @@ path:
   loader_compatibility.json
 
 sha256:
-80d78702e36c7770e6d781ccb651ad088c5cbe84b42d21e1a6c19a7609903df7
+aff26cee9fa32781b426b3f02302df0e0625baee9bdd5be9c000fce2acbff46c
 ```
 
 六组结果如下；每行的 historical/current ordered SHA 完全相同，`exact_match=true`，
@@ -604,7 +604,11 @@ promotion 不合并。
 - 完成 draft repair review 后，先正式 freeze C1 preregistration。
 - preregistration freeze 后再注册 registry entry；draft 本身不注册。
 - 固定 CQL_OFF config、config SHA 和 objective-side diff；不允许新增其它 candidate。
-- 完成 M0/D1 loader compatibility preflight；不通过则 fresh full 2×2 training。
+- loader compatibility audit：`COMPLETE / PASS`；historical CURRENT training reuse：
+  `APPROVED`；new CQL_OFF trainings：`exactly 6`。
+- fresh full 2×2 training fallback：`CLOSED / no longer part of C1 design`。
+- 只有 frozen provenance gate 损坏或缺失时才停止并输出 `no_verdict_gates_failed`；不得
+  因普通运行时差异临时切回 12-run design。
 - 明确新 CQL_OFF training artifact root、seed、parent SHA、optimizer state digest 和
   `70000 -> 72000` completion proof。
 - 冻结统一 fresh Linux evaluation runtime、native SHA、Mortal revision、evaluator commit、
