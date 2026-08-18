@@ -831,6 +831,7 @@ def prepare(
         "evaluation_authorized": False,
         "optimizer_steps": 0,
         "new_checkpoints": 0,
+        "new_training_runs": 6,
         "implementation_commit": git["commit"],
         "implementation_sources": implementation_sources(),
         "git": git,
