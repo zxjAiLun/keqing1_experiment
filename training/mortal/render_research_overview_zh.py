@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Validate and render the machine-readable Mortal research registry."""
 
 from __future__ import annotations
@@ -8,7 +9,6 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
-
 
 BEGIN = "<!-- BEGIN AUTO REGISTRY STATUS -->"
 END = "<!-- END AUTO REGISTRY STATUS -->"
@@ -44,6 +44,7 @@ ALLOWED_STATUSES = {
     "analysis_only",
     "proposal_only_not_started",
     "preregistered_not_started",
+    "preregistered_frozen",
     "gate_passed",
     "generation_closed",
     "not_selected",
@@ -59,7 +60,7 @@ def load_registry(path: Path) -> dict[str, Any]:
         raise ValueError("unsupported registry schema")
     state = registry.get("current_state")
     if not isinstance(state, dict):
-        raise ValueError("current_state must be an object")
+        raise ValueError("current_state must be an object")  # noqa: TRY004
     for key in ("current_formal_lineage", "K0", "K1", "operational_control", "next_experiment", "prohibitions"):
         if key not in state:
             raise ValueError(f"current_state missing {key}")
@@ -78,7 +79,7 @@ def load_registry(path: Path) -> dict[str, Any]:
         if record["status"] not in ALLOWED_STATUSES:
             raise ValueError(f"unsupported status for {experiment_id}: {record['status']}")
         if not isinstance(record["fixed_variables"], list) or not isinstance(record["training_seeds"], list):
-            raise ValueError(f"record {experiment_id} has invalid list fields")
+            raise ValueError(f"record {experiment_id} has invalid list fields")  # noqa: TRY004
     if state["K1"] is not None:
         raise ValueError("K1 must remain null until a formal K1 is actually promoted")
     record_by_id = {record["experiment_id"]: record for record in records}
@@ -121,6 +122,7 @@ def status_text(status: str) -> str:
         "analysis_only": "仅分析",
         "proposal_only_not_started": "仅提案，未启动",
         "preregistered_not_started": "已预注册，未启动",
+        "preregistered_frozen": "预注册已冻结，未启动",
         "gate_passed": "首个 B250 gate 已通过",
         "generation_closed": "6000h 生成已闭环",
         "not_selected": "未选择",
