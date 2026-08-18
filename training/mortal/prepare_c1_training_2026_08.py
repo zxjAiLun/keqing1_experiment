@@ -7,6 +7,7 @@ import argparse
 import copy
 import hashlib
 import json
+import shlex
 import subprocess
 import tomllib
 from pathlib import Path
@@ -36,6 +37,10 @@ SOURCE_CONFIG_SHA256 = {
     ("D1_CQL_OFF", 20260807): "655339eebbacf8e9fd85de820c612515c9840025b4dbc1c7dfa4bb3ec03841b3",
     ("D1_CQL_OFF", 20260808): "4baf422cad7711f85f85b456c4c4329c0fd4d874df09b51506b0e03821b12d2e",
 }
+SOURCE_FILE_INDEX_SHA256 = {
+    "M0": "755b1d5976e3837402eec708d160ede081605e2fcda37d9acdb1436d8a72fce2",
+    "D1": "e357bdb00d5bf3cd7e0afa6960ee43af656421cfed381a3320f6b83ac56087f0",
+}
 LOADER_STREAM_SHA256 = {
     ("M0", 20260806): "c111c3b1fe223bfc42a52507226963b093c17be792e9197ef0d3686f5b794b3f",
     ("M0", 20260807): "6d418d89a23509293d69cf359de91e99f23b210dcfc6570ce2b4ac8d95ffb2a0",
@@ -54,6 +59,18 @@ OUTPUT_PATHS = {
     "control.best_state_file",
     "control.tensorboard_dir",
 }
+SCIENTIFIC_PATHS = {"cql.min_q_weight"}
+EXECUTION_PATH_ROOTS = {
+    "dataset.file_index",
+    "dataset.globs",
+    "dataset.player_names_files",
+    "dataset.player_names_by_file",
+}
+RUNTIME_INDEX_FILENAME = {
+    "M0_CQL_OFF": "M0_file_index_linux.pth",
+    "D1_CQL_OFF": "D1_file_index_linux.pth",
+}
+ALLOWED_UNTRACKED = {"1.md"}
 SOURCE_ROUTE_DIR = {"M0_CQL_OFF": "M0_control", "D1_CQL_OFF": "D1_variant"}
 WINDOWS_ROOT_MAP = (
     (
@@ -158,6 +175,14 @@ def git_info() -> dict[str, Any]:
     }
 
 
+def validate_git_scope(info: dict[str, Any]) -> None:
+    unexpected_untracked = sorted(set(info.get("untracked", [])) - ALLOWED_UNTRACKED)
+    if info.get("branch") != "main" or info.get("tracked_changes"):
+        raise ContractError(f"C1 requires main with a clean tracked tree: {info}")
+    if unexpected_untracked:
+        raise ContractError(f"unexpected untracked files are not allowed: {unexpected_untracked}")
+
+
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
@@ -182,6 +207,142 @@ def map_external_pattern(value: str) -> str:
             suffix = normalized[len(prefix) :].lstrip("/")
             return str(local_root / suffix)
     return normalized
+
+
+def map_path_structure(value: Any) -> Any:
+    """Relocate Windows-rooted path strings while preserving other values."""
+
+    if isinstance(value, str):
+        normalized = value.replace("\\", "/")
+        lowered = normalized.lower()
+        if any(lowered == prefix or lowered.startswith(prefix + "/") for prefix, _ in WINDOWS_ROOT_MAP):
+            return map_external_value(value)
+        return value
+    if isinstance(value, list):
+        return [map_path_structure(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(map_path_structure(item) for item in value)
+    if isinstance(value, dict):
+        return {map_path_structure(key): map_path_structure(item) for key, item in value.items()}
+    return value
+
+
+def map_dataset_paths(config: dict[str, Any]) -> dict[str, Any]:
+    """Return the deterministic Linux execution-path relocation for a source config."""
+
+    dataset = config.get("dataset", {})
+    mapped: dict[str, Any] = {}
+    if "file_index" in dataset:
+        mapped["file_index"] = str(Path(map_external_value(str(dataset["file_index"]))).resolve())
+    if "globs" in dataset:
+        mapped["globs"] = [map_external_pattern(str(value)) for value in dataset["globs"]]
+    if "player_names_files" in dataset:
+        mapped["player_names_files"] = [
+            str(Path(map_external_value(str(value))).resolve()) for value in dataset["player_names_files"]
+        ]
+    if "player_names_by_file" in dataset:
+        mapped["player_names_by_file"] = map_path_structure(dataset["player_names_by_file"])
+    return mapped
+
+
+def ordered_path_mapping_sha256(source_paths: list[str], runtime_paths: list[str]) -> str:
+    if len(source_paths) != len(runtime_paths):
+        raise ContractError("ordered source/runtime file mapping lengths differ")
+    pairs = [
+        {"index": index, "source": source, "runtime": runtime}
+        for index, (source, runtime) in enumerate(zip(source_paths, runtime_paths, strict=True))
+    ]
+    encoded = json.dumps(pairs, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return sha256_bytes(encoded)
+
+
+def _payload_without_file_list(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload.items() if key != "file_list"}
+
+
+def build_runtime_file_index(*, source_path: Path, runtime_path: Path) -> dict[str, Any]:
+    """Create one route-level Linux index while preserving source order and payload identity."""
+
+    source_payload, source_paths = load_file_index(source_path)
+    runtime_paths = [map_external_value(value) for value in source_paths]
+    missing = next((value for value in runtime_paths if not Path(value).is_file()), None)
+    if missing is not None:
+        raise ContractError(f"runtime path mapping points to missing file: {missing}")
+    runtime_payload = copy.deepcopy(source_payload)
+    runtime_payload["file_list"] = runtime_paths
+    runtime_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(runtime_payload, runtime_path)
+    record = {
+        "source_file_index_path": str(source_path.resolve()),
+        "source_file_index_sha256": sha256_file(source_path),
+        "runtime_file_index_path": str(runtime_path.resolve()),
+        "runtime_file_index_sha256": sha256_file(runtime_path),
+        "file_count": len(source_paths),
+        "ordered_path_mapping_sha256": ordered_path_mapping_sha256(source_paths, runtime_paths),
+        "source_payload_without_file_list_sha256": tensor_digest(_payload_without_file_list(source_payload)),
+        "runtime_payload_without_file_list_sha256": tensor_digest(_payload_without_file_list(runtime_payload)),
+    }
+    if record["source_payload_without_file_list_sha256"] != record["runtime_payload_without_file_list_sha256"]:
+        raise ContractError("runtime file index changed payload fields outside file_list")
+    return record
+
+
+def validate_runtime_file_index(
+    record: dict[str, Any],
+    *,
+    expected_source_path: Path,
+    expected_source_sha256: str,
+) -> dict[str, Any]:
+    """Re-derive and verify a formal runtime index from its frozen source index."""
+
+    source_path = Path(record["source_file_index_path"]).resolve()
+    runtime_path = Path(record["runtime_file_index_path"]).resolve()
+    if source_path != expected_source_path.resolve() or record.get("source_file_index_sha256") != expected_source_sha256:
+        raise ContractError("runtime index source binding mismatch")
+    if not runtime_path.is_file():
+        raise ContractError(f"formal runtime file index is missing: {runtime_path}")
+    if sha256_file(source_path) != expected_source_sha256:
+        raise ContractError(f"source file index SHA mismatch: {source_path}")
+    source_payload, source_paths = load_file_index(source_path)
+    runtime_payload, runtime_paths = load_file_index(runtime_path)
+    expected_runtime_paths = [map_external_value(value) for value in source_paths]
+    if runtime_paths != expected_runtime_paths:
+        raise ContractError("formal runtime file index is not the deterministic ordered relocation")
+    if any(not Path(value).is_file() for value in runtime_paths):
+        raise ContractError("formal runtime file index contains a missing mapped file")
+    expected_record = build_runtime_index_record(
+        source_path=source_path,
+        runtime_path=runtime_path,
+        source_payload=source_payload,
+        source_paths=source_paths,
+        runtime_payload=runtime_payload,
+        runtime_paths=runtime_paths,
+    )
+    for key, value in expected_record.items():
+        if record.get(key) != value:
+            raise ContractError(f"formal runtime file index binding mismatch: {key}")
+    return expected_record
+
+
+def build_runtime_index_record(
+    *,
+    source_path: Path,
+    runtime_path: Path,
+    source_payload: dict[str, Any],
+    source_paths: list[str],
+    runtime_payload: dict[str, Any],
+    runtime_paths: list[str],
+) -> dict[str, Any]:
+    return {
+        "source_file_index_path": str(source_path.resolve()),
+        "source_file_index_sha256": sha256_file(source_path),
+        "runtime_file_index_path": str(runtime_path.resolve()),
+        "runtime_file_index_sha256": sha256_file(runtime_path),
+        "file_count": len(source_paths),
+        "ordered_path_mapping_sha256": ordered_path_mapping_sha256(source_paths, runtime_paths),
+        "source_payload_without_file_list_sha256": tensor_digest(_payload_without_file_list(source_payload)),
+        "runtime_payload_without_file_list_sha256": tensor_digest(_payload_without_file_list(runtime_payload)),
+    }
 
 
 def source_config_path(source_root: Path, route: str, seed: int) -> Path:
@@ -219,6 +380,10 @@ def validate_source_inputs(config: dict[str, Any], *, route: str, seed: int) -> 
     index_path = Path(map_external_value(str(config["dataset"]["file_index"])))
     if not index_path.is_file():
         raise ContractError(f"source file index missing: {index_path}")
+    route_key = route.split("_", maxsplit=1)[0]
+    index_sha256 = sha256_file(index_path)
+    if index_sha256 != SOURCE_FILE_INDEX_SHA256[route_key]:
+        raise ContractError(f"source file index SHA mismatch: {route}/{seed}")
     _, file_list = load_file_index(index_path)
     mapped_files = [map_external_value(value) for value in file_list]
     missing = next((value for value in mapped_files if not Path(value).is_file()), None)
@@ -232,7 +397,7 @@ def validate_source_inputs(config: dict[str, Any], *, route: str, seed: int) -> 
         label_records.append({"path": str(label_path.resolve()), "sha256": sha256_file(label_path)})
     return {
         "file_index_path": str(index_path.resolve()),
-        "file_index_sha256": sha256_file(index_path),
+        "file_index_sha256": index_sha256,
         "file_count": len(file_list),
         "label_files": label_records,
         "mapped_file_count": len(mapped_files),
@@ -261,23 +426,47 @@ def semantic_diff(source: Any, generated: Any, path: str = "") -> list[dict[str,
 
 
 def diff_path_allowed(path: str) -> bool:
-    return path in OUTPUT_PATHS or path == "cql.min_q_weight" or path == "experiment" or path.startswith("experiment.")
+    if path in OUTPUT_PATHS or path in SCIENTIFIC_PATHS or path == "experiment" or path.startswith("experiment."):
+        return True
+    return any(
+        path == root or path.startswith((root + "[", root + "."))
+        for root in EXECUTION_PATH_ROOTS
+    )
+
+
+def _path_in_roots(path: str, roots: set[str]) -> bool:
+    return any(path == root or path.startswith((root + "[", root + ".")) for root in roots)
 
 
 def semantic_diff_gate(source: dict[str, Any], generated: dict[str, Any]) -> dict[str, Any]:
     differences = semantic_diff(source, generated)
     unexpected = [item for item in differences if not diff_path_allowed(str(item["path"]))]
-    cql_change = next((item for item in differences if item["path"] == "cql.min_q_weight"), None)
-    passed = not unexpected and cql_change == {
-        "path": "cql.min_q_weight",
-        "source": 5.0,
-        "generated": 0.0,
-    }
+    scientific_differences = [item for item in differences if _path_in_roots(str(item["path"]), SCIENTIFIC_PATHS)]
+    execution_path_differences = [
+        item for item in differences if _path_in_roots(str(item["path"]), EXECUTION_PATH_ROOTS | OUTPUT_PATHS)
+    ]
+    provenance_differences = [
+        item
+        for item in differences
+        if str(item["path"]) == "experiment" or str(item["path"]).startswith("experiment.")
+    ]
+    passed = not unexpected and scientific_differences == [
+        {
+            "path": "cql.min_q_weight",
+            "source": 5.0,
+            "generated": 0.0,
+        }
+    ]
     return {
         "passed": passed,
         "differences": differences,
+        "scientific_differences": scientific_differences,
+        "execution_path_differences": execution_path_differences,
+        "provenance_differences": provenance_differences,
         "unexpected_differences": unexpected,
-        "allowed_paths": sorted(OUTPUT_PATHS | {"cql.min_q_weight", "experiment.*"}),
+        "allowed_paths": sorted(
+            OUTPUT_PATHS | SCIENTIFIC_PATHS | EXECUTION_PATH_ROOTS | {"experiment.*"}
+        ),
     }
 
 
@@ -288,11 +477,14 @@ def build_c1_config(
     seed: int,
     run_dir: Path,
     source_sha256: str,
+    runtime_dataset: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = copy.deepcopy(source)
     config["control"]["state_file"] = str((run_dir / "mortal.pth").resolve())
     config["control"]["best_state_file"] = str((run_dir / "mortal_best.pth").resolve())
     config["control"]["tensorboard_dir"] = str((run_dir / "tb_mortal").resolve())
+    if runtime_dataset is not None:
+        config.setdefault("dataset", {}).update(copy.deepcopy(runtime_dataset))
     config["cql"]["min_q_weight"] = 0.0
     experiment = copy.deepcopy(config.get("experiment", {}))
     experiment.update(
@@ -321,6 +513,7 @@ def validate_generated_config(
     seed: int,
     run_dir: Path,
     source_sha256: str,
+    runtime_dataset: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     gate = semantic_diff_gate(source, generated)
     if not gate["passed"]:
@@ -335,6 +528,10 @@ def validate_generated_config(
     for key, expected in expected_paths.items():
         if generated["control"][key] != expected:
             raise ContractError(f"generated output path mismatch: {route}/{seed}/{key}")
+    if runtime_dataset is not None:
+        for key, expected in runtime_dataset.items():
+            if generated.get("dataset", {}).get(key) != expected:
+                raise ContractError(f"generated runtime dataset path mismatch: {route}/{seed}/{key}")
     experiment = generated["experiment"]
     expected_provenance = {
         "experiment_id": C1_ID,
@@ -456,19 +653,38 @@ def implementation_sources() -> list[dict[str, str]]:
     return records
 
 
-def future_training_command(*, config_path: Path, parent_path: Path, seed: int, run_dir: Path) -> str:
+def future_training_argv(*, config_path: Path, parent_path: Path, seed: int, run_dir: Path) -> list[str]:
     archive_steps = ",".join(str(step) for step in ARCHIVE_STEPS)
-    return (
-        "python training/run_mortal_dqn_offline.py "
-        f"--config {config_path.resolve()} "
-        f"--initialize-from {parent_path.resolve()} "
-        f"--initialize-optimizer-from {parent_path.resolve()} "
-        f"--initial-steps {START_STEP} --target-steps {TARGET_STEP} "
-        "--device cuda:0 "
-        f"--seed {seed} --data-seed {seed} --num-workers 0 "
-        f"--archive-steps {archive_steps} "
-        f"--archive-dir {(run_dir / 'checkpoints').resolve()}"
-    )
+    return [
+        "python",
+        "training/run_mortal_dqn_offline.py",
+        "--config",
+        str(config_path.resolve()),
+        "--initialize-from",
+        str(parent_path.resolve()),
+        "--initialize-optimizer-from",
+        str(parent_path.resolve()),
+        "--initial-steps",
+        str(START_STEP),
+        "--target-steps",
+        str(TARGET_STEP),
+        "--device",
+        "cuda:0",
+        "--seed",
+        str(seed),
+        "--data-seed",
+        str(seed),
+        "--num-workers",
+        "0",
+        "--archive-steps",
+        archive_steps,
+        "--archive-dir",
+        str((run_dir / "checkpoints").resolve()),
+    ]
+
+
+def future_training_command(*, config_path: Path, parent_path: Path, seed: int, run_dir: Path) -> str:
+    return shlex.join(future_training_argv(config_path=config_path, parent_path=parent_path, seed=seed, run_dir=run_dir))
 
 
 def load_governance(registry_path: Path, prereg_path: Path, loader_path: Path) -> dict[str, Any]:
@@ -503,13 +719,14 @@ def prepare(
     parent_path = parent_path.resolve()
     governance = load_governance(registry_path.resolve(), prereg_path.resolve(), loader_path.resolve())
     git = git_info()
-    if git["branch"] != "main" or git["tracked_changes"] or git["untracked"] != ["1.md"]:
-        raise ContractError(f"prepare requires main with only 1.md untracked: {git}")
+    validate_git_scope(git)
     parent = inspect_parent(parent_path)
     source_records: dict[str, dict[str, Any]] = {}
     run_records: list[dict[str, Any]] = []
+    runtime_inputs: dict[str, dict[str, Any]] = {}
     output_dir.mkdir(parents=True, exist_ok=True)
     for route in ROUTES:
+        route_key = route.split("_", maxsplit=1)[0]
         for seed in SEEDS:
             source_path = source_config_path(source_root, route, seed).resolve()
             expected_source_sha = SOURCE_CONFIG_SHA256[(route, seed)]
@@ -517,6 +734,24 @@ def prepare(
                 raise ContractError(f"source config SHA mismatch: {route}/{seed}: {source_path}")
             source = load_toml(source_path)
             source_inputs = validate_source_inputs(source, route=route, seed=seed)
+            runtime_spec = runtime_inputs.get(route_key)
+            if runtime_spec is None:
+                runtime_spec = build_runtime_file_index(
+                    source_path=Path(source_inputs["file_index_path"]),
+                    runtime_path=output_dir / "runtime_inputs" / RUNTIME_INDEX_FILENAME[route],
+                )
+                runtime_spec["route"] = route_key
+                runtime_inputs[route_key] = runtime_spec
+            else:
+                validate_runtime_file_index(
+                    runtime_spec,
+                    expected_source_path=Path(source_inputs["file_index_path"]),
+                    expected_source_sha256=source_inputs["file_index_sha256"],
+                )
+            if runtime_spec["source_file_index_sha256"] != source_inputs["file_index_sha256"]:
+                raise ContractError(f"runtime source index SHA differs across {route} seeds")
+            runtime_dataset = map_dataset_paths(source)
+            runtime_dataset["file_index"] = runtime_spec["runtime_file_index_path"]
             run_dir = output_dir / route / f"seed_{seed}"
             generated = build_c1_config(
                 source,
@@ -524,6 +759,7 @@ def prepare(
                 seed=seed,
                 run_dir=run_dir,
                 source_sha256=expected_source_sha,
+                runtime_dataset=runtime_dataset,
             )
             gate = validate_generated_config(
                 source,
@@ -532,6 +768,7 @@ def prepare(
                 seed=seed,
                 run_dir=run_dir,
                 source_sha256=expected_source_sha,
+                runtime_dataset=runtime_dataset,
             )
             import toml
 
@@ -540,6 +777,13 @@ def prepare(
             config_path.write_text(toml.dumps(generated), encoding="utf-8")
             if tomllib.loads(config_path.read_text(encoding="utf-8")) != generated:
                 raise ContractError(f"generated TOML round-trip changed config: {config_path}")
+            config_sha256 = sha256_file(config_path)
+            argv = future_training_argv(
+                config_path=config_path,
+                parent_path=parent_path,
+                seed=seed,
+                run_dir=run_dir,
+            )
             run_records.append(
                 {
                     "route": route,
@@ -547,18 +791,31 @@ def prepare(
                     "source_current_config": str(source_path),
                     "source_current_config_sha256": expected_source_sha,
                     "cql_off_config": str(config_path.resolve()),
-                    "cql_off_config_sha256": sha256_file(config_path),
+                    "cql_off_config_sha256": config_sha256,
+                    "formal_training_config_sha256": config_sha256,
+                    "smoke_config_sha256": config_sha256,
+                    "exact_same_config": True,
                     "semantic_diff": gate,
-                    "file_index": source_inputs["file_index_path"],
-                    "file_index_sha256": source_inputs["file_index_sha256"],
+                    "source_file_index_path": runtime_spec["source_file_index_path"],
+                    "source_file_index_sha256": runtime_spec["source_file_index_sha256"],
+                    "runtime_file_index_path": runtime_spec["runtime_file_index_path"],
+                    "runtime_file_index_sha256": runtime_spec["runtime_file_index_sha256"],
+                    "file_count": runtime_spec["file_count"],
+                    "ordered_path_mapping_sha256": runtime_spec["ordered_path_mapping_sha256"],
+                    "source_payload_without_file_list_sha256": runtime_spec[
+                        "source_payload_without_file_list_sha256"
+                    ],
+                    "runtime_payload_without_file_list_sha256": runtime_spec[
+                        "runtime_payload_without_file_list_sha256"
+                    ],
+                    "file_index": runtime_spec["source_file_index_path"],
+                    "file_index_sha256": runtime_spec["source_file_index_sha256"],
                     "label_files": source_inputs["label_files"],
+                    "runtime_dataset": runtime_dataset,
+                    "loader_stream_sha256": LOADER_STREAM_SHA256[(route_key, seed)],
                     "run_output_dir": str(run_dir.resolve()),
-                    "future_training_command": future_training_command(
-                        config_path=config_path,
-                        parent_path=parent_path,
-                        seed=seed,
-                        run_dir=run_dir,
-                    ),
+                    "future_training_argv": argv,
+                    "future_training_command": shlex.join(argv),
                 }
             )
             source_records[f"{route}/{seed}"] = {"path": str(source_path), "sha256": expected_source_sha}
@@ -585,6 +842,7 @@ def prepare(
             "loader_contract": governance["loader_contract"],
         },
         "parent": parent,
+        "runtime_inputs": runtime_inputs,
         "fixed_contract": {
             "factor_a": ["M0_operational_control", "D1_project_owned_k0_view"],
             "factor_b": {"CURRENT": 5.0, "CQL_OFF": 0.0},
@@ -599,6 +857,7 @@ def prepare(
             "num_workers": 0,
             "amp": False,
             "archive_steps": list(ARCHIVE_STEPS),
+            "runtime_file_count": 6000,
         },
         "source_root": str(source_root),
         "source_configs": source_records,
@@ -610,12 +869,15 @@ def prepare(
             "optimizer_steps": 0,
             "new_checkpoints": 0,
             "allow_legacy_data_replay": False,
+            "formal_config_equals_smoke_config": True,
         },
         "training_command_policy": {
             "initialize_from": "same K0 parent for weights and preserved Adam",
             "device": "cuda:0",
             "data_seed_equals_training_seed": True,
             "user_scientific_overrides": False,
+            "authoritative_field": "future_training_argv",
+            "shell": False,
         },
     }
     manifest_path = output_dir / "training_manifest.json"
@@ -625,6 +887,9 @@ def prepare(
         "manifest_sha256": sha256_file(manifest_path),
         "config_sha256": {
             f"{item['route']}/{item['seed']}": item["cql_off_config_sha256"] for item in run_records
+        },
+        "runtime_file_index_sha256": {
+            route: record["runtime_file_index_sha256"] for route, record in runtime_inputs.items()
         },
         "implementation_commit": git["commit"],
         "training_authorized": False,

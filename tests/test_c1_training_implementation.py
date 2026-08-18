@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 import pytest
+import toml
 import torch
 
 from training.mortal import prepare_c1_training_2026_08 as prepare
@@ -226,3 +227,229 @@ def test_launcher_execute_fails_before_subprocess_and_has_no_scientific_override
         launcher.build_parser().parse_args(
             ["--route", "M0_CQL_OFF", "--seed", "20260806", "--config", "override.toml"]
         )
+
+
+def test_runtime_index_preserves_order_and_payload_identity(tmp_path: Path) -> None:
+    source_dir = tmp_path / "source_data"
+    source_dir.mkdir()
+    source_paths = []
+    for index in range(6000):
+        path = source_dir / f"sample_{index:04d}.json.gz"
+        path.touch()
+        source_paths.append(str(path.resolve()))
+    source_index = tmp_path / "source_index.pth"
+    runtime_index = tmp_path / "runtime_inputs" / "M0_file_index_linux.pth"
+    torch.save({"file_list": source_paths}, source_index)
+
+    record = prepare.build_runtime_file_index(source_path=source_index, runtime_path=runtime_index)
+    validated = prepare.validate_runtime_file_index(
+        record,
+        expected_source_path=source_index,
+        expected_source_sha256=prepare.sha256_file(source_index),
+    )
+    assert validated == record
+    assert record["file_count"] == 6000
+    assert record["ordered_path_mapping_sha256"]
+    assert record["source_payload_without_file_list_sha256"] == record["runtime_payload_without_file_list_sha256"]
+    runtime_payload, runtime_paths = prepare.load_file_index(runtime_index)
+    assert runtime_payload.keys() == {"file_list"}
+    assert runtime_paths == source_paths
+
+
+def test_git_scope_allows_absent_or_tolerated_1md_only() -> None:
+    clean = {"branch": "main", "tracked_changes": [], "untracked": []}
+    with_1md = {"branch": "main", "tracked_changes": [], "untracked": ["1.md"]}
+    prepare.validate_git_scope(clean)
+    prepare.validate_git_scope(with_1md)
+    with pytest.raises(prepare.ContractError):
+        prepare.validate_git_scope({"branch": "main", "tracked_changes": [], "untracked": ["other.txt"]})
+
+
+def _authorized_launcher_fixture(tmp_path: Path, monkeypatch) -> dict[str, object]:
+    route = "M0_CQL_OFF"
+    seed = 20260806
+    implementation_commit = "a" * 40
+    parent_path = tmp_path / "K0_parent.pth"
+    parent_path.write_bytes(b"K0 parent fixture")
+    parent_digest = {"steps": 70000, "fixture": True}
+    parent_record = {
+        "path": str(parent_path.resolve()),
+        "sha256": prepare.K0_PARENT_SHA256,
+        "digest": parent_digest,
+        "optimizer_moments_covered": True,
+    }
+
+    run_dir = tmp_path / "run"
+    config_path = tmp_path / "formal_config.toml"
+    config = {
+        "control": {
+            "state_file": str((run_dir / "mortal.pth").resolve()),
+            "best_state_file": str((run_dir / "mortal_best.pth").resolve()),
+            "tensorboard_dir": str((run_dir / "tb_mortal").resolve()),
+        },
+        "cql": {"min_q_weight": 0.0},
+        "objective": {"mode": "behavior_action_mc"},
+        "reward": {"mode": "final_rank_mc"},
+    }
+    config_path.write_text(toml.dumps(config), encoding="utf-8")
+    config_sha256 = prepare.sha256_file(config_path)
+    command_argv = prepare.future_training_argv(
+        config_path=config_path,
+        parent_path=parent_path,
+        seed=seed,
+        run_dir=run_dir,
+    )
+    selected = {
+        "route": route,
+        "seed": seed,
+        "cql_off_config": str(config_path.resolve()),
+        "cql_off_config_sha256": config_sha256,
+        "formal_training_config_sha256": config_sha256,
+        "smoke_config_sha256": config_sha256,
+        "exact_same_config": True,
+        "run_output_dir": str(run_dir.resolve()),
+        "future_training_argv": command_argv,
+        "future_training_command": " ".join(command_argv),
+    }
+    runs = [
+        {"route": candidate_route, "seed": candidate_seed}
+        for candidate_route in prepare.ROUTES
+        for candidate_seed in prepare.SEEDS
+    ]
+    runs[0] = selected
+    sources = launcher.current_implementation_sources()
+    manifest = {
+        "experiment_id": prepare.C1_ID,
+        "status": "prepared_not_authorized",
+        "training_authorized": False,
+        "evaluation_authorized": False,
+        "new_training_runs": 6,
+        "implementation_commit": implementation_commit,
+        "implementation_sources": sources,
+        "parent": parent_record,
+        "runs": runs,
+    }
+    manifest_path = tmp_path / "training_manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    manifest_sha256 = prepare.sha256_file(manifest_path)
+    preflight = {
+        "passed": True,
+        "manifest_sha256": manifest_sha256,
+        "optimizer_steps": 0,
+        "new_checkpoints": 0,
+        "git": {"commit": implementation_commit},
+        "checks": {"formal_config_equals_smoke_config": True},
+    }
+    preflight_path = tmp_path / "preflight.json"
+    preflight_path.write_text(json.dumps(preflight, indent=2) + "\n", encoding="utf-8")
+    preflight_sha256 = prepare.sha256_file(preflight_path)
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_inspect(path: Path) -> dict[str, object]:
+        if path.read_bytes() != b"K0 parent fixture":
+            raise launcher.AuthorizationError("tampered parent fixture")
+        return {"sha256": prepare.K0_PARENT_SHA256, "digest": parent_digest}
+
+    class CaptureSubprocess:
+        @staticmethod
+        def run(argv, **kwargs):
+            calls.append((list(argv), kwargs))
+
+    monkeypatch.setattr(launcher, "DEFAULT_MANIFEST", manifest_path)
+    monkeypatch.setattr(launcher, "DEFAULT_PREFLIGHT", preflight_path)
+    monkeypatch.setattr(launcher, "TRAINING_AUTHORIZED", True)
+    monkeypatch.setattr(launcher, "APPROVED_IMPLEMENTATION_COMMIT", implementation_commit)
+    monkeypatch.setattr(launcher, "AUTHORIZED_PREFLIGHT_SHA256", preflight_sha256)
+    monkeypatch.setattr(launcher, "AUTHORIZED_MANIFEST_SHA256", manifest_sha256)
+    monkeypatch.setattr(launcher, "inspect_parent", fake_inspect)
+    monkeypatch.setattr(launcher, "subprocess", CaptureSubprocess)
+    return {
+        "route": route,
+        "seed": seed,
+        "token": launcher.confirmation_token(
+            route=route,
+            seed=seed,
+            implementation_commit=implementation_commit,
+            preflight_sha256=preflight_sha256,
+        ),
+        "calls": calls,
+        "argv": command_argv,
+        "manifest_path": manifest_path,
+        "preflight_path": preflight_path,
+        "config_path": config_path,
+        "parent_path": parent_path,
+        "sources": sources,
+    }
+
+
+def test_launcher_simulated_authorization_calls_exact_argv(monkeypatch, tmp_path: Path) -> None:
+    fixture = _authorized_launcher_fixture(tmp_path, monkeypatch)
+    result = launcher.main(
+        [
+            "--route",
+            fixture["route"],
+            "--seed",
+            str(fixture["seed"]),
+            "--execute",
+            "--confirmation-token",
+            fixture["token"],
+        ]
+    )
+    assert result == 0
+    calls = fixture["calls"]
+    assert len(calls) == 1
+    actual_argv, kwargs = calls[0]
+    assert actual_argv == fixture["argv"]
+    assert kwargs["cwd"] == launcher.REPO_ROOT
+    assert kwargs["check"] is True
+    assert kwargs["shell"] is False
+
+
+@pytest.mark.parametrize("tamper", ["preflight", "manifest", "config", "parent", "source", "token"])
+def test_launcher_tamper_guards_never_call_subprocess(monkeypatch, tmp_path: Path, tamper: str) -> None:
+    fixture = _authorized_launcher_fixture(tmp_path, monkeypatch)
+    if tamper == "preflight":
+        path = fixture["preflight_path"]
+        path.write_text(path.read_text(encoding="utf-8") + "tamper\n", encoding="utf-8")
+    elif tamper == "manifest":
+        path = fixture["manifest_path"]
+        path.write_text(path.read_text(encoding="utf-8") + "tamper\n", encoding="utf-8")
+    elif tamper == "config":
+        path = fixture["config_path"]
+        path.write_text(path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    elif tamper == "parent":
+        fixture["parent_path"].write_bytes(b"tampered parent")
+    elif tamper == "source":
+        monkeypatch.setattr(launcher, "current_implementation_sources", lambda: fixture["sources"] + [{"tampered": "1"}])
+    else:
+        fixture["token"] = "wrong-token"
+    with pytest.raises(SystemExit):
+        launcher.main(
+            [
+                "--route",
+                fixture["route"],
+                "--seed",
+                str(fixture["seed"]),
+                "--execute",
+                "--confirmation-token",
+                fixture["token"],
+            ]
+        )
+    assert fixture["calls"] == []
+
+
+def test_launcher_rejects_non_frozen_route_and_seed_before_subprocess(monkeypatch, tmp_path: Path) -> None:
+    fixture = _authorized_launcher_fixture(tmp_path, monkeypatch)
+    with pytest.raises(SystemExit):
+        launcher.main(
+            [
+                "--route",
+                "BAD_ROUTE",
+                "--seed",
+                str(fixture["seed"]),
+                "--execute",
+                "--confirmation-token",
+                fixture["token"],
+            ]
+        )
+    assert fixture["calls"] == []
