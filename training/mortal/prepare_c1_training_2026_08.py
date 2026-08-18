@@ -393,12 +393,20 @@ def _collect_external_path_bindings(
     if isinstance(source_value, dict) and isinstance(runtime_value, dict):
         records = []
         for key, source_item in source_value.items():
-            if key not in runtime_value:
+            runtime_key = map_path_structure(key)
+            if runtime_key not in runtime_value:
                 raise ContractError(f"mapped label structure is missing {location}.{key}")
             records.extend(
                 _collect_external_path_bindings(
+                    key,
+                    runtime_key,
+                    location=f"{location}.<key>",
+                )
+            )
+            records.extend(
+                _collect_external_path_bindings(
                     source_item,
-                    runtime_value[key],
+                    runtime_value[runtime_key],
                     location=f"{location}.{key}",
                 )
             )

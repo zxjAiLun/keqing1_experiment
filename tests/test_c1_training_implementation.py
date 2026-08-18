@@ -256,6 +256,25 @@ def test_runtime_index_preserves_order_and_payload_identity(tmp_path: Path) -> N
     assert runtime_paths == source_paths
 
 
+def test_label_binding_covers_optional_player_names_by_file_keys_and_content(monkeypatch, tmp_path: Path) -> None:
+    label_path = tmp_path / "labels.txt"
+    label_path.write_text("player\n", encoding="utf-8")
+    monkeypatch.setattr(prepare, "WINDOWS_ROOT_MAP", (("e:/fixture", tmp_path),))
+    source_path = "E:/fixture/labels.txt"
+    source = {
+        "dataset": {
+            "player_names_files": [source_path],
+            "player_names_by_file": {source_path: ["player"]},
+        }
+    }
+    binding = prepare.build_label_binding(source)
+    assert len(binding["player_names_by_file"]) == 1
+    assert binding["player_names_by_file"][0]["source_path"] == source_path
+    label_path.write_text("tampered\n", encoding="utf-8")
+    tampered_binding = prepare.build_label_binding(source)
+    assert tampered_binding != binding
+
+
 def test_git_scope_allows_absent_or_tolerated_1md_only() -> None:
     clean = {"branch": "main", "tracked_changes": [], "untracked": []}
     with_1md = {"branch": "main", "tracked_changes": [], "untracked": ["1.md"]}
