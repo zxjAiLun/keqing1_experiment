@@ -13,6 +13,11 @@ from typing import Any
 
 import torch
 
+# Support both ``python -m ...`` and direct execution by path.
+SCRIPT_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(SCRIPT_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_REPO_ROOT))
+
 from training.mortal.prepare_c1_training_2026_08 import (
     C1_ID,
     LOADER_SHA256,
