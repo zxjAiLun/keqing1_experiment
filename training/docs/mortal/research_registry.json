@@ -12,16 +12,17 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "D3 research CLOSED / NOT PROMOTED; K1 null; next research experiment not selected",
-    "next_experiment": null,
-    "next_experiment_status": "not_selected",
+    "current_stage": "C1 corpus-CQL causal interaction preregistration FROZEN v1 / REGISTERED; implementation not started; training/evaluation not authorized; K1 null",
+    "next_experiment": "C1_corpus_cql_interaction_2026_08",
+    "next_experiment_status": "preregistered_frozen",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
       "不重跑 D1/D2/D3 或扫描后代视角比例。",
       "不把 V2/V3 历史候选命名为 K2/K3。",
       "不以单个正向中心均值晋级 checkpoint。",
-      "D3_top2_discard_v1 数据路线已按预注册规则拒绝（0/3 方向 + hierarchical CI 下限 < 0）；不得修改 D3 参数后继续沿用同一实验身份，继续 uncertainty-guided exploration 必须建立新的 experiment ID；K1 尚未产生。"
+      "D3_top2_discard_v1 数据路线已按预注册规则拒绝（0/3 方向 + hierarchical CI 下限 < 0）；不得修改 D3 参数后继续沿用同一实验身份，继续 uncertainty-guided exploration 必须建立新的 experiment ID；K1 尚未产生。",
+      "C1 已 FROZEN v1，但 training/evaluation 均未授权；registry registration 本身不得触发 config generation、optimizer step 或 evaluator run。"
     ]
   },
   "records": [
@@ -419,6 +420,94 @@
       "commits": [],
       "artifact_paths": ["artifacts/experiments/model_pool_2026_07/V3_final_rank_mc_warmstart_2026_07/"],
       "report_paths": ["training/docs/mortal/研发总览_当前.md"]
+    },
+    {
+      "experiment_id": "C1_corpus_cql_interaction_2026_08",
+      "name_zh": "C1 M0/D1 语料 × CQL continuation 因果交互实验",
+      "category": "causal_mechanism",
+      "parent_model": "K0_70k",
+      "control": "M0/D1 CURRENT continuation, cql.min_q_weight=5.0",
+      "variant": "M0/D1 CQL_OFF continuation, cql.min_q_weight=0.0",
+      "changed_variable": "continuation-stage CQL contribution: corpus M0/D1 × CQL current/off interaction",
+      "fixed_variables": [
+        "K0_70k parent",
+        "70000→72000 exactly 2000 optimizer steps",
+        "behavior_action_mc",
+        "final_rank_mc",
+        "preserved K0 Adam moments",
+        "fresh scheduler/scaler/data stream",
+        "batch_size=512",
+        "AMP=false",
+        "training seeds 20260806/07/08",
+        "historical CURRENT training reuse approved",
+        "fresh Linux/CUDA evaluation only",
+        "1000 hanchans per condition per seed",
+        "bootstrap B=5000 seed=20260818"
+      ],
+      "training_seeds": [20260806, 20260807, 20260808],
+      "evaluation_protocol": {
+        "games_per_seed_per_condition": 1000,
+        "objective_conditions": 2,
+        "total_games": 6000,
+        "native_batch_games": 250,
+        "seed_starts": [1700000, 1710000, 1720000],
+        "seed_key": 8192,
+        "seat_mode": "random",
+        "rank_points": [90, 45, 0, -135],
+        "bootstrap_reps": 5000,
+        "bootstrap_seed": 20260818
+      },
+      "status": "preregistered_frozen",
+      "primary_result": "尚未执行。FROZEN v1 只注册 scientific contract；training/evaluation 均未授权。",
+      "promoted_data_route": null,
+      "promoted_checkpoint": null,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": null,
+      "predecessor": "D1_project_owned_k0_view",
+      "next_experiment": null,
+      "commits": ["65a8b220d361fc8285c3f9494349307bb2b86913"],
+      "artifact_paths": [
+        "artifacts/experiments/C1_corpus_cql_interaction_2026_08_feasibility/loader_compatibility.json"
+      ],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-08_C1语料_CQL交互因果实验_预注册设计.md"
+      ],
+      "preregistration": {
+        "status": "FROZEN v1",
+        "authoritative": true,
+        "freeze_commit": "65a8b220d361fc8285c3f9494349307bb2b86913",
+        "document": "training/docs/mortal/experiments_zh/2026-08_C1语料_CQL交互因果实验_预注册设计.md",
+        "document_sha256": "e02ba3a667a7f2538a97e180fee8646ed819350c779db934b1852d97d5f33573",
+        "loader_feasibility_sha256": "aff26cee9fa32781b426b3f02302df0e0625baee9bdd5be9c000fce2acbff46c",
+        "training_authorized": false,
+        "evaluation_authorized": false
+      },
+      "frozen_contract": {
+        "factor_a": [
+          "M0_operational_control",
+          "D1_project_owned_k0_view"
+        ],
+        "factor_b": {
+          "CURRENT": 5.0,
+          "CQL_OFF": 0.0
+        },
+        "historical_current_training_reuse": "APPROVED",
+        "new_training_runs": 6,
+        "start_step": 70000,
+        "target_step": 72000,
+        "optimizer_steps": 2000,
+        "primary_estimand": "(D1_CQL_OFF-M0_CQL_OFF) - (D1_CURRENT-M0_CURRENT)",
+        "positive_verdict": "interaction_supported",
+        "negative_verdict": "interaction_not_confirmed",
+        "gate_failure_verdict": "no_verdict_gates_failed"
+      },
+      "mechanistic_basis": {
+        "audit": "K0_DECISION_SIGNAL_AUDIT_2026_08",
+        "authoritative_readout": "objective_gradient_shift_signal",
+        "support_signal": false,
+        "objective_gradient_shift_signal": true
+      }
     }
   ]
 }
