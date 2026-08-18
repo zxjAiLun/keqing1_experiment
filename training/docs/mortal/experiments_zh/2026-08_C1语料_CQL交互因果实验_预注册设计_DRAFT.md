@@ -86,6 +86,13 @@ D2 和 D3 不进入本轮 training factorial，也不进入 primary machine vote
 D2/D3 只能作为历史或 descriptive context。C1 不能把 D2/D3 的结果并入 primary
 interaction，也不能把 C1 改写为 D3 continuation 或 model promotion experiment。
 
+Factor A 的科学含义是 **D1 full replay lineage vs M0 full replay lineage**，不是单独的
+K0-greedy behavior factor。D1 相对 M0 同时改变完整 replay lineage、state distribution、
+opponent ecology、behavior distribution 和 final-rank target distribution。即使 C1
+通过 interaction gate，也只能说明 CQL continuation contribution 与这一整套
+corpus-lineage contrast 发生 interaction，不能把结果偷换成“K0-greedy behavior 本身
+与 CQL 发生了因果 interaction”。
+
 ## 4. 候选 2×2 设计
 
 ### 4.1 Factor A：corpus
@@ -209,6 +216,14 @@ total_loss_cql_off = value_loss + 0.0 * cql_loss + 0.2 * aux_loss
 | RNG | 每个 cell 使用对应固定 training seed，不按中间结果挑选 |
 | archive | 候选仍固定 `70001, 70010, 70100, 70500, 71000, 72000` |
 
+preserved Adam 是本实验的固定 continuation state，不是本实验要消融的变量。CQL_OFF
+只移除 step `70001..72000` 期间产生的新的 CQL gradient contribution；它不移除已经
+存在于 `K0@70k` weights 或 `K0@70k` Adam `m/v` moments 中的 0→70k historical CQL
+influence。因此 causal claim 必须限定为：
+
+> under the frozen K0@70k legacy state, turning off new CQL gradient contribution during
+> the 70k→72k continuation changes the D1-vs-M0 penalty.
+
 任何 implementation 发现额外 side effect 时，本轮设计失效并回到 review；不得现场修复
 后继续使用同一 C1 draft。
 
@@ -270,43 +285,52 @@ metadata 都报告相同 contract。每个 seed 均消费 2000 batches / 1,024,0
 `steps=72000`；每个 checkpoint 的 initialization 都是同一个 parent SHA、
 `optimizer=preserved`、`scheduler/scaler/data_stream=fresh`。
 
-### 7.3 训练复用结论
+### 7.3 完整 loader compatibility gate（2026-08-18）
 
-**结论：historical CURRENT training cells 是“条件可复用”，不是无条件 PASS。**
+已完成 M0/D1 × 三个 training seed 的完整 2000-batch loader equivalence audit。每个
+stream 均比较 `1,024,000` samples、canonical dtype、shape、contiguous CPU bytes 和
+sample order，并记录 source/config/file-index/labels provenance、ordered SHA256、
+first mismatch batch/tensor。D1 / 20260808 的 historical 与 current stream 分别在
+独立 child process 中完成，之后由只读 finalizer 合并；没有把两个大 stream 留在同一
+Python allocator 中。
 
-已证明的部分足以说明它们满足 parent、seed、step、optimizer、objective、reward、
-batch、AMP、scheduler/scaler 和 artifact provenance 条件。若未来 CQL_OFF 实施沿用
-历史训练语义并通过 compatibility preflight，则只需要新训练：
+最终 feasibility report 为：
+
+```text
+path:
+/media/bailan/DISK/AUbuntuProject/project/keqing1_experiment/
+  artifacts/experiments/C1_corpus_cql_interaction_2026_08_feasibility/
+  loader_compatibility.json
+
+sha256:
+80d78702e36c7770e6d781ccb651ad088c5cbe84b42d21e1a6c19a7609903df7
+```
+
+六组结果如下；每行的 historical/current ordered SHA 完全相同，`exact_match=true`，
+`first_mismatch_batch=null`，`first_mismatch_tensor=null`：
+
+| route / seed | historical/current ordered SHA256 | batches | samples |
+| --- | --- | ---: | ---: |
+| M0 / 20260806 | `c111c3b1fe223bfc42a52507226963b093c17be792e9197ef0d3686f5b794b3f` | 2000 | 1,024,000 |
+| M0 / 20260807 | `6d418d89a23509293d69cf359de91e99f23b210dcfc6570ce2b4ac8d95ffb2a0` | 2000 | 1,024,000 |
+| M0 / 20260808 | `6f35793b3d18f9bb5325ce57232b0ad02ee23e3b3cb68927c3aaef6737d604ed` | 2000 | 1,024,000 |
+| D1 / 20260806 | `f7e8c46436b069206583b0c5151c3a4be7c6019ade054a100d0950990dea823f` | 2000 | 1,024,000 |
+| D1 / 20260807 | `1b68076ec2683d60af28a1aa9b8724d049f568e0c97738ae3c47f1cfca475d35` | 2000 | 1,024,000 |
+| D1 / 20260808 | `74bb248b0bf17d192b1ebad986e7ff7f56e387ddf3e605bd0db765cc552b05ce` | 2000 | 1,024,000 |
+
+**结论：`historical CURRENT training reuse = APPROVED`。**
+
+因此 C1 若通过后续 preregistration freeze、registry、implementation/preflight 和
+authorization-only ordering，所需的新 continuation trainings 固定为：
 
 ```text
 M0 × CQL_OFF：3 seeds
 D1 × CQL_OFF：3 seeds
+new trainings = 6
 ```
 
-即 6 个新 continuation，而不是 12 个 fresh 2×2 continuation。
-
-但当前 source audit 发现一个不能忽略的 compatibility risk：
-
-- historical training 使用 commit `90d148a` 的 `scripts/mortal/mainline_dataloader.py`；
-- 当前 experiment repo 的 `training/mortal/mainline_dataloader.py` 增加了
-  `player_names_by_file` 路径，并在 `populate_buffer` 中按 file group 创建
-  `GameplayLoader`；
-- M0/D1 historical config 没有 `player_names_by_file`，所以预期语义可能相同，
-  但目前没有完成“同一 seed、同一 file index、前三个 batch hash 完全一致”的证明；
-- 当前 `objective.py` 与 historical objective 内容一致，当前 runner 的主要差异是
-  新增 file-map 支持和 import path，不能因此自动推断整个 loader contract 等价。
-
-正式授权前必须满足以下 gate：
-
-1. 用冻结的 M0/D1 file index、labels 和 data seed 重建历史 loader preview。
-2. 对每个 route 至少比较前三个 batch 的 dtype、shape、row/tensor hash 和 sample order。
-3. 比较 current runner 下的 reward target、behavior action、legal mask、player-rank
-   target contract；不能只比较 batch shape。
-4. 若任何差异不能归因于路径重定位且不能证明不影响 training stream，则历史 CURRENT
-   cells 不得复用，必须改为 fresh full 2×2 training。
-
-本轮不修改 loader、不写 compatibility script、不运行该 gate；所以当前交付报告中的
-训练复用结论必须保留“条件可行”措辞。
+这不改变当前 governance 状态：本轮仍未 freeze、未 registration、未 authorization，
+也没有启动任何训练。
 
 ## 8. Evaluation feasibility 与 matched DID
 
@@ -343,26 +367,48 @@ ReachAccepted Repair 1 后没有重跑或修改 raw evaluation。corrected D1 su
 因此历史 raw logs、current checkpoint 和 corrected summary 可以作为 immutable
 historical reference，不能被覆盖或重算为旧口径。
 
-### 8.2 CQL_OFF 的最小 evaluation lineup
+### 8.2 C1 的统一 fresh evaluation
 
-如果 evaluation runtime gate 通过，CQL_OFF 每个 seed 使用同样的四人 lineup：
+历史 D1/M0 evaluation logs 只作为 historical provenance/descriptive reference，
+不进入 C1 primary interaction statistic。C1 evaluation 全部在一个新冻结的 Linux/CUDA
+runtime 中 fresh 运行，不复用历史 current evaluation logs。
+
+每个 training seed 运行两个独立的四人 lineup。CURRENT lineup 为：
 
 ```text
 70k                = K0 parent，SHA 6c0e7005...
 ext_mortal         = authoritative external model，SHA 0a88ddad...
+M0_CURRENT_seed    = historical current M0 checkpoint，在新 runtime fresh evaluation
+D1_CURRENT_seed    = historical current D1 checkpoint，在新 runtime fresh evaluation
+```
+
+CURRENT model specification 顺序固定为
+`[70k, ext_mortal, M0_CURRENT_seed, D1_CURRENT_seed]`。CQL_OFF lineup 为：
+
+```text
+70k                = 同一 K0 parent
+ext_mortal         = 同一 authoritative external model
 M0_CQL_OFF_seed    = 新的 M0 CQL_OFF checkpoint
 D1_CQL_OFF_seed    = 新的 D1 CQL_OFF checkpoint
 ```
 
-model specification 的顺序也固定为
-`[70k, ext_mortal, M0_CQL_OFF_seed, D1_CQL_OFF_seed]`；不能仅保持标签集合而改变
+CQL_OFF model specification 顺序固定为
+`[70k, ext_mortal, M0_CQL_OFF_seed, D1_CQL_OFF_seed]`。不能仅保持标签集合而改变
 engine 参数顺序，因为 random-seat 的 common-random block 需要同时固定 lineup order。
 
-使用与历史完全相同的 seed starts、seed key、random-seat、B250 shard、rank points、
-native evaluator source 和 opponent population。新 raw logs 中的每个 hanchan 必须
-同时包含 M0_CQL_OFF 与 D1_CQL_OFF，形成 within-off-cell paired gap。
+每个 objective condition、每个 training seed 都评估 1000 个完整 hanchans；总量为：
 
-历史 current gap 与新 off gap 通过相同的 hanchan seed block、相同的 lineup ecology、
+```text
+3 seeds × 2 objective conditions × 1000 hanchans = 6000 evaluation hanchans
+```
+
+使用与历史完全相同的 seed starts、seed key、random-seat、B250 shard、rank points、
+native evaluator source 和 opponent population。CURRENT/OFF 使用完全相同的 evaluation
+hanchan identities、seed block、seed key、lineup order 和 random-seat contract；每个
+condition 的 raw log 必须在同一 hanchan 内同时包含对应的 M0 与 D1，形成 within-cell
+paired gap。
+
+fresh current gap 与 fresh off gap 通过相同的 hanchan seed block、相同的 lineup ecology、
 相同的 seat/random contract 对齐，但不应声称是同一局轨迹：两个 model pair 改变后，
 牌局 action trajectory 可能不同。若 runtime、seed block 或 opponent ecology 不同，
 则连 common-random block 的解释都不能成立。
@@ -387,41 +433,49 @@ provenance。当前 formal Linux/CUDA environment 的冻结要求是 `riichi.so`
 binary 不是 byte-identical，而且 historical D1 native SHA 本身未被 protocol 冻结；
 当前 artifact 没有证明跨平台 native arena 在固定 seed 下的行为和随机流完全等价。
 
-因此：
-
-- **训练 cell 复用**与**evaluation current cell 复用**是两个独立 gate；
-- 不能在 Linux 上只评估 CQL_OFF，然后直接把 Windows historical current logs 当作
-  exact matched DID，而不报告 runtime 差异；
-- 若 C1 继续要求 Linux formal evaluation，最小安全方案是对四个 cell 都在同一
-  Linux runtime 下重新 evaluation：M0_CURRENT、D1_CURRENT、M0_CQL_OFF、D1_CQL_OFF；
-  这不必重新训练 historical CURRENT checkpoint，但必须重做 current evaluation；
-- 若 review 允许使用历史 Windows runtime，则必须先在同一 Windows runtime、同一
-  evaluator commit 和同一 native SHA 下评估 CQL_OFF，才可复用历史 current logs；
-- 若无法满足任一 runtime 方案，primary interaction 只能输出
-  `no_verdict_gates_failed`，不能用跨 runtime 数字强行做因果 adjudication。
-
-所以当前 evaluation reuse 结论是：**historical current evaluation 可作为历史
-reference，但 exact matched DID 尚未通过 feasibility gate。**
+因此 C1 freeze 时固定采用统一 fresh Linux evaluation；不再保留“若 Windows runtime
+可用则复用 historical evaluation”的 future branch。historical current checkpoint
+是否进入新 CURRENT lineup，只取决于第 7 节 training reuse gate；historical current
+raw logs 永不进入 C1 primary statistic。
 
 ## 9. Primary estimand
 
-对每个 matched training seed `s`，先在完整 hanchan paired rows 上计算：
+对每个 matched training seed `s` 和 evaluation hanchan identity `h`，先在同一
+fresh-runtime evaluation block 内形成 row-of-pairs：
 
 ```text
-gap_current[s]
-  = Pt(D1_CURRENT, s) - Pt(M0_CURRENT, s)
+d_current[s,h]
+  = Pt(D1_CURRENT, s, h) - Pt(M0_CURRENT, s, h)
 
-gap_cql_off[s]
-  = Pt(D1_CQL_OFF, s) - Pt(M0_CQL_OFF, s)
+d_off[s,h]
+  = Pt(D1_CQL_OFF, s, h) - Pt(M0_CQL_OFF, s, h)
 
-interaction[s]
-  = gap_cql_off[s] - gap_current[s]
+interaction_row[s,h]
+  = d_off[s,h] - d_current[s,h]
 ```
 
-primary estimand 是三个 seed interaction 的 equal-seed mean：
+`CURRENT` 与 `CQL_OFF` 的 row-of-pairs 必须共享：
 
 ```text
-I = mean_s interaction[s]
+training seed
+evaluation hanchan identity
+seed_key
+lineup order
+random-seat contract
+native runtime
+```
+
+每个 training seed 的 primary point estimate 是：
+
+```text
+interaction_seed[s]
+  = mean_h interaction_row[s,h]
+```
+
+primary estimand 是三个 `interaction_seed[s]` 的 equal-seed mean：
+
+```text
+I = mean_s interaction_seed[s]
 ```
 
 符号解释固定为：
@@ -432,7 +486,8 @@ interaction > 0
 ```
 
 primary 不使用四个 cell 的绝对 Pt，也不使用单独的 `CQL_OFF - CURRENT` 总体提升。
-以下只允许作为 secondary/descriptive：
+以下只允许作为 secondary/descriptive，不能使用历史 evaluation log 替代 fresh
+`d_current[s,h]`：
 
 ```text
 M0_CQL_OFF - K0
@@ -445,8 +500,8 @@ D1_CQL_OFF - D1_CURRENT
 
 ## 10. Candidate machine adjudication
 
-本节是 candidate rule，尚未 freeze。正式 freeze 时必须同时冻结 bootstrap implementation、
-seed、artifact gate、runtime gate 和失败标签。
+本节是 candidate rule，尚未 freeze。正式 freeze 时必须同时冻结 artifact gate、
+runtime gate 和失败标签；bootstrap 的 `B` 与 seed 在本 draft 中已经预先指定。
 
 候选 primary rule：
 
@@ -476,10 +531,17 @@ interaction_not_confirmed
 no_verdict_gates_failed
 ```
 
-不得用总体中心均值为正替代三 seed direction gate。candidate bootstrap 应沿用已有
-Mortal corrected summarizer 的 complete-hanchan unit、equal-seed hierarchical resampling
-和 paired row semantics；`B` 与 bootstrap seed 在正式 authorization 前另行冻结，
-本 draft 不创建新统计数字。
+不得用总体中心均值为正替代三 seed direction gate。bootstrap 先对已经形成的
+`interaction_row[s,h]` 做 resampling，不得分别 bootstrap `d_current` 和 `d_off` 后再
+相减。候选实现沿用 Mortal corrected summarizer 的 complete-hanchan unit 和
+equal-seed hierarchical resampling：每个 replicate 从三个 training seed identity
+等概率有放回抽取三个 seed，再在每个被抽取的 seed 内对其 `interaction_row[s,h]`
+按 hanchan 有放回抽取 1000 行，最后平均三个 seed means。
+
+```text
+bootstrap_reps = 5000
+bootstrap_seed = 20260818
+```
 
 ## 11. Power / scale feasibility
 
@@ -512,9 +574,10 @@ power claim，但与当前治理风格一致，也不应在看到 historical var
 
 最多允许得出：
 
-> 在固定的 K0@70k、M0/D1、preserved-Adam、2000-step continuation、
-> `behavior_action_mc + final_rank_mc` contract 下，CQL contribution
-> causally participates in the D1-vs-M0 continuation penalty。
+> 在固定的 K0@70k legacy state、M0/D1 full corpus-lineage contrast、preserved-Adam、
+> 2000-step continuation、`behavior_action_mc + final_rank_mc` contract 下，
+> continuation 阶段新的 CQL gradient contribution causally participates in the
+> D1-vs-M0 penalty。
 
 仍然不允许得出：
 
@@ -537,16 +600,21 @@ promotion 不合并。
 
 以下是 review 后才可实施的 checklist，不是本轮执行命令：
 
-- 重新核对 C1 namespace，并在正式 freeze 前单独提交 authorization-only governance commit。
+- 完成 feasibility audit 并解析 historical CURRENT training reuse 的唯一 PASS/FAIL 结论。
+- 完成 draft repair review 后，先正式 freeze C1 preregistration。
+- preregistration freeze 后再注册 registry entry；draft 本身不注册。
 - 固定 CQL_OFF config、config SHA 和 objective-side diff；不允许新增其它 candidate。
 - 完成 M0/D1 loader compatibility preflight；不通过则 fresh full 2×2 training。
 - 明确新 CQL_OFF training artifact root、seed、parent SHA、optimizer state digest 和
   `70000 -> 72000` completion proof。
-- 冻结 evaluation runtime、native SHA、Mortal revision、evaluator commit、seed blocks、
-  B250 shards、opponent model SHA 和 rank points。
-- 选择同-runtime historical reuse 或 fresh four-cell evaluation；不得跨 runtime 直接混合。
+- 冻结统一 fresh Linux evaluation runtime、native SHA、Mortal revision、evaluator commit、
+  seed blocks、B250 shards、opponent model SHA 和 rank points。
+- 对 CURRENT/OFF 两个独立四人 lineup 使用相同 hanchan identities；不得把历史 evaluation
+  logs 混入 C1 primary statistic。
 - 冻结 complete-hanchan interaction row schema、bootstrap `B`、seed 和 adjudication rule。
-- 通过 preflight 后，另行授权 training；本 draft 本身永不触发 optimizer step。
+- 完成 implementation/preflight review 后，才提交 authorization-only training commit。
+- authorization-only commit 永远发生在 prereg freeze 与 registry registration 之后；本 draft
+  本身永不触发 optimizer step。
 
 ## 14. 本轮交付声明
 
@@ -560,5 +628,19 @@ D1/D2/D3 unchanged
 C1 NOT YET FROZEN / NOT AUTHORIZED
 ```
 
-本轮没有新增 feasibility script，没有修改 `research_registry.json`，没有修改 frozen
-K0 prereg 或 audit code，也没有写入 authoritative output root。
+本轮新增并验证：
+
+```text
+training/mortal/audit_c1_loader_compatibility_2026_08.py
+tests/test_c1_loader_compatibility.py
+```
+
+审计 artifact 写入非-authoritative feasibility root：
+
+```text
+/media/bailan/DISK/AUbuntuProject/project/keqing1_experiment/
+  artifacts/experiments/C1_corpus_cql_interaction_2026_08_feasibility/
+```
+
+`research_registry.json`、frozen K0 prereg、D1/D2/D3 artifacts 和 authoritative output
+root 均未修改；本轮没有启动训练、生成或 evaluation。
