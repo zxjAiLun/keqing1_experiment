@@ -70,7 +70,8 @@ def _compact_model_records(
                 "state": "available",
             }
         else:
-            route, _condition, seed_text = label.split("_", 2)
+            route = label.split("_", 1)[0]
+            seed_text = label.rsplit("_", 1)[1]
             record = {
                 "label": label,
                 "condition": "CURRENT",
@@ -84,7 +85,8 @@ def _compact_model_records(
         records.append(record)
         by_label[label] = record
     for label, item in pending.items():
-        route, _condition, seed_text = label.split("_", 2)
+        route = label.split("_", 1)[0]
+        seed_text = label.rsplit("_", 1)[1]
         record = {
             "label": label,
             "condition": "CQL_OFF",
