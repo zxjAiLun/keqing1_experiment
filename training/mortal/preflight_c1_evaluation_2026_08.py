@@ -125,7 +125,13 @@ def run_preflight(plan_path: Path = EVALUATION_PLAN_PATH) -> dict[str, Any]:
         "mortal_revision": plan["mortal_revision"],
     }:
         raise ContractError("evaluation source provenance differs from plan")
-    validate_source_provenance(plan["evaluator_provenance"] | {"direct_dependencies": plan["evaluation_dependency_sources"], "mortal_revision": plan["mortal_revision"]})
+    validate_source_provenance(
+        {
+            "evaluator": plan["evaluator_provenance"],
+            "direct_dependencies": plan["evaluation_dependency_sources"],
+            "mortal_revision": plan["mortal_revision"],
+        }
+    )
     current_runtime = validate_runtime_provenance(i1_manifest["runtime_provenance"])
     if current_runtime != plan["runtime_provenance"]:
         raise ContractError("runtime provenance differs from evaluation plan")
