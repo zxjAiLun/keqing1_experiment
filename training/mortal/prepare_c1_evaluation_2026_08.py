@@ -113,7 +113,7 @@ def _build_plan() -> dict[str, Any]:
     current = current_checkpoint_records()
     pending = pending_cql_off_records(current_manifest)
     model_records, models_by_label = _compact_model_records(current, pending)
-    executable = str(Path(runtime["sys_executable"]).resolve())
+    executable = str(runtime["sys_executable"])
     runs = build_run_matrix(models_by_label, executable=executable)
 
     # No shard directory or raw log may exist at plan time.  The plan itself

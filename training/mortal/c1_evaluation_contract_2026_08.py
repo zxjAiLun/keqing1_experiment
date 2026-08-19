@@ -262,7 +262,11 @@ def runtime_provenance() -> dict[str, Any]:
         "native_module": "riichi",
         "native_path": str(native_path),
         "native_sha256": sha256_file(native_path),
-        "sys_executable": str(Path(sys.executable).resolve()),
+        # The frozen contract binds the invocation string, not the target of
+        # the venv symlink.  Future evaluation must therefore use this exact
+        # ``.venv/bin/python3`` token rather than a bare ``python`` or the
+        # underlying uv interpreter path.
+        "sys_executable": str(sys.executable),
         "python_version": platform.python_version(),
         "torch_version": str(torch.__version__),
         "torch_cuda_version": str(torch.version.cuda) if torch.version.cuda is not None else None,
