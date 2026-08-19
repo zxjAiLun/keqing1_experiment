@@ -93,27 +93,27 @@ CURRENT_ROOT = (
 )
 CURRENT_CHECKPOINTS = {
     ("M0", 20260806): {
-        "path": CURRENT_ROOT / "M0_control/seed_20260806/mortal.pth",
+        "path": CURRENT_ROOT / "M0_control/seed_20260806/checkpoints/mortal_72000.pth",
         "sha256": "4a6a5dd1eb55d8d207d7689b02c4682146c2a0cc70eaef554e6cfa869804dbdd",
     },
     ("M0", 20260807): {
-        "path": CURRENT_ROOT / "M0_control/seed_20260807/mortal.pth",
+        "path": CURRENT_ROOT / "M0_control/seed_20260807/checkpoints/mortal_72000.pth",
         "sha256": "de7f6da7c0c07b89d658554050f2112f09fd9c021247104d5db44228db04823d",
     },
     ("M0", 20260808): {
-        "path": CURRENT_ROOT / "M0_control/seed_20260808/mortal.pth",
+        "path": CURRENT_ROOT / "M0_control/seed_20260808/checkpoints/mortal_72000.pth",
         "sha256": "d2d0b0b6cdc86423ecbef852d34edc785e6efdcaaaf425e05988d7ff472d46c4",
     },
     ("D1", 20260806): {
-        "path": CURRENT_ROOT / "D1_variant/seed_20260806/mortal.pth",
+        "path": CURRENT_ROOT / "D1_variant/seed_20260806/checkpoints/mortal_72000.pth",
         "sha256": "9425109b2562eb48a86ca7b3a250738b5691503f9156f29bc50a2b20e7a922aa",
     },
     ("D1", 20260807): {
-        "path": CURRENT_ROOT / "D1_variant/seed_20260807/mortal.pth",
+        "path": CURRENT_ROOT / "D1_variant/seed_20260807/checkpoints/mortal_72000.pth",
         "sha256": "e2718ee8d572071b8d46d04beaf5f2aa6d90ad847762254f80648de9639a0b3d",
     },
     ("D1", 20260808): {
-        "path": CURRENT_ROOT / "D1_variant/seed_20260808/mortal.pth",
+        "path": CURRENT_ROOT / "D1_variant/seed_20260808/checkpoints/mortal_72000.pth",
         "sha256": "985a3e532ef13cd7fab945c92839a941390fd9f7cc5dc0e177d4d4182a116f41",
     },
 }
