@@ -597,12 +597,16 @@ def training_completion_runs(closure: dict[str, Any]) -> dict[tuple[str, int], d
                 values.append({**row, "seed": row.get("seed", key)})
     else:
         raise ContractError("training completion closure has no runs list")
+    if len(values) != 6:
+        raise ContractError(f"training completion closure must contain exactly six runs, found {len(values)}")
     result: dict[tuple[str, int], dict[str, Any]] = {}
     for row in values:
         route = str(row.get("route", row.get("training_route", "")))
         seed = int(row.get("training_seed", row.get("seed", -1)))
         if route in {"M0", "D1"}:
             route = f"{route}_CQL_OFF"
+        if (route, seed) in result:
+            raise ContractError(f"duplicate training completion closure run: {route}/{seed}")
         result[(route, seed)] = row
     return result
 

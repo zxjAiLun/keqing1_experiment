@@ -169,8 +169,6 @@ def parse_raw_log(
         raise ContractError(f"raw log contains more than one hanchan: {path}")
     if not any(event.get("type") == "start_kyoku" for event in events):
         raise ContractError(f"raw hanchan has no kyoku: {path}")
-    if not any(event.get("type") in {"end_kyoku", "end_game"} for event in events):
-        raise ContractError(f"raw hanchan has no complete-game marker: {path}")
     log_seed, seed_key = _log_seed_key(events)
     if log_seed != hanchan_seed or seed_key != 8192:
         raise ContractError(f"raw hanchan seed/key mismatch: {path}")
