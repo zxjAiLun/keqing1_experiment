@@ -219,6 +219,7 @@ def test_launcher_execute_fails_before_subprocess_and_has_no_scientific_override
         raise AssertionError("subprocess must not be called while unauthorized")
 
     monkeypatch.setattr(launcher, "subprocess", type("ForbiddenSubprocess", (), {"run": forbidden}), raising=False)
+    monkeypatch.setattr(launcher, "TRAINING_AUTHORIZED", False)
     with pytest.raises(SystemExit, match="not authorized"):
         launcher.main(["--route", "M0_CQL_OFF", "--seed", "20260806", "--execute"])
     assert called is False
