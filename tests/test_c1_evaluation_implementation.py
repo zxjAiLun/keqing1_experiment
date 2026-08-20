@@ -58,6 +58,7 @@ def test_unauthorized_execute_reaches_no_subprocess(monkeypatch: pytest.MonkeyPa
         called.append(args)
         raise AssertionError("arena subprocess must not be reached")
 
+    monkeypatch.setattr(launcher, "EVALUATION_AUTHORIZED", False)
     monkeypatch.setattr(launcher.subprocess, "run", forbidden)
     with pytest.raises(SystemExit, match="not authorized"):
         launcher.main(["--condition", "CURRENT", "--seed", "20260806", "--shard", "0", "--execute"])
@@ -270,8 +271,11 @@ def test_formal_cli_rejects_noncanonical_input_override(option: str) -> None:
         summary.build_parser().parse_args(["--output-dir", "/tmp/c1", option, "/tmp/tampered.json"])
 
 
-def test_formal_summary_fails_closed_before_auth_and_writes_no_result(tmp_path: Path) -> None:
+def test_formal_summary_fails_closed_before_auth_and_writes_no_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     output = tmp_path / "result"
+    monkeypatch.setattr(launcher, "EVALUATION_AUTHORIZED", False)
     assert summary.main(["--output-dir", str(output)]) == 2
     assert output.exists() is False
 
