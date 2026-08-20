@@ -185,7 +185,8 @@ def validate_git_scope(info: dict[str, Any], *, require_main: bool = True) -> No
         raise ContractError(f"C1-I2 must be prepared on main, got {info.get('branch')!r}")
     if info.get("tracked_clean") is not True:
         raise ContractError(f"tracked worktree is dirty: {info.get('tracked_changes')}")
-    if set(info.get("untracked", ())) != ALLOWED_UNTRACKED:
+    untracked = set(info.get("untracked", ()))
+    if not untracked.issubset(ALLOWED_UNTRACKED):
         raise ContractError(f"unexpected untracked files: {info.get('untracked')}")
 
 
@@ -331,6 +332,7 @@ def validate_source_provenance(expected: dict[str, Any]) -> dict[str, Any]:
 
 
 def validate_frozen_evaluator_object() -> None:
+    object_spec = f"{EVALUATOR_FROZEN_COMMIT}:{EVALUATOR_RELATIVE_PATH}"
     result = subprocess.run(
         ["git", "cat-file", "-e", f"{EVALUATOR_FROZEN_COMMIT}:{EVALUATOR_RELATIVE_PATH}"],
         cwd=REPO_ROOT,
@@ -340,6 +342,18 @@ def validate_frozen_evaluator_object() -> None:
     )
     if result.returncode != 0:
         raise ContractError("frozen evaluator commit/path is not available")
+    blob = subprocess.run(
+        ["git", "rev-parse", object_spec],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if blob.returncode != 0 or blob.stdout.strip() != EVALUATOR_BLOB_OID:
+        raise ContractError(
+            "frozen evaluator commit/path resolves to the wrong blob: "
+            f"{blob.stdout.strip()!r} != {EVALUATOR_BLOB_OID!r}"
+        )
 
 
 def inspect_checkpoint(path: Path) -> dict[str, Any]:

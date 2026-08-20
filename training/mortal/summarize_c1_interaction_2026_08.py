@@ -25,6 +25,7 @@ SCRIPT_REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(SCRIPT_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_REPO_ROOT))
 
+from training.mortal import run_c1_evaluation_2026_08 as evaluation_launcher
 from training.mortal.c1_evaluation_contract_2026_08 import (
     BOOTSTRAP_REPS,
     BOOTSTRAP_SEED,
@@ -39,10 +40,14 @@ from training.mortal.c1_evaluation_contract_2026_08 import (
     TOTAL_SHARDS,
     TRAINING_SEEDS,
     ContractError,
+    assert_exact_run_matrix,
     current_checkpoint_records,
     dump_json,
+    evaluation_shard_dir,
     load_json,
+    model_order,
     off_model_label,
+    resolve_execution_manifest,
     sha256_file,
     validate_runtime_provenance,
     validate_source_provenance,
@@ -173,9 +178,20 @@ def parse_raw_log(
     if log_seed != hanchan_seed or seed_key != 8192:
         raise ContractError(f"raw hanchan seed/key mismatch: {path}")
     names = events[0].get("names")
-    if not isinstance(names, list) or len(names) != 4 or len(set(names)) != 4:
+    if (
+        not isinstance(names, list)
+        or len(names) != 4
+        or not all(isinstance(name, str) for name in names)
+        or len(set(names)) != 4
+    ):
         raise ContractError(f"raw hanchan seat order is invalid: {path}")
-    roles = [normalize_role(str(name)) for name in names]
+    expected_labels = set(model_order(condition, training_seed))
+    if set(names) != expected_labels:
+        raise ContractError(
+            f"raw hanchan model identity mismatch: {path}: "
+            f"{sorted(names)} != {sorted(expected_labels)}"
+        )
+    roles = [normalize_role(name) for name in names]
     if set(roles) != set(ROLE_ORDER) or len(set(roles)) != 4:
         raise ContractError(f"raw hanchan lineup role order is not frozen: {path}: {roles}")
     ranks = ranks_from_events(events)
@@ -278,7 +294,9 @@ def pair_current_off(current_rows: Iterable[Mapping[str, Any]], off_rows: Iterab
                 "role_order": list(ROLE_ORDER),
                 "role_to_seat": dict(current_row["role_to_seat"]),
                 "current_source_log": current_row.get("source_log"),
+                "current_source_log_sha256": current_row.get("source_log_sha256"),
                 "off_source_log": off_row.get("source_log"),
+                "off_source_log_sha256": off_row.get("source_log_sha256"),
                 "d_current": d_current,
                 "d_off": d_off,
                 "interaction_row": d_off - d_current,
@@ -392,11 +410,213 @@ def summarize_interaction_rows(
     }
 
 
+TRAINING_COMPLETION_CLOSURE_PATH = EVALUATION_ROOT / "training_completion_closure.json"
+EXECUTION_MANIFEST_PATH = EVALUATION_ROOT / "execution_manifest.json"
+EXECUTION_FIELDS = (
+    "route",
+    "training_seed",
+    "final_checkpoint_path",
+    "final_checkpoint_sha256",
+    "steps",
+    "trained_optimizer_steps",
+    "parent_checkpoint_sha256",
+    "cql_min_q_weight",
+    "objective",
+    "reward",
+    "initialization",
+    "data_seed",
+)
+
+
 def _plan_models(plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {str(item["label"]): item for item in plan.get("models", []) if isinstance(item, dict) and item.get("label")}
+    raw_models = plan.get("models")
+    if not isinstance(raw_models, list):
+        raise ContractError("evaluation plan has no model list")
+    models: dict[str, dict[str, Any]] = {}
+    for item in raw_models:
+        if not isinstance(item, dict) or not isinstance(item.get("label"), str) or not item["label"]:
+            raise ContractError("evaluation plan contains an invalid model record")
+        label = str(item["label"])
+        if label in models:
+            raise ContractError(f"evaluation plan contains duplicate model label: {label}")
+        models[label] = item
+    return models
+
+
+def _expected_model_labels() -> set[str]:
+    labels = {"70k", "ext_mortal"}
+    labels.update(model_order(condition, seed)[2] for condition in CONDITIONS for seed in TRAINING_SEEDS)
+    labels.update(model_order(condition, seed)[3] for condition in CONDITIONS for seed in TRAINING_SEEDS)
+    return labels
+
+
+def _execution_rows(manifest: dict[str, Any], *, name: str) -> dict[tuple[str, int], dict[str, Any]]:
+    if manifest.get("schema") != "keqing.mortal.c1_evaluation_execution_manifest.v1":
+        raise ContractError(f"{name} schema mismatch")
+    if manifest.get("experiment_id") != C1_ID:
+        raise ContractError(f"{name} experiment mismatch")
+    if manifest.get("status") != "resolved_not_authorized":
+        raise ContractError(f"{name} status mismatch")
+    if manifest.get("evaluation_authorized") is not False or manifest.get("evaluation_games_run") != 0:
+        raise ContractError(f"{name} records authorization or evaluation")
+    raw_runs = manifest.get("runs")
+    if not isinstance(raw_runs, list) or len(raw_runs) != 6:
+        raise ContractError(f"{name} must contain exactly six runs")
+    result: dict[tuple[str, int], dict[str, Any]] = {}
+    for row in raw_runs:
+        if not isinstance(row, dict):
+            raise ContractError(f"{name} contains a non-object run")
+        route = str(row.get("route", ""))
+        try:
+            seed = int(row.get("training_seed", -1))
+        except (TypeError, ValueError) as exc:
+            raise ContractError(f"{name} contains an invalid training seed") from exc
+        key = (route, seed)
+        if key in result:
+            raise ContractError(f"{name} contains duplicate run: {key}")
+        result[key] = row
+    expected = {(f"{route}_CQL_OFF", seed) for route in ("M0", "D1") for seed in TRAINING_SEEDS}
+    if set(result) != expected:
+        raise ContractError(f"{name} does not contain exactly M0_CQL_OFF/D1_CQL_OFF x three seeds")
+    for key, row in result.items():
+        missing = [field for field in EXECUTION_FIELDS if field not in row]
+        if missing:
+            raise ContractError(f"{name} run {key} is missing fields: {missing}")
+    return result
+
+
+def _require_formal_authorization() -> tuple[str, dict[str, Path], dict[str, str]]:
+    if evaluation_launcher.EVALUATION_AUTHORIZED is not True:
+        raise ContractError("C1 formal summary is not authorized: EVALUATION_AUTHORIZED is not true")
+    approved_commit = evaluation_launcher.APPROVED_EVALUATION_IMPLEMENTATION_COMMIT
+    if not isinstance(approved_commit, str) or not approved_commit.strip():
+        raise ContractError("C1 formal summary has no approved implementation commit binding")
+    paths = {
+        "plan": EVALUATION_PLAN_PATH,
+        "preflight": IMPLEMENTATION_PREFLIGHT_PATH,
+        "completion": TRAINING_COMPLETION_CLOSURE_PATH,
+        "execution": EXECUTION_MANIFEST_PATH,
+    }
+    bindings = {
+        "plan": evaluation_launcher.AUTHORIZED_EVALUATION_PLAN_SHA256,
+        "preflight": evaluation_launcher.AUTHORIZED_EVALUATION_PREFLIGHT_SHA256,
+        "completion": evaluation_launcher.AUTHORIZED_TRAINING_COMPLETION_SHA256,
+        "execution": evaluation_launcher.AUTHORIZED_EXECUTION_MANIFEST_SHA256,
+    }
+    actual: dict[str, str] = {}
+    for name, expected in bindings.items():
+        if not isinstance(expected, str) or not expected.strip():
+            raise ContractError(f"C1 formal summary has an empty authorization binding: {name}")
+        path = paths[name]
+        try:
+            actual[name] = sha256_file(path.resolve())
+        except OSError as exc:
+            raise ContractError(f"authorized C1 artifact is missing: {path}") from exc
+        if actual[name] != expected:
+            raise ContractError(f"authorized C1 artifact SHA mismatch: {name}")
+    return approved_commit, paths, actual
+
+
+def _validate_formal_artifact_chain() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, dict[str, Any]], str]:
+    approved_commit, paths, hashes = _require_formal_authorization()
+    plan = load_json(paths["plan"].resolve())
+    preflight = load_json(paths["preflight"].resolve())
+    completion = load_json(paths["completion"].resolve())
+    execution = load_json(paths["execution"].resolve())
+
+    if plan.get("schema") != "keqing.mortal.c1_evaluation_plan.v1" or plan.get("experiment_id") != C1_ID:
+        raise ContractError("authorized C1 evaluation plan schema/experiment mismatch")
+    if plan.get("evaluation_authorized") is not False or plan.get("evaluation_games_run") != 0:
+        raise ContractError("authorized C1 evaluation plan records authorization or games")
+    if plan.get("git_scope", {}).get("commit") != approved_commit:
+        raise ContractError("authorized C1 plan implementation commit mismatch")
+    if preflight.get("implementation_preflight_passed") is not True or preflight.get("passed") is not True:
+        raise ContractError("authorized C1 implementation preflight is not passed")
+    if preflight.get("plan_sha256") != hashes["plan"]:
+        raise ContractError("authorized C1 preflight does not bind the exact plan SHA")
+    if preflight.get("git", {}).get("commit") != approved_commit:
+        raise ContractError("authorized C1 preflight implementation commit mismatch")
+    if preflight.get("evaluation_games_run") != 0 or preflight.get("new_checkpoints") != 0:
+        raise ContractError("authorized C1 preflight records execution")
+    if completion.get("experiment_id") != C1_ID:
+        raise ContractError("training completion closure experiment mismatch")
+
+    models = _plan_models(plan)
+    if len(models) != 14 or set(models) != _expected_model_labels():
+        raise ContractError("authorized C1 plan must contain exactly the frozen 14 model records")
+    assert_exact_run_matrix(plan.get("runs", []), models)
+
+    resolved = resolve_execution_manifest(plan, completion)
+    actual_rows = _execution_rows(execution, name="execution manifest")
+    resolved_rows = _execution_rows(resolved, name="resolved execution manifest")
+    for key in sorted(resolved_rows):
+        actual = actual_rows[key]
+        expected = resolved_rows[key]
+        for field in (*EXECUTION_FIELDS, "label"):
+            if actual.get(field) != expected.get(field):
+                raise ContractError(f"execution manifest mismatch at {key}/{field}")
+
+    effective_models = {label: dict(record) for label, record in models.items()}
+    for (route, seed), row in resolved_rows.items():
+        label = str(row["label"])
+        effective_models[label]["path"] = str(Path(str(row["final_checkpoint_path"])).resolve())
+        effective_models[label]["sha256"] = str(row["final_checkpoint_sha256"])
+        if route != f"{label.split('_', 1)[0]}_CQL_OFF" or seed not in TRAINING_SEEDS:
+            raise ContractError(f"resolved execution label mismatch at {route}/{seed}")
+    return plan, preflight, completion, execution, effective_models, approved_commit
+
+
+def _validate_formal_provenance(
+    plan: dict[str, Any],
+    preflight: dict[str, Any],
+    execution: dict[str, Any],
+    effective_models: dict[str, dict[str, Any]],
+) -> dict[str, bool]:
+    if preflight.get("implementation_preflight_passed") is not True:
+        raise ContractError("implementation preflight gate failed")
+    execution_rows = _execution_rows(execution, name="execution manifest")
+    current = current_checkpoint_records()
+    for label, current_record in current.items():
+        planned = effective_models.get(label)
+        if planned is None:
+            raise ContractError(f"CURRENT/anchor model is absent from the authorized plan: {label}")
+        if Path(str(planned.get("path"))).resolve() != Path(str(current_record.get("path"))).resolve():
+            raise ContractError(f"CURRENT/anchor checkpoint path mismatch: {label}")
+        if planned.get("sha256") != current_record.get("sha256"):
+            raise ContractError(f"CURRENT/anchor checkpoint SHA mismatch: {label}")
+    for route in ("M0", "D1"):
+        for seed in TRAINING_SEEDS:
+            key = (f"{route}_CQL_OFF", seed)
+            row = execution_rows[key]
+            label = off_model_label(route, seed)
+            model = effective_models.get(label)
+            if model is None:
+                raise ContractError(f"CQL_OFF model is absent from the authorized plan: {label}")
+            checkpoint = Path(str(row["final_checkpoint_path"])).resolve()
+            if Path(str(model["path"])).resolve() != checkpoint:
+                raise ContractError(f"CQL_OFF checkpoint path mismatch: {label}")
+            if model.get("sha256") != row["final_checkpoint_sha256"]:
+                raise ContractError(f"CQL_OFF checkpoint SHA mismatch: {label}")
+            if not checkpoint.is_file() or sha256_file(checkpoint) != row["final_checkpoint_sha256"]:
+                raise ContractError(f"CQL_OFF checkpoint artifact mismatch: {label}")
+    expected_sources = {
+        "evaluator": plan["evaluator_provenance"],
+        "direct_dependencies": plan["evaluation_dependency_sources"],
+        "mortal_revision": plan["mortal_revision"],
+    }
+    validate_source_provenance(expected_sources)
+    validate_runtime_provenance(plan["runtime_provenance"])
+    return {
+        "training_provenance": True,
+        "evaluation_provenance": True,
+        "runtime_provenance": True,
+        "pairing_gate": True,
+    }
 
 
 def _formal_provenance_gates(plan: dict[str, Any], preflight: dict[str, Any], execution: dict[str, Any]) -> dict[str, bool]:
+    """Compatibility wrapper for callers that want a boolean gate snapshot."""
+
     gates = {
         "training_provenance": False,
         "evaluation_provenance": False,
@@ -404,64 +624,117 @@ def _formal_provenance_gates(plan: dict[str, Any], preflight: dict[str, Any], ex
         "pairing_gate": True,
     }
     try:
-        if preflight.get("implementation_preflight_passed") is not True:
-            return gates
-        execution_rows = {
-            (str(row.get("route")), int(row.get("training_seed", -1))): row
-            for row in execution.get("runs", [])
-            if isinstance(row, dict)
-        }
-        expected_execution = {(f"{route}_CQL_OFF", seed) for route in ("M0", "D1") for seed in TRAINING_SEEDS}
-        if set(execution_rows) != expected_execution:
-            return gates
         models = _plan_models(plan)
-        for route in ("M0", "D1"):
-            for seed in TRAINING_SEEDS:
-                label = off_model_label(route, seed)
-                row = execution_rows[(f"{route}_CQL_OFF", seed)]
-                model = models.get(label)
-                if model is None or model.get("path") != row.get("final_checkpoint_path"):
-                    return gates
-                if model.get("sha256") is not None and model.get("sha256") != row.get("final_checkpoint_sha256"):
-                    return gates
-                checkpoint = Path(str(row.get("final_checkpoint_path")))
-                if not checkpoint.is_file() or sha256_file(checkpoint) != row.get("final_checkpoint_sha256"):
-                    return gates
-        current = current_checkpoint_records()
-        if any(models.get(label, {}).get("sha256") != row.get("sha256") for label, row in current.items()):
-            return gates
-        gates["training_provenance"] = True
-        expected_sources = {
-            "evaluator": plan["evaluator_provenance"],
-            "direct_dependencies": plan["evaluation_dependency_sources"],
-            "mortal_revision": plan["mortal_revision"],
-        }
-        validate_source_provenance(expected_sources)
-        gates["evaluation_provenance"] = True
-        validate_runtime_provenance(plan["runtime_provenance"])
-        gates["runtime_provenance"] = True
-    except (ContractError, KeyError, OSError, ValueError):
-        return gates
+        gates.update(_validate_formal_provenance(plan, preflight, execution, models))
+    except (ContractError, KeyError, OSError, ValueError, TypeError):
+        pass
     return gates
 
 
-def _read_formal_evaluation(plan: dict[str, Any], eval_root: Path, stat_cls: Any = None) -> tuple[dict[int, list[dict[str, Any]]], dict[str, bool]]:
+def _validate_shard_artifacts(
+    *,
+    run: dict[str, Any],
+    output_dir: Path,
+    rows: list[dict[str, Any]],
+    effective_models: dict[str, dict[str, Any]],
+) -> None:
+    condition = str(run["condition"])
+    seed = int(run["training_seed"])
+    shard = int(run["shard"])
+    labels = tuple(model_order(condition, seed))
+    expected_paths = {
+        label: str(Path(str(effective_models[label]["path"])).resolve()) for label in labels
+    }
+    metrics = load_json(output_dir / "metrics.json")
+    detailed = load_json(output_dir / "detailed_stats.json")
+    run_metrics = metrics.get("run")
+    if not isinstance(run_metrics, dict):
+        raise ContractError(f"{condition}/{seed}/shard_{shard:02d}: metrics.run is missing")
+    expected_run = {
+        "kind": "four_player_native",
+        "backend": "libriichi.arena.FourPlayer",
+        "seed_start": int(run["hanchan_seed_start"]),
+        "seed_key": 8192,
+        "games": 250,
+        "native_batch_games": 250,
+        "seat_mode": "random",
+        "device": "cuda",
+        "rank_points_values": [90.0, 45.0, 0.0, -135.0],
+    }
+    for field, expected in expected_run.items():
+        if run_metrics.get(field) != expected:
+            raise ContractError(f"{condition}/{seed}/shard_{shard:02d}: metrics.run.{field} mismatch")
+    actual_models = run_metrics.get("models")
+    if not isinstance(actual_models, dict) or set(actual_models) != set(labels):
+        raise ContractError(f"{condition}/{seed}/shard_{shard:02d}: metrics model labels mismatch")
+    for label in labels:
+        if actual_models.get(label) != expected_paths[label]:
+            raise ContractError(f"{condition}/{seed}/shard_{shard:02d}: checkpoint path mismatch for {label}")
+
+    metrics_by_label = metrics.get("metrics")
+    if not isinstance(metrics_by_label, dict) or set(metrics_by_label) != set(labels):
+        raise ContractError(f"{condition}/{seed}/shard_{shard:02d}: metrics labels mismatch")
+    players = detailed.get("players")
+    if not isinstance(players, dict) or set(players) != set(labels):
+        raise ContractError(f"{condition}/{seed}/shard_{shard:02d}: detailed-stats player labels mismatch")
+
+    role_by_label = {label: normalize_role(label) for label in labels}
+    reconstructed: dict[str, list[int]] = {}
+    for label in labels:
+        role = role_by_label[label]
+        reconstructed[label] = [
+            sum(int(row["ranks_by_role"][role]) == rank for row in rows) for rank in (1, 2, 3, 4)
+        ]
+        metric_row = metrics_by_label[label]
+        if not isinstance(metric_row, dict) or metric_row.get("games") != 250:
+            raise ContractError(f"{condition}/{seed}/shard_{shard:02d}: metrics game count mismatch for {label}")
+        if metric_row.get("rank_counts") != reconstructed[label]:
+            raise ContractError(f"{condition}/{seed}/shard_{shard:02d}: raw/metrics rank mismatch for {label}")
+        player = players[label]
+        if not isinstance(player, dict) or not isinstance(player.get("raw"), dict):
+            raise ContractError(f"{condition}/{seed}/shard_{shard:02d}: detailed stats raw block missing for {label}")
+        raw = player["raw"]
+        if raw.get("game") != 250:
+            raise ContractError(f"{condition}/{seed}/shard_{shard:02d}: detailed stats game count mismatch for {label}")
+        detailed_counts = [raw.get(f"rank_{rank}") for rank in (1, 2, 3, 4)]
+        if detailed_counts != reconstructed[label]:
+            raise ContractError(f"{condition}/{seed}/shard_{shard:02d}: raw/detailed rank mismatch for {label}")
+
+
+def _read_formal_evaluation(
+    plan: dict[str, Any],
+    eval_root: Path,
+    stat_cls: Any = None,
+    *,
+    effective_models: dict[str, dict[str, Any]] | None = None,
+    validate_shard_artifacts: bool = False,
+) -> tuple[dict[int, list[dict[str, Any]]], dict[str, bool]]:
     models = _plan_models(plan)
-    if len(plan.get("runs", [])) != TOTAL_SHARDS:
+    if len(models) != 14 or set(models) != _expected_model_labels():
+        raise ContractError("formal C1 summary requires exactly the frozen 14 model records")
+    runs = plan.get("runs", [])
+    assert_exact_run_matrix(runs, models)
+    if len(runs) != TOTAL_SHARDS:
         raise ContractError("formal C1 summary requires exactly 24 planned shards")
+    effective_models = effective_models or models
     current_rows: dict[int, list[dict[str, Any]]] = {seed: [] for seed in TRAINING_SEEDS}
     off_rows: dict[int, list[dict[str, Any]]] = {seed: [] for seed in TRAINING_SEEDS}
-    for run in plan["runs"]:
+    frozen_root = eval_root.resolve()
+    for run in runs:
         condition = str(run["condition"])
         seed = int(run["training_seed"])
         shard = int(run["shard"])
         output_dir = Path(str(run["output_dir"])).resolve()
-        if output_dir.parent.parent.parent != eval_root.resolve():
-            raise ContractError(f"evaluation output path escaped the frozen root: {output_dir}")
+        expected_output = evaluation_shard_dir(condition, seed, shard).resolve()
+        if validate_shard_artifacts and output_dir != expected_output:
+            raise ContractError(f"evaluation output path is not the frozen shard path: {output_dir}")
+        if output_dir.parent.parent.parent != frozen_root:
+            raise ContractError(f"evaluation output path is not the frozen shard path: {output_dir}")
         log_dir = output_dir / "logs"
         logs = sorted(log_dir.glob("*.json.gz"))
         if len(logs) != GAMES_PER_SHARD:
             raise ContractError(f"{condition}/{seed}/shard_{shard:02d}: expected 250 raw logs, found {len(logs)}")
+        shard_rows: list[dict[str, Any]] = []
         for path in logs:
             row = parse_raw_log(
                 path,
@@ -471,39 +744,55 @@ def _read_formal_evaluation(plan: dict[str, Any], eval_root: Path, stat_cls: Any
                 expected_seed_end=int(run["hanchan_seed_end_exclusive"]),
                 stat_cls=stat_cls,
             )
+            shard_rows.append(row)
             (current_rows if condition == "CURRENT" else off_rows)[seed].append(row)
+        if validate_shard_artifacts:
+            if not (output_dir / "metrics.json").is_file() or not (output_dir / "detailed_stats.json").is_file():
+                raise ContractError(f"{condition}/{seed}/shard_{shard:02d}: metrics/detailed stats artifact is missing")
+            _validate_shard_artifacts(
+                run=run,
+                output_dir=output_dir,
+                rows=shard_rows,
+                effective_models=effective_models,
+            )
     for seed in TRAINING_SEEDS:
         validate_hanchan_seed_set(current_rows[seed], start=SHARD_STARTS[seed][0])
         validate_hanchan_seed_set(off_rows[seed], start=SHARD_STARTS[seed][0])
         if len(current_rows[seed]) != 1000 or len(off_rows[seed]) != 1000:
             raise ContractError(f"formal C1 seed block is not exactly 1000/1000: {seed}")
     paired = {seed: pair_current_off(current_rows[seed], off_rows[seed]) for seed in TRAINING_SEEDS}
-    return paired, {"pairing_gate": True, "plan_models_complete": len(models) == 14}
+    return paired, {"pairing_gate": True, "plan_models_complete": True, "shard_artifacts_gate": True}
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--eval-root", type=Path, default=EVALUATION_ROOT)
-    parser.add_argument("--plan", type=Path, default=EVALUATION_PLAN_PATH)
-    parser.add_argument("--preflight", type=Path, default=IMPLEMENTATION_PREFLIGHT_PATH)
-    parser.add_argument("--execution-manifest", type=Path, default=EVALUATION_ROOT / "execution_manifest.json")
     parser.add_argument("--output-dir", type=Path, required=True)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    plan = load_json(args.plan.resolve())
-    preflight = load_json(args.preflight.resolve())
-    execution = load_json(args.execution_manifest.resolve())
-    paired, structural_gates = _read_formal_evaluation(plan, args.eval_root.resolve())
-    gates = _formal_provenance_gates(plan, preflight, execution)
-    gates.update(structural_gates)
-    summary = summarize_interaction_rows(paired, gates=gates)
+    try:
+        plan, preflight, _completion, execution, effective_models, _approved_commit = _validate_formal_artifact_chain()
+        gates = _validate_formal_provenance(plan, preflight, execution, effective_models)
+        paired, structural_gates = _read_formal_evaluation(
+            plan,
+            EVALUATION_ROOT,
+            effective_models=effective_models,
+            validate_shard_artifacts=True,
+        )
+        gates.update(structural_gates)
+        if not all(gates.values()):
+            raise ContractError("formal C1 gate set is incomplete")
+        result = summarize_interaction_rows(paired, gates=gates)
+    except (ContractError, OSError, KeyError, TypeError, ValueError, ImportError) as exc:
+        print(f"C1-I2 formal summary refused: {exc}", file=sys.stderr)
+        return 2
+
     args.output_dir.mkdir(parents=True, exist_ok=True)
     output = args.output_dir / "c1_interaction_summary.json"
-    dump_json(output, summary)
-    print(json.dumps({"summary": str(output), "verdict": summary["adjudication"]["verdict"]}, ensure_ascii=False))
+    dump_json(output, result)
+    print(json.dumps({"summary": str(output), "verdict": result["adjudication"]["verdict"]}, ensure_ascii=False))
     return 0
 
 

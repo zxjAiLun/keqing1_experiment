@@ -109,6 +109,46 @@ def test_complete_hanchan_parser_reachaccepted_and_native_rank_equivalence(tmp_p
     assert row["source_log_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+@pytest.mark.parametrize(
+    ("condition", "names"),
+    [
+        ("CURRENT", ["D1_CQL_OFF_20260806", "70k", "ext_mortal", "M0_CQL_OFF_20260806"]),
+        ("CQL_OFF", ["D1_CURRENT_20260806", "70k", "ext_mortal", "M0_CURRENT_20260806"]),
+        ("CURRENT", ["D1_CURRENT_20260807", "70k", "ext_mortal", "M0_CURRENT_20260807"]),
+    ],
+)
+def test_raw_log_rejects_cross_condition_or_wrong_seed_identity(
+    tmp_path: Path, condition: str, names: list[str]
+) -> None:
+    path = tmp_path / "1700000_8192_identity.json.gz"
+    _write_synthetic_log(path, names)
+    with pytest.raises(contract.ContractError, match="model identity"):
+        summary.parse_raw_log(
+            path,
+            condition=condition,
+            training_seed=20260806,
+            expected_seed_start=1700000,
+            expected_seed_end=1700001,
+            stat_cls=_FakeStat,
+        )
+
+
+def test_raw_log_accepts_exact_cql_off_identity_and_preserves_seat_mapping(tmp_path: Path) -> None:
+    path = tmp_path / "1700000_8192_off.json.gz"
+    names = ["D1_CQL_OFF_20260806", "70k", "ext_mortal", "M0_CQL_OFF_20260806"]
+    _write_synthetic_log(path, names)
+    row = summary.parse_raw_log(
+        path,
+        condition="CQL_OFF",
+        training_seed=20260806,
+        expected_seed_start=1700000,
+        expected_seed_end=1700001,
+        stat_cls=_FakeStat,
+    )
+    assert row["seat_order"] == names
+    assert row["role_to_seat"] == {"D1": 0, "70k": 1, "ext_mortal": 2, "M0": 3}
+
+
 def _valid_row(seed: int, hanchan_seed: int, condition: str, *, role_to_seat: dict[str, int] | None = None) -> dict[str, object]:
     ranks = {"70k": 1, "ext_mortal": 2, "M0": 3, "D1": 4}
     points = summary.points_for_ranks(ranks)
@@ -140,6 +180,18 @@ def test_pairing_duplicate_missing_role_and_rank_point_gates() -> None:
     bad_points["pts"] = dict(bad_points["pts"]) | {"D1": 90.0}
     with pytest.raises(contract.ContractError, match="rank-point"):
         summary.validate_row_integrity(bad_points)
+
+
+def test_pairing_preserves_both_source_paths_and_hashes() -> None:
+    current = _valid_row(20260806, 1700000, "CURRENT")
+    off = _valid_row(20260806, 1700000, "CQL_OFF")
+    current.update({"source_log": "/tmp/current.json.gz", "source_log_sha256": "current-sha"})
+    off.update({"source_log": "/tmp/off.json.gz", "source_log_sha256": "off-sha"})
+    paired = summary.pair_current_off([current], [off])[0]
+    assert paired["current_source_log"] == "/tmp/current.json.gz"
+    assert paired["current_source_log_sha256"] == "current-sha"
+    assert paired["off_source_log"] == "/tmp/off.json.gz"
+    assert paired["off_source_log_sha256"] == "off-sha"
 
 
 def test_duplicate_and_missing_seed_set_is_fail_closed() -> None:
@@ -210,6 +262,189 @@ def test_hierarchical_bootstrap_is_exact_and_deterministic() -> None:
 def test_cli_rejects_bootstrap_override() -> None:
     with pytest.raises(SystemExit):
         summary.build_parser().parse_args(["--output-dir", "/tmp/c1", "--bootstrap-reps", "1"])
+
+
+@pytest.mark.parametrize("option", ["--plan", "--eval-root", "--preflight", "--execution-manifest"])
+def test_formal_cli_rejects_noncanonical_input_override(option: str) -> None:
+    with pytest.raises(SystemExit):
+        summary.build_parser().parse_args(["--output-dir", "/tmp/c1", option, "/tmp/tampered.json"])
+
+
+def test_formal_summary_fails_closed_before_auth_and_writes_no_result(tmp_path: Path) -> None:
+    output = tmp_path / "result"
+    assert summary.main(["--output-dir", str(output)]) == 2
+    assert output.exists() is False
+
+
+def test_git_scope_allows_absent_or_only_1md_untracked() -> None:
+    base = {"branch": "main", "tracked_clean": True, "tracked_changes": []}
+    contract.validate_git_scope(base | {"untracked": []})
+    contract.validate_git_scope(base | {"untracked": ["1.md"]})
+    with pytest.raises(contract.ContractError, match="unexpected untracked"):
+        contract.validate_git_scope(base | {"untracked": ["1.md", "other.txt"]})
+
+
+def test_frozen_evaluator_requires_exact_commit_path_blob(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run(command: list[str], **_: object) -> SimpleNamespace:
+        if command[:2] == ["git", "cat-file"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if command[:2] == ["git", "rev-parse"]:
+            return SimpleNamespace(returncode=0, stdout="wrong-blob\n", stderr="")
+        raise AssertionError(command)
+
+    monkeypatch.setattr(contract.subprocess, "run", fake_run)
+    with pytest.raises(contract.ContractError, match="wrong blob"):
+        contract.validate_frozen_evaluator_object()
+
+
+def _synthetic_shard_artifacts(
+    tmp_path: Path,
+) -> tuple[dict[str, object], dict[str, dict[str, str]], Path, Path]:
+    output_dir = tmp_path / "shard"
+    output_dir.mkdir()
+    log_path = output_dir / "1700000_8192_synthetic.json.gz"
+    _write_synthetic_log(log_path)
+    row = summary.parse_raw_log(
+        log_path,
+        condition="CURRENT",
+        training_seed=20260806,
+        expected_seed_start=1700000,
+        expected_seed_end=1700001,
+        stat_cls=_FakeStat,
+    )
+    rows = [row for _ in range(250)]
+    labels = summary.model_order("CURRENT", 20260806)
+    effective_models: dict[str, dict[str, str]] = {}
+    for label in labels:
+        checkpoint = tmp_path / f"{label}.pth"
+        checkpoint.write_bytes(label.encode("utf-8"))
+        effective_models[label] = {"path": str(checkpoint), "sha256": "synthetic"}
+    counts = {
+        label: [
+            sum(int(item["ranks_by_role"][summary.normalize_role(label)]) == rank for item in rows)
+            for rank in (1, 2, 3, 4)
+        ]
+        for label in labels
+    }
+    run = {
+        "condition": "CURRENT",
+        "training_seed": 20260806,
+        "shard": 0,
+        "hanchan_seed_start": 1700000,
+        "hanchan_seed_end_exclusive": 1700250,
+        "output_dir": str(output_dir),
+        "rows": rows,
+    }
+    metrics = {
+        "run": {
+            "kind": "four_player_native",
+            "backend": "libriichi.arena.FourPlayer",
+            "models": {label: str(Path(effective_models[label]["path"]).resolve()) for label in labels},
+            "seed_start": 1700000,
+            "seed_key": 8192,
+            "games": 250,
+            "seat_mode": "random",
+            "native_batch_games": 250,
+            "device": "cuda",
+            "rank_points_values": [90.0, 45.0, 0.0, -135.0],
+        },
+        "metrics": {label: {"games": 250, "rank_counts": values} for label, values in counts.items()},
+    }
+    detailed = {
+        "players": {
+            label: {
+                "raw": {
+                    "game": 250,
+                    **{f"rank_{rank}": values[rank - 1] for rank in (1, 2, 3, 4)},
+                }
+            }
+            for label, values in counts.items()
+        }
+    }
+    metrics_path = output_dir / "metrics.json"
+    detailed_path = output_dir / "detailed_stats.json"
+    contract.dump_json(metrics_path, metrics)
+    contract.dump_json(detailed_path, detailed)
+    return run, effective_models, metrics_path, detailed_path
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("seed_start", 1700001),
+        ("seed_key", 1),
+        ("games", 249),
+        ("native_batch_games", 249),
+        ("seat_mode", "rotation"),
+        ("rank_points_values", [90.0, 45.0, 0.0, -1.0]),
+    ],
+)
+def test_metrics_shard_contract_rejects_frozen_run_field_tamper(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    run, effective_models, metrics_path, _detailed_path = _synthetic_shard_artifacts(tmp_path)
+    metrics = json.loads(metrics_path.read_text())
+    metrics["run"][field] = value
+    metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+    with pytest.raises(contract.ContractError):
+        summary._validate_shard_artifacts(
+            run=run,
+            output_dir=metrics_path.parent,
+            rows=list(run["rows"]),
+            effective_models=effective_models,
+        )
+
+
+def test_metrics_rejects_checkpoint_path_and_rank_count_tamper(tmp_path: Path) -> None:
+    run, effective_models, metrics_path, _detailed_path = _synthetic_shard_artifacts(tmp_path)
+    metrics = json.loads(metrics_path.read_text())
+    metrics["run"]["models"]["70k"] = "/tmp/wrong-checkpoint.pth"
+    metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+    with pytest.raises(contract.ContractError, match="checkpoint path"):
+        summary._validate_shard_artifacts(
+            run=run,
+            output_dir=metrics_path.parent,
+            rows=list(run["rows"]),
+            effective_models=effective_models,
+        )
+
+    metrics = json.loads(metrics_path.read_text())
+    metrics["run"]["models"]["70k"] = str(Path(effective_models["70k"]["path"]).resolve())
+    metrics["metrics"]["70k"]["rank_counts"][0] += 1
+    metrics_path.write_text(json.dumps(metrics), encoding="utf-8")
+    with pytest.raises(contract.ContractError, match="rank mismatch"):
+        summary._validate_shard_artifacts(
+            run=run,
+            output_dir=metrics_path.parent,
+            rows=list(run["rows"]),
+            effective_models=effective_models,
+        )
+
+
+def test_detailed_stats_rejects_raw_game_or_rank_mismatch(tmp_path: Path) -> None:
+    run, effective_models, _metrics_path, detailed_path = _synthetic_shard_artifacts(tmp_path)
+    detailed = json.loads(detailed_path.read_text())
+    detailed["players"]["70k"]["raw"]["game"] = 249
+    detailed_path.write_text(json.dumps(detailed), encoding="utf-8")
+    with pytest.raises(contract.ContractError, match="game count"):
+        summary._validate_shard_artifacts(
+            run=run,
+            output_dir=detailed_path.parent,
+            rows=list(run["rows"]),
+            effective_models=effective_models,
+        )
+
+    detailed = json.loads(detailed_path.read_text())
+    detailed["players"]["70k"]["raw"]["game"] = 250
+    detailed["players"]["70k"]["raw"]["rank_1"] += 1
+    detailed_path.write_text(json.dumps(detailed), encoding="utf-8")
+    with pytest.raises(contract.ContractError, match="detailed rank mismatch"):
+        summary._validate_shard_artifacts(
+            run=run,
+            output_dir=detailed_path.parent,
+            rows=list(run["rows"]),
+            effective_models=effective_models,
+        )
 
 
 def _authorized_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
@@ -316,6 +551,52 @@ def _authorized_fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict
     monkeypatch.setattr(launcher, "validate_source_provenance", lambda expected: expected)
     monkeypatch.setattr(launcher, "validate_frozen_evaluator_object", lambda: None)
     return {"plan": plan_path, "preflight": preflight_path, "closure": closure_path, "execution": execution_path, "off": model_files["M0_CQL_OFF_20260806"], "output": Path(runs[0]["output_dir"]), "digest": digest}
+
+
+def _bind_summary_fixture(fixture: dict[str, object], monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(summary, "EVALUATION_PLAN_PATH", Path(fixture["plan"]))
+    monkeypatch.setattr(summary, "IMPLEMENTATION_PREFLIGHT_PATH", Path(fixture["preflight"]))
+    monkeypatch.setattr(summary, "TRAINING_COMPLETION_CLOSURE_PATH", Path(fixture["closure"]))
+    monkeypatch.setattr(summary, "EXECUTION_MANIFEST_PATH", Path(fixture["execution"]))
+
+
+@pytest.mark.parametrize("tamper", ["plan_sha", "preflight_semantics", "completion_semantics", "execution_semantics"])
+def test_formal_artifact_chain_rejects_authorization_or_semantic_tamper(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, tamper: str
+) -> None:
+    fixture = _authorized_fixture(tmp_path, monkeypatch)
+    _bind_summary_fixture(fixture, monkeypatch)
+    summary._validate_formal_artifact_chain()
+
+    def digest(path: Path) -> str:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    if tamper == "plan_sha":
+        path = Path(fixture["plan"])
+        value = json.loads(path.read_text())
+        value["status"] = "tampered"
+        path.write_text(json.dumps(value), encoding="utf-8")
+    elif tamper == "preflight_semantics":
+        path = Path(fixture["preflight"])
+        value = json.loads(path.read_text())
+        value["passed"] = False
+        path.write_text(json.dumps(value), encoding="utf-8")
+        monkeypatch.setattr(launcher, "AUTHORIZED_EVALUATION_PREFLIGHT_SHA256", digest(path))
+    elif tamper == "completion_semantics":
+        path = Path(fixture["closure"])
+        value = json.loads(path.read_text())
+        value["runs"][0]["data_seed"] = 1
+        path.write_text(json.dumps(value), encoding="utf-8")
+        monkeypatch.setattr(launcher, "AUTHORIZED_TRAINING_COMPLETION_SHA256", digest(path))
+    else:
+        path = Path(fixture["execution"])
+        value = json.loads(path.read_text())
+        value["status"] = "tampered"
+        path.write_text(json.dumps(value), encoding="utf-8")
+        monkeypatch.setattr(launcher, "AUTHORIZED_EXECUTION_MANIFEST_SHA256", digest(path))
+
+    with pytest.raises(contract.ContractError):
+        summary._validate_formal_artifact_chain()
 
 
 def test_authorized_simulation_executes_exactly_once_shell_false(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
