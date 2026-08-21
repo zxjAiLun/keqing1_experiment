@@ -280,6 +280,191 @@ def test_formal_summary_fails_closed_before_auth_and_writes_no_result(
     assert output.exists() is False
 
 
+def _execution_inventory_fixture() -> dict[str, object]:
+    shards = []
+    for condition in contract.CONDITIONS:
+        for training_seed in contract.TRAINING_SEEDS:
+            for shard in contract.SHARDS:
+                seed_start = contract.SHARD_STARTS[training_seed][shard]
+                shards.append(
+                    {
+                        "condition": condition,
+                        "training_seed": training_seed,
+                        "shard": shard,
+                        "seed_start": seed_start,
+                        "seed_end_exclusive": seed_start + contract.GAMES_PER_SHARD,
+                        "raw_log_count": contract.GAMES_PER_SHARD,
+                        "artifact_file_count": contract.GAMES_PER_SHARD + 2,
+                        "inventory_sha256": "a" * 64,
+                    }
+                )
+    return {
+        "schema": "keqing.mortal.c1_evaluation_execution_inventory.v1",
+        "experiment_id": contract.C1_ID,
+        "evaluation_authorization_commit": summary.EVALUATION_AUTHORIZATION_COMMIT,
+        "plan_sha256": summary.AUTHORIZED_ARTIFACT_SHA256["plan"],
+        "preflight_sha256": summary.AUTHORIZED_ARTIFACT_SHA256["preflight"],
+        "closure_sha256": summary.AUTHORIZED_ARTIFACT_SHA256["completion"],
+        "execution_manifest_sha256": summary.AUTHORIZED_ARTIFACT_SHA256["execution"],
+        "total_shards": contract.TOTAL_SHARDS,
+        "games_per_shard": contract.GAMES_PER_SHARD,
+        "total_games": contract.TOTAL_GAMES,
+        "total_raw_logs": contract.TOTAL_GAMES,
+        "metrics_file_count": contract.TOTAL_SHARDS,
+        "detailed_stats_file_count": contract.TOTAL_SHARDS,
+        "shards": shards,
+    }
+
+
+def _bind_inventory_fixture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: dict[str, object] | None = None
+) -> tuple[Path, dict[str, object]]:
+    path = tmp_path / "evaluation_execution_inventory.json"
+    inventory = value or _execution_inventory_fixture()
+    path.write_text(json.dumps(inventory), encoding="utf-8")
+    monkeypatch.setattr(summary, "EVALUATION_EXECUTION_INVENTORY_PATH", path)
+    monkeypatch.setattr(summary, "EVALUATION_EXECUTION_INVENTORY_SHA256", hashlib.sha256(path.read_bytes()).hexdigest())
+    return path, inventory
+
+
+def test_execution_inventory_missing_refuses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "missing-inventory.json"
+    monkeypatch.setattr(summary, "EVALUATION_EXECUTION_INVENTORY_PATH", path)
+    with pytest.raises(contract.ContractError, match="missing"):
+        summary._validate_execution_inventory()
+
+
+def test_execution_inventory_wrong_sha_refuses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path, _ = _bind_inventory_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(summary, "EVALUATION_EXECUTION_INVENTORY_SHA256", "0" * 64)
+    assert path.is_file()
+    with pytest.raises(contract.ContractError, match="SHA mismatch"):
+        summary._validate_execution_inventory()
+
+
+def test_execution_inventory_wrong_authorization_commit_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    value = _execution_inventory_fixture()
+    value["evaluation_authorization_commit"] = "wrong-authorization-commit"
+    _bind_inventory_fixture(tmp_path, monkeypatch, value)
+    with pytest.raises(contract.ContractError, match="authorization commit"):
+        summary._validate_execution_inventory()
+
+
+@pytest.mark.parametrize("field", ["plan_sha256", "preflight_sha256", "closure_sha256", "execution_manifest_sha256"])
+def test_execution_inventory_wrong_authorized_artifact_sha_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    value = _execution_inventory_fixture()
+    value[field] = "f" * 64
+    _bind_inventory_fixture(tmp_path, monkeypatch, value)
+    with pytest.raises(contract.ContractError, match=field):
+        summary._validate_execution_inventory()
+
+
+@pytest.mark.parametrize("tamper", ["matrix", "count"])
+def test_execution_inventory_wrong_matrix_or_count_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, tamper: str
+) -> None:
+    value = _execution_inventory_fixture()
+    if tamper == "matrix":
+        value["shards"] = list(value["shards"][:-1])
+    else:
+        value["total_raw_logs"] = contract.TOTAL_GAMES - 1
+    _bind_inventory_fixture(tmp_path, monkeypatch, value)
+    with pytest.raises(contract.ContractError, match="(exactly 24 shards|total_raw_logs)"):
+        summary._validate_execution_inventory()
+
+
+def test_formal_provenance_block_binds_inventory_artifacts_and_source(tmp_path: Path) -> None:
+    artifact_paths: dict[str, Path] = {}
+    artifact_hashes: dict[str, str] = {}
+    for name in ("plan", "preflight", "completion", "execution"):
+        path = tmp_path / f"{name}.json"
+        path.write_text(name, encoding="utf-8")
+        artifact_paths[name] = path
+        artifact_hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    inventory = _execution_inventory_fixture()
+    paired = {seed: _paired_rows(seed, 1.0) for seed in contract.TRAINING_SEEDS}
+    provenance = summary.build_formal_provenance(
+        approved_commit="a8c7ee4b5c1134794b83d47532e4356e3e365b66",
+        artifact_paths=artifact_paths,
+        artifact_hashes=artifact_hashes,
+        inventory=inventory,
+        inventory_path=tmp_path / "evaluation_execution_inventory.json",
+        inventory_sha256="6d9cc23a8a5de778e2e2bb743c11aa995f196bac8e2f037eadf59f3a595dd648",
+        plan={"evaluator_provenance": {"commit": "evaluator"}, "runtime_provenance": {"python": "3.12.13"}},
+        source_provenance={
+            "path": "training/mortal/summarize_c1_interaction_2026_08.py",
+            "git_commit": "repair-commit",
+            "content_sha256": "b" * 64,
+            "git_blob_oid": "c" * 40,
+        },
+        paired_rows_by_seed=paired,
+    )
+    assert provenance["evaluation_authorization_commit"] == summary.EVALUATION_AUTHORIZATION_COMMIT
+    assert provenance["approved_evaluation_implementation_commit"].startswith("a8c7ee4")
+    assert set(provenance["authorized_artifacts"]) == {
+        "evaluation_plan",
+        "implementation_preflight",
+        "training_completion_closure",
+        "execution_manifest",
+    }
+    assert provenance["evaluation_execution_inventory"]["sha256"].startswith("6d9cc23")
+    assert provenance["formal_summary_source"]["git_commit"] == "repair-commit"
+    assert provenance["formal_summary_source"]["content_sha256"] == "b" * 64
+    assert provenance["formal_summary_source"]["git_blob_oid"] == "c" * 40
+    assert provenance["evaluation_counts"] == {
+        "shards": 24,
+        "raw_logs": 6000,
+        "current_hanchans": 3000,
+        "cql_off_hanchans": 3000,
+        "paired_interaction_rows": 3000,
+    }
+
+
+def test_formal_summary_rejects_noncanonical_output_dir(tmp_path: Path) -> None:
+    output = tmp_path / "noncanonical"
+    assert summary.main(["--output-dir", str(output)]) == 2
+    assert output.exists() is False
+
+
+def test_formal_summary_existing_result_refuses_without_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    formal_dir = tmp_path / "formal_adjudication"
+    output = formal_dir / summary.FORMAL_SUMMARY_FILENAME
+    output.parent.mkdir(parents=True)
+    sentinel = "existing-result\n"
+    output.write_text(sentinel, encoding="utf-8")
+    monkeypatch.setattr(summary, "CANONICAL_FORMAL_ADJUDICATION_DIR", formal_dir)
+    assert summary.main(["--output-dir", str(formal_dir)]) == 2
+    assert output.read_text(encoding="utf-8") == sentinel
+
+
+def test_atomic_publication_writes_final_and_cleans_temporary_file(tmp_path: Path) -> None:
+    output = tmp_path / "formal" / "c1_interaction_summary.json"
+    summary.publish_atomic(output, {"ok": True})
+    assert json.loads(output.read_text(encoding="utf-8")) == {"ok": True}
+    assert list(output.parent.glob(f".{output.name}.*.tmp")) == []
+
+
+def test_atomic_publication_leaves_no_partial_final_on_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    output = tmp_path / "formal" / "c1_interaction_summary.json"
+
+    def fail_replace(*_: object) -> None:
+        raise OSError("injected publication failure")
+
+    monkeypatch.setattr(summary.os, "replace", fail_replace)
+    with pytest.raises(OSError, match="injected publication failure"):
+        summary.publish_atomic(output, {"ok": True})
+    assert output.exists() is False
+    assert list(output.parent.glob(f".{output.name}.*.tmp")) == []
+
+
 def test_git_scope_allows_absent_or_only_1md_untracked() -> None:
     base = {"branch": "main", "tracked_clean": True, "tracked_changes": []}
     contract.validate_git_scope(base | {"untracked": []})

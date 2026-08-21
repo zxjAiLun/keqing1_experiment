@@ -13,8 +13,11 @@ import gzip
 import hashlib
 import json
 import math
+import os
 import re
+import subprocess
 import sys
+import tempfile
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
@@ -37,24 +40,42 @@ from training.mortal.c1_evaluation_contract_2026_08 import (
     IMPLEMENTATION_PREFLIGHT_PATH,
     RANK_POINTS,
     SHARD_STARTS,
+    SHARDS,
+    TOTAL_GAMES,
     TOTAL_SHARDS,
     TRAINING_SEEDS,
     ContractError,
     assert_exact_run_matrix,
     current_checkpoint_records,
-    dump_json,
     evaluation_shard_dir,
+    git_blob_oid,
+    git_info,
     load_json,
     model_order,
     off_model_label,
     resolve_execution_manifest,
     sha256_file,
+    validate_git_scope,
     validate_runtime_provenance,
     validate_source_provenance,
 )
 
 LOG_NAME_RE = re.compile(r"^(?P<seed>\d+)(?:_[^/]*)?\.json\.gz$")
 ROLE_ORDER = ("70k", "ext_mortal", "M0", "D1")
+
+EVALUATION_EXECUTION_INVENTORY_PATH = EVALUATION_ROOT / "evaluation_execution_inventory.json"
+EVALUATION_EXECUTION_INVENTORY_SHA256 = (
+    "6d9cc23a8a5de778e2e2bb743c11aa995f196bac8e2f037eadf59f3a595dd648"
+)
+EVALUATION_AUTHORIZATION_COMMIT = "e12c0991b8753a865f09db1590232755ea358201"
+AUTHORIZED_ARTIFACT_SHA256 = {
+    "plan": "2d9f85144492cbd2f86c786ebc5d6ad10722ce8449bdcde5176bf8f6578f18f7",
+    "preflight": "9f1ecbe20473b3ceccfcdc70aa1a26b041890c532f0f15fc5a6b476abd20c0d0",
+    "completion": "cdaaaa8d67bc8497ad7dcf279de78db5bc0110d071882ab47daaf1b3e07b2b9f",
+    "execution": "241cfcb5559598fa5c103161ceb28363c80af65e6944f894d3fc2fde7fd1a151",
+}
+CANONICAL_FORMAL_ADJUDICATION_DIR = EVALUATION_ROOT / "formal_adjudication"
+FORMAL_SUMMARY_FILENAME = "c1_interaction_summary.json"
 
 
 def final_scores(events: list[dict[str, Any]]) -> list[float] | None:
@@ -517,6 +538,211 @@ def _require_formal_authorization() -> tuple[str, dict[str, Path], dict[str, str
     return approved_commit, paths, actual
 
 
+def _validate_execution_inventory() -> tuple[dict[str, Any], str]:
+    """Validate the immutable E1 execution inventory before formal adjudication."""
+
+    path = EVALUATION_EXECUTION_INVENTORY_PATH.resolve()
+    if not path.is_file():
+        raise ContractError(f"C1 execution inventory is missing: {path}")
+    try:
+        actual_sha256 = sha256_file(path)
+    except OSError as exc:
+        raise ContractError(f"cannot hash C1 execution inventory: {path}") from exc
+    if actual_sha256 != EVALUATION_EXECUTION_INVENTORY_SHA256:
+        raise ContractError("C1 execution inventory SHA mismatch")
+    inventory = load_json(path)
+
+    if inventory.get("schema") != "keqing.mortal.c1_evaluation_execution_inventory.v1":
+        raise ContractError("C1 execution inventory schema mismatch")
+    if inventory.get("experiment_id") != C1_ID:
+        raise ContractError("C1 execution inventory experiment mismatch")
+    if inventory.get("evaluation_authorization_commit") != EVALUATION_AUTHORIZATION_COMMIT:
+        raise ContractError("C1 execution inventory authorization commit mismatch")
+    for field, expected in AUTHORIZED_ARTIFACT_SHA256.items():
+        inventory_field = {
+            "plan": "plan_sha256",
+            "preflight": "preflight_sha256",
+            "completion": "closure_sha256",
+            "execution": "execution_manifest_sha256",
+        }[field]
+        if inventory.get(inventory_field) != expected:
+            raise ContractError(f"C1 execution inventory {inventory_field} mismatch")
+
+    expected_counts = {
+        "total_shards": TOTAL_SHARDS,
+        "games_per_shard": GAMES_PER_SHARD,
+        "total_games": TOTAL_GAMES,
+        "total_raw_logs": TOTAL_GAMES,
+        "metrics_file_count": TOTAL_SHARDS,
+        "detailed_stats_file_count": TOTAL_SHARDS,
+    }
+    for field, expected in expected_counts.items():
+        if inventory.get(field) != expected:
+            raise ContractError(f"C1 execution inventory {field} mismatch")
+
+    raw_shards = inventory.get("shards")
+    if not isinstance(raw_shards, list) or len(raw_shards) != TOTAL_SHARDS:
+        raise ContractError("C1 execution inventory must contain exactly 24 shards")
+    expected_keys = {
+        (condition, training_seed, shard)
+        for condition in CONDITIONS
+        for training_seed in TRAINING_SEEDS
+        for shard in SHARDS
+    }
+    actual_keys: set[tuple[str, int, int]] = set()
+    for item in raw_shards:
+        if not isinstance(item, dict):
+            raise ContractError("C1 execution inventory contains a non-object shard")
+        try:
+            condition = str(item["condition"])
+            training_seed = int(item["training_seed"])
+            shard = int(item["shard"])
+            seed_start = int(item["seed_start"])
+            seed_end = int(item["seed_end_exclusive"])
+            raw_log_count = int(item["raw_log_count"])
+            artifact_file_count = int(item["artifact_file_count"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ContractError("C1 execution inventory contains an invalid shard record") from exc
+        key = (condition, training_seed, shard)
+        if key in actual_keys:
+            raise ContractError(f"C1 execution inventory contains duplicate shard: {key}")
+        actual_keys.add(key)
+        if key not in expected_keys:
+            raise ContractError(f"C1 execution inventory contains an unexpected shard: {key}")
+        expected_start = SHARD_STARTS[training_seed][shard]
+        if (seed_start, seed_end) != (expected_start, expected_start + GAMES_PER_SHARD):
+            raise ContractError(f"C1 execution inventory seed range mismatch: {key}")
+        if raw_log_count != GAMES_PER_SHARD or artifact_file_count != GAMES_PER_SHARD + 2:
+            raise ContractError(f"C1 execution inventory shard count mismatch: {key}")
+        shard_inventory_sha = item.get("inventory_sha256")
+        if not isinstance(shard_inventory_sha, str) or re.fullmatch(r"[0-9a-f]{64}", shard_inventory_sha) is None:
+            raise ContractError(f"C1 execution inventory shard digest is invalid: {key}")
+    if actual_keys != expected_keys:
+        raise ContractError("C1 execution inventory shard matrix mismatch")
+    return inventory, actual_sha256
+
+
+def formal_summary_source_provenance() -> dict[str, str]:
+    """Return the current tracked source identity used to create a formal result."""
+
+    try:
+        info = git_info()
+        validate_git_scope(info)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        raise ContractError("C1 formal summary requires a clean tracked main worktree") from exc
+    source_path = Path(__file__).resolve()
+    try:
+        relative_path = source_path.relative_to(SCRIPT_REPO_ROOT)
+    except ValueError as exc:
+        raise ContractError("C1 formal summary source is outside the repository") from exc
+    return {
+        "path": relative_path.as_posix(),
+        "git_commit": str(info["commit"]),
+        "content_sha256": sha256_file(source_path),
+        "git_blob_oid": git_blob_oid(source_path),
+    }
+
+
+def _repo_or_absolute_path(path: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return resolved.relative_to(SCRIPT_REPO_ROOT).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
+def build_formal_provenance(
+    *,
+    approved_commit: str,
+    artifact_paths: Mapping[str, Path],
+    artifact_hashes: Mapping[str, str],
+    inventory: Mapping[str, Any],
+    inventory_path: Path,
+    inventory_sha256: str,
+    plan: Mapping[str, Any],
+    source_provenance: Mapping[str, str],
+    paired_rows_by_seed: Mapping[int, Iterable[Mapping[str, Any]]],
+) -> dict[str, Any]:
+    """Build the provenance block attached to the future formal result."""
+
+    artifact_keys = {
+        "plan": "evaluation_plan",
+        "preflight": "implementation_preflight",
+        "completion": "training_completion_closure",
+        "execution": "execution_manifest",
+    }
+    authorized_artifacts: dict[str, dict[str, str]] = {}
+    for source_key, result_key in artifact_keys.items():
+        if source_key not in artifact_paths or source_key not in artifact_hashes:
+            raise ContractError(f"formal provenance is missing authorized artifact: {source_key}")
+        digest = str(artifact_hashes[source_key])
+        if not digest:
+            raise ContractError(f"formal provenance has an empty artifact SHA: {source_key}")
+        authorized_artifacts[result_key] = {
+            "path": _repo_or_absolute_path(Path(artifact_paths[source_key])),
+            "sha256": digest,
+        }
+
+    if inventory.get("evaluation_authorization_commit") != EVALUATION_AUTHORIZATION_COMMIT:
+        raise ContractError("formal provenance inventory authorization commit mismatch")
+    if not isinstance(plan.get("evaluator_provenance"), dict) or not isinstance(plan.get("runtime_provenance"), dict):
+        raise ContractError("formal provenance is missing frozen evaluator/runtime provenance")
+    if not approved_commit:
+        raise ContractError("formal provenance has no approved evaluation implementation commit")
+
+    row_counts = {int(seed): len(list(rows)) for seed, rows in paired_rows_by_seed.items()}
+    if tuple(sorted(row_counts)) != TRAINING_SEEDS or any(count != 1000 for count in row_counts.values()):
+        raise ContractError("formal provenance requires exactly 1000 paired rows for each training seed")
+    paired_rows = sum(row_counts.values())
+    return {
+        "evaluation_authorization_commit": EVALUATION_AUTHORIZATION_COMMIT,
+        "approved_evaluation_implementation_commit": approved_commit,
+        "authorized_artifacts": authorized_artifacts,
+        "evaluation_execution_inventory": {
+            "path": _repo_or_absolute_path(inventory_path),
+            "sha256": inventory_sha256,
+        },
+        "formal_summary_source": dict(source_provenance),
+        "evaluator": dict(plan["evaluator_provenance"]),
+        "runtime": dict(plan["runtime_provenance"]),
+        "evaluation_counts": {
+            "shards": TOTAL_SHARDS,
+            "raw_logs": paired_rows * 2,
+            "current_hanchans": paired_rows,
+            "cql_off_hanchans": paired_rows,
+            "paired_interaction_rows": paired_rows,
+        },
+    }
+
+
+def publish_atomic(output_path: Path, value: dict[str, Any]) -> None:
+    """Publish one JSON result atomically, refusing an existing final path."""
+
+    output_path = output_path.resolve()
+    if output_path.exists():
+        raise ContractError(f"formal C1 result already exists; refusing overwrite: {output_path}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    file_descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output_path.name}.", suffix=".tmp", dir=output_path.parent
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        if output_path.exists():
+            raise ContractError(f"formal C1 result appeared during publication; refusing overwrite: {output_path}")
+        os.replace(temporary_path, output_path)
+    except BaseException:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def _validate_formal_artifact_chain() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], dict[str, dict[str, Any]], str]:
     approved_commit, paths, hashes = _require_formal_authorization()
     plan = load_json(paths["plan"].resolve())
@@ -773,7 +999,18 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        plan, preflight, _completion, execution, effective_models, _approved_commit = _validate_formal_artifact_chain()
+        output_dir = args.output_dir.resolve()
+        if output_dir != CANONICAL_FORMAL_ADJUDICATION_DIR.resolve():
+            raise ContractError(
+                "formal C1 summary output directory is not the canonical formal_adjudication directory"
+            )
+        output = output_dir / FORMAL_SUMMARY_FILENAME
+        if output.exists():
+            raise ContractError(f"formal C1 result already exists; refusing overwrite: {output}")
+
+        inventory, inventory_sha256 = _validate_execution_inventory()
+        plan, preflight, _completion, execution, effective_models, approved_commit = _validate_formal_artifact_chain()
+        source_provenance = formal_summary_source_provenance()
         gates = _validate_formal_provenance(plan, preflight, execution, effective_models)
         paired, structural_gates = _read_formal_evaluation(
             plan,
@@ -785,13 +1022,36 @@ def main(argv: list[str] | None = None) -> int:
         if not all(gates.values()):
             raise ContractError("formal C1 gate set is incomplete")
         result = summarize_interaction_rows(paired, gates=gates)
+        result["provenance"] = build_formal_provenance(
+            approved_commit=approved_commit,
+            artifact_paths={
+                "plan": EVALUATION_PLAN_PATH,
+                "preflight": IMPLEMENTATION_PREFLIGHT_PATH,
+                "completion": TRAINING_COMPLETION_CLOSURE_PATH,
+                "execution": EXECUTION_MANIFEST_PATH,
+            },
+            artifact_hashes={
+                "plan": sha256_file(EVALUATION_PLAN_PATH.resolve()),
+                "preflight": sha256_file(IMPLEMENTATION_PREFLIGHT_PATH.resolve()),
+                "completion": sha256_file(TRAINING_COMPLETION_CLOSURE_PATH.resolve()),
+                "execution": sha256_file(EXECUTION_MANIFEST_PATH.resolve()),
+            },
+            inventory=inventory,
+            inventory_path=EVALUATION_EXECUTION_INVENTORY_PATH,
+            inventory_sha256=inventory_sha256,
+            plan=plan,
+            source_provenance=source_provenance,
+            paired_rows_by_seed=paired,
+        )
     except (ContractError, OSError, KeyError, TypeError, ValueError, ImportError) as exc:
         print(f"C1-I2 formal summary refused: {exc}", file=sys.stderr)
         return 2
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    output = args.output_dir / "c1_interaction_summary.json"
-    dump_json(output, result)
+    try:
+        publish_atomic(output, result)
+    except (ContractError, OSError, TypeError, ValueError) as exc:
+        print(f"C1-I2 formal summary refused: {exc}", file=sys.stderr)
+        return 2
     print(json.dumps({"summary": str(output), "verdict": result["adjudication"]["verdict"]}, ensure_ascii=False))
     return 0
 
