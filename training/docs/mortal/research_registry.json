@@ -12,9 +12,9 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "C1 corpus-CQL causal interaction preregistration FROZEN v1 / REGISTERED; implementation not started; training/evaluation not authorized; K1 null",
-    "next_experiment": "C1_corpus_cql_interaction_2026_08",
-    "next_experiment_status": "preregistered_frozen",
+    "current_stage": "C1 corpus-CQL causal interaction formal adjudication COMPLETE; result interaction_supported; no recipe/checkpoint promotion; K1 null",
+    "next_experiment": null,
+    "next_experiment_status": "not_selected",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
@@ -22,7 +22,9 @@
       "不把 V2/V3 历史候选命名为 K2/K3。",
       "不以单个正向中心均值晋级 checkpoint。",
       "D3_top2_discard_v1 数据路线已按预注册规则拒绝（0/3 方向 + hierarchical CI 下限 < 0）；不得修改 D3 参数后继续沿用同一实验身份，继续 uncertainty-guided exploration 必须建立新的 experiment ID；K1 尚未产生。",
-      "C1 已 FROZEN v1，但 training/evaluation 均未授权；registry registration 本身不得触发 config generation、optimizer step 或 evaluator run。"
+      "C1 formal adjudication 已完成并得到 interaction_supported；该结果是机制 finding，不自动晋级 recipe、checkpoint 或 K1。",
+      "不得重跑 C1 evaluation 或 formal adjudication、调整 seed/bootstrap/输出 artifact，或把 CQL_OFF 直接推广为 operational recipe。",
+      "若继续研究 interaction 来源，必须建立新的 preregistered experiment ID；不得在 C1 身份下扩大数据量、直接训练 K1 或修改 intervention。"
     ]
   },
   "records": [
@@ -457,21 +459,38 @@
         "bootstrap_reps": 5000,
         "bootstrap_seed": 20260818
       },
-      "status": "preregistered_frozen",
-      "primary_result": "尚未执行。FROZEN v1 只注册 scientific contract；training/evaluation 均未授权。",
+      "status": "closed",
+      "completion_status": "completed",
+      "primary_result": "Formal C1 DID adjudication COMPLETE：interaction seed means [13.905,5.265,15.480] Pt/半庄；primary equal-seed mean +11.550；hierarchical bootstrap CI95 [2.96925,19.485375]；3/3 seed means positive、CI lower > 0、all gates PASS；verdict interaction_supported。无 recipe/checkpoint promotion；K1 null。",
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
       "checkpoint_promotion": false,
-      "closure_reason": null,
+      "closure_reason": "C1 formal adjudication 已完成并通过全部冻结 gates，结果为 interaction_supported。该结果是 M0/D1 语料路线 × CQL intervention 的 causal interaction finding，不自动晋级 CQL_OFF recipe、checkpoint 或 K1；后续机制确认必须使用新的 experiment ID。",
       "predecessor": "D1_project_owned_k0_view",
       "next_experiment": null,
-      "commits": ["65a8b220d361fc8285c3f9494349307bb2b86913"],
+      "commits": [
+        "65a8b220d361fc8285c3f9494349307bb2b86913",
+        "5c2bed32e88aab9210fb1a9cd99134f82d7edd58",
+        "a8c7ee4b5c1134794b83d47532e4356e3e365b66",
+        "e12c0991b8753a865f09db1590232755ea358201",
+        "98646d23aebb136eea49f30e7b41e47d4836c0e7"
+      ],
       "artifact_paths": [
-        "artifacts/experiments/C1_corpus_cql_interaction_2026_08_feasibility/loader_compatibility.json"
+        "artifacts/experiments/C1_corpus_cql_interaction_2026_08_feasibility/loader_compatibility.json",
+        "artifacts/experiments/C1_corpus_cql_interaction_2026_08/training_implementation_2026_08/training_manifest.json",
+        "artifacts/experiments/C1_corpus_cql_interaction_2026_08/training_implementation_2026_08/preflight/training_preflight.json",
+        "artifacts/experiments/C1_corpus_cql_interaction_2026_08/evaluation_implementation_2026_08/evaluation_plan.json",
+        "artifacts/experiments/C1_corpus_cql_interaction_2026_08/evaluation_implementation_2026_08/implementation_preflight.json",
+        "artifacts/experiments/C1_corpus_cql_interaction_2026_08/evaluation_implementation_2026_08/training_completion_closure.json",
+        "artifacts/experiments/C1_corpus_cql_interaction_2026_08/evaluation_implementation_2026_08/execution_manifest.json",
+        "artifacts/experiments/C1_corpus_cql_interaction_2026_08/evaluation_implementation_2026_08/evaluation_execution_inventory.json",
+        "artifacts/experiments/C1_corpus_cql_interaction_2026_08/evaluation_implementation_2026_08/formal_adjudication/c1_interaction_summary.json"
       ],
       "report_paths": [
-        "training/docs/mortal/experiments_zh/2026-08_C1语料_CQL交互因果实验_预注册设计.md"
+        "training/docs/mortal/研发总览_当前.md",
+        "training/docs/mortal/experiments_zh/2026-08_C1语料_CQL交互因果实验_预注册设计.md",
+        "training/docs/mortal/experiments_zh/2026-08_C1语料_CQL交互因果实验_最终结果报告.md"
       ],
       "preregistration": {
         "status": "FROZEN v1",
@@ -501,6 +520,56 @@
         "positive_verdict": "interaction_supported",
         "negative_verdict": "interaction_not_confirmed",
         "gate_failure_verdict": "no_verdict_gates_failed"
+      },
+      "formal_adjudication": {
+        "status": "completed",
+        "schema": "keqing.mortal.c1_interaction_summary.v1",
+        "result": "interaction_supported",
+        "result_path": "artifacts/experiments/C1_corpus_cql_interaction_2026_08/evaluation_implementation_2026_08/formal_adjudication/c1_interaction_summary.json",
+        "result_sha256": "2e0a5496fcef5378e90b1c1f1f7a5ff8a3801acadd70cf905445169fe321ad5b",
+        "evaluation_counts": {
+          "shards": 24,
+          "raw_logs": 6000,
+          "current_hanchans": 3000,
+          "cql_off_hanchans": 3000,
+          "paired_interaction_rows": 3000
+        },
+        "interaction_seed_means": {
+          "20260806": 13.905,
+          "20260807": 5.265,
+          "20260808": 15.48
+        },
+        "primary_interaction_mean": 11.55,
+        "bootstrap": {
+          "reps": 5000,
+          "seed": 20260818,
+          "ci95": [2.96925, 19.485375]
+        },
+        "gates": {
+          "training_provenance": true,
+          "evaluation_provenance": true,
+          "runtime_provenance": true,
+          "pairing_gate": true,
+          "plan_models_complete": true,
+          "shard_artifacts_gate": true
+        },
+        "provenance": {
+          "evaluation_authorization_commit": "e12c0991b8753a865f09db1590232755ea358201",
+          "approved_evaluation_implementation_commit": "a8c7ee4b5c1134794b83d47532e4356e3e365b66",
+          "execution_inventory_sha256": "6d9cc23a8a5de778e2e2bb743c11aa995f196bac8e2f037eadf59f3a595dd648",
+          "formal_summary_source": {
+            "path": "training/mortal/summarize_c1_interaction_2026_08.py",
+            "git_commit": "98646d23aebb136eea49f30e7b41e47d4836c0e7",
+            "content_sha256": "7fd83960488bec95185b87592590e829637450356767f420c4ee54f28f89f51a",
+            "git_blob_oid": "927273b682a9587d7d2d941a8fd31403842ddefd"
+          },
+          "authorized_artifact_sha256": {
+            "evaluation_plan": "2d9f85144492cbd2f86c786ebc5d6ad10722ce8449bdcde5176bf8f6578f18f7",
+            "implementation_preflight": "9f1ecbe20473b3ceccfcdc70aa1a26b041890c532f0f15fc5a6b476abd20c0d0",
+            "training_completion_closure": "cdaaaa8d67bc8497ad7dcf279de78db5bc0110d071882ab47daaf1b3e07b2b9f",
+            "execution_manifest": "241cfcb5559598fa5c103161ceb28363c80af65e6944f894d3fc2fde7fd1a151"
+          }
+        }
       },
       "mechanistic_basis": {
         "audit": "K0_DECISION_SIGNAL_AUDIT_2026_08",

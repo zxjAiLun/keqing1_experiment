@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 
@@ -18,14 +19,16 @@ REGISTRY_PATH = ROOT / "training/docs/mortal/research_registry.json"
 C1_ID = "C1_corpus_cql_interaction_2026_08"
 
 
-def test_current_registry_loads_and_c1_status_is_allowed() -> None:
+def test_current_registry_loads_and_c1_closure_status_is_allowed() -> None:
     registry = load_registry(REGISTRY_PATH)
     c1 = next(record for record in registry["records"] if record["experiment_id"] == C1_ID)
 
-    assert c1["status"] == "preregistered_frozen"
+    assert c1["status"] == "closed"
+    assert c1["completion_status"] == "completed"
     assert c1["status"] in ALLOWED_STATUSES
-    assert registry["current_state"]["next_experiment"] == C1_ID
-    assert registry["current_state"]["next_experiment_status"] == "preregistered_frozen"
+    assert c1["formal_adjudication"]["result"] == "interaction_supported"
+    assert registry["current_state"]["next_experiment"] is None
+    assert registry["current_state"]["next_experiment_status"] == "not_selected"
 
 
 def test_frozen_status_text_is_not_started_semantics() -> None:
@@ -37,13 +40,28 @@ def test_frozen_status_text_is_not_started_semantics() -> None:
     assert "通过" not in rendered_status
 
 
-def test_render_block_contains_registered_c1_without_promoting_k1() -> None:
+def test_render_block_contains_closed_c1_without_promoting_k1() -> None:
     block = render_block(load_registry(REGISTRY_PATH))
 
     assert C1_ID in block
-    assert f"下一实验提案：`{C1_ID}`（preregistered_frozen）" in block
+    assert "下一实验提案：`尚未选择`（not_selected）" in block
+    assert "interaction_supported" in block
     assert "K1：`尚未产生`" in block
     assert "K1 =" not in block
+
+
+def test_c1_registry_binds_formal_result_artifact() -> None:
+    registry = load_registry(REGISTRY_PATH)
+    c1 = next(record for record in registry["records"] if record["experiment_id"] == C1_ID)
+    formal = c1["formal_adjudication"]
+    result_path = ROOT / formal["result_path"]
+
+    assert result_path.is_file()
+    assert hashlib.sha256(result_path.read_bytes()).hexdigest() == formal["result_sha256"]
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert result["schema"] == formal["schema"]
+    assert result["adjudication"]["verdict"] == formal["result"]
+    assert result["provenance"]["evaluation_execution_inventory"]["sha256"] == formal["provenance"]["execution_inventory_sha256"]
 
 
 def test_unknown_record_status_fails_closed(tmp_path: Path) -> None:
