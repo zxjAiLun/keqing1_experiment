@@ -192,7 +192,7 @@ def test_preregistration_sha_is_frozen() -> None:
     assert PREREG_COMMIT == "729741ad585eea93e8a2fa02d04020a59ae95716"
     assert PREREG_FILE_SHA256 == "3ebd88b5afc8e7fda28c1c5e61aff5cdf6babf90d082a9096a1529545088b359"
     assert sha256_file(PREREG_FILE) == PREREG_FILE_SHA256
-    assert FORMAL_RUN_AUTHORIZED is True  # post-authorization state after 0b85d1a
+    assert FORMAL_RUN_AUTHORIZED is False  # closed after formal audit closure
 
 
 def test_global_hanchan_identity_separates_sorted_position_from_canonical_hash() -> None:

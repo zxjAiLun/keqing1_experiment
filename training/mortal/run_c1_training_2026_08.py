@@ -46,11 +46,14 @@ DEFAULT_MANIFEST = (
     "training_implementation_2026_08/training_manifest.json"
 )
 DEFAULT_PREFLIGHT = DEFAULT_MANIFEST.parent / "preflight/training_preflight.json"
-TRAINING_AUTHORIZED = True
+TRAINING_AUTHORIZED = False
 APPROVED_IMPLEMENTATION_COMMIT = "5c2bed32e88aab9210fb1a9cd99134f82d7edd58"
 AUTHORIZED_PREFLIGHT_SHA256 = "e3efb349430c45a5958ea378e3744426176dc71803e9b9035d93ba429925cb3e"
 AUTHORIZED_MANIFEST_SHA256 = "58218430f02b7b4179e29d89b21385c8fc9052fbc830f7d1c0b4c6f296f7186c"
-TRAINING_AUTHORIZATION_NOTE = "C1-I1 and C1-I2 web-reviewed; authorize exactly six frozen CQL_OFF continuations"
+TRAINING_AUTHORIZATION_NOTE = (
+    "formal C1 training execution COMPLETE; "
+    "training authorization closed to prevent accidental rerun"
+)
 
 
 class AuthorizationError(RuntimeError):

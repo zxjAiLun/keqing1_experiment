@@ -55,7 +55,7 @@ DEFAULT_EXECUTION_MANIFEST = EVALUATION_ROOT / "execution_manifest.json"
 # These are deliberately the only authorization controls.  They remain
 # false/None in the implementation commit and must not be inferred from a
 # local file or command-line flag.
-EVALUATION_AUTHORIZED = True
+EVALUATION_AUTHORIZED = False
 APPROVED_EVALUATION_IMPLEMENTATION_COMMIT = "a8c7ee4b5c1134794b83d47532e4356e3e365b66"
 AUTHORIZED_EVALUATION_PLAN_SHA256 = "2d9f85144492cbd2f86c786ebc5d6ad10722ce8449bdcde5176bf8f6578f18f7"
 AUTHORIZED_EVALUATION_PREFLIGHT_SHA256 = "9f1ecbe20473b3ceccfcdc70aa1a26b041890c532f0f15fc5a6b476abd20c0d0"
