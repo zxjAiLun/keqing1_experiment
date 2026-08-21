@@ -25,7 +25,8 @@
       "C1 formal adjudication 已完成并得到 interaction_supported；该结果是机制 finding，不自动晋级 recipe、checkpoint 或 K1。",
       "不得重跑 C1 evaluation 或 formal adjudication、调整 seed/bootstrap/输出 artifact，或把 CQL_OFF 直接推广为 operational recipe。",
       "若继续研究 interaction 来源，必须建立新的 preregistered experiment ID；不得在 C1 身份下扩大数据量、直接训练 K1 或修改 intervention。"
-    ]
+    ],
+    "stage": "C2 mechanistic audit COMPLETE; result inconclusive; C1 interaction_supported maintained; no recipe/checkpoint promotion; K1 null"
   },
   "records": [
     {
@@ -36,7 +37,9 @@
       "control": null,
       "variant": "mortal_default_70k_promoted_candidate",
       "changed_variable": "无；当前正式 lineage 根节点",
-      "fixed_variables": ["Mortal DQN/CQL/Aux/next-rank 网络与动作契约"],
+      "fixed_variables": [
+        "Mortal DQN/CQL/Aux/next-rank 网络与动作契约"
+      ],
       "training_seeds": [],
       "evaluation_protocol": null,
       "status": "operational",
@@ -49,8 +52,12 @@
       "predecessor": null,
       "next_experiment": "D3_uncertainty_guided_exploration",
       "commits": [],
-      "artifact_paths": ["artifacts/mortal_training/checkpoints/mortal_default_70k_promoted_candidate.pth"],
-      "report_paths": ["training/docs/mortal/研发总览_当前.md"]
+      "artifact_paths": [
+        "artifacts/mortal_training/checkpoints/mortal_default_70k_promoted_candidate.pth"
+      ],
+      "report_paths": [
+        "training/docs/mortal/研发总览_当前.md"
+      ]
     },
     {
       "experiment_id": "M0_operational_control",
@@ -60,9 +67,28 @@
       "control": "existing mixed replay corpus",
       "variant": "M0 mixed replay corpus",
       "changed_variable": "无；作为当前控制组",
-      "fixed_variables": ["final_rank_mc", "behavior_action_mc", "preserved Adam", "70k→72k", "B250 random-seat evaluation"],
-      "training_seeds": [20260806, 20260807, 20260808],
-      "evaluation_protocol": {"games_per_seed": 1000, "native_batch_games": 250, "seed_starts": [1700000, 1710000, 1720000], "seed_key": 8192},
+      "fixed_variables": [
+        "final_rank_mc",
+        "behavior_action_mc",
+        "preserved Adam",
+        "70k→72k",
+        "B250 random-seat evaluation"
+      ],
+      "training_seeds": [
+        20260806,
+        20260807,
+        20260808
+      ],
+      "evaluation_protocol": {
+        "games_per_seed": 1000,
+        "native_batch_games": 250,
+        "seed_starts": [
+          1700000,
+          1710000,
+          1720000
+        ],
+        "seed_key": 8192
+      },
       "status": "operational",
       "primary_result": "D1/D2 的同桌控制；M0-70k 在 D2 评测的 corrected v2 均值为 +6.120 Pt/半庄，equal-seed hierarchical CI [-0.526,+12.555]、pooled CI [+1.020,+10.921]、seed means [0.855,9.990,7.515]，CI 跨零，不晋级具体 M0 checkpoint（旧数值 +6.150 / CI [-0.450,+12.480] 因 ReachAccepted 缺陷 invalidated）。",
       "promoted_data_route": "M0 mixed replay corpus",
@@ -72,9 +98,15 @@
       "closure_reason": null,
       "predecessor": "K0_70k",
       "next_experiment": "D3_uncertainty_guided_exploration",
-      "commits": ["90d148a"],
-      "artifact_paths": ["artifacts/experiments/model_pool_2026_07/V2_data/"],
-      "report_paths": ["training/docs/mortal/研发总览_当前.md"]
+      "commits": [
+        "90d148a"
+      ],
+      "artifact_paths": [
+        "artifacts/experiments/model_pool_2026_07/V2_data/"
+      ],
+      "report_paths": [
+        "training/docs/mortal/研发总览_当前.md"
+      ]
     },
     {
       "experiment_id": "S0_pure_ext_mortal_selfplay",
@@ -84,9 +116,21 @@
       "control": "M0 mixed replay corpus",
       "variant": "S0 pure ext_mortal selfplay",
       "changed_variable": "训练数据路线：纯 external Mortal selfplay",
-      "fixed_variables": ["训练网络", "reward/objective contract", "70k parent", "preserved Adam"],
-      "training_seeds": [20260718, 20260719, 20260720],
-      "evaluation_protocol": {"games_per_seed": 1000, "native_batch_games": 250},
+      "fixed_variables": [
+        "训练网络",
+        "reward/objective contract",
+        "70k parent",
+        "preserved Adam"
+      ],
+      "training_seeds": [
+        20260718,
+        20260719,
+        20260720
+      ],
+      "evaluation_protocol": {
+        "games_per_seed": 1000,
+        "native_batch_games": 250
+      },
       "status": "closed",
       "primary_result": "S0-M0 均值 -2.325 Pt/半庄；equal-seed hierarchical interval 跨零，未支持替换 M0。",
       "promoted_data_route": null,
@@ -96,9 +140,15 @@
       "closure_reason": "纯 external selfplay 没有提供稳定提升证据；冻结，不重复扩池。",
       "predecessor": "M0_operational_control",
       "next_experiment": "D3_uncertainty_guided_exploration",
-      "commits": ["d0b44e8"],
-      "artifact_paths": ["artifacts/experiments/model_pool_2026_07/data_route_ab_2026_07/summary/data_route_ab_summary.json"],
-      "report_paths": ["training/docs/mortal/data_route_ab_2026_07.md"]
+      "commits": [
+        "d0b44e8"
+      ],
+      "artifact_paths": [
+        "artifacts/experiments/model_pool_2026_07/data_route_ab_2026_07/summary/data_route_ab_summary.json"
+      ],
+      "report_paths": [
+        "training/docs/mortal/data_route_ab_2026_07.md"
+      ]
     },
     {
       "experiment_id": "D1_project_owned_k0_view",
@@ -108,9 +158,30 @@
       "control": "M0 mixed replay corpus",
       "variant": "D1 K0-view project-owned population replay",
       "changed_variable": "完整 replay lineage：M0 mixed replay → 新生成的 D1 K0-view population replay",
-      "fixed_variables": ["两边均为 6000 个 trainable perspectives", "一局一个 trainable perspective", "final_rank_mc", "behavior_action_mc", "preserved Adam", "70k→72k", "B250 random-seat evaluation"],
-      "training_seeds": [20260806, 20260807, 20260808],
-      "evaluation_protocol": {"games_per_seed": 1000, "native_batch_games": 250, "seed_starts": [1700000, 1710000, 1720000], "seed_key": 8192},
+      "fixed_variables": [
+        "两边均为 6000 个 trainable perspectives",
+        "一局一个 trainable perspective",
+        "final_rank_mc",
+        "behavior_action_mc",
+        "preserved Adam",
+        "70k→72k",
+        "B250 random-seat evaluation"
+      ],
+      "training_seeds": [
+        20260806,
+        20260807,
+        20260808
+      ],
+      "evaluation_protocol": {
+        "games_per_seed": 1000,
+        "native_batch_games": 250,
+        "seed_starts": [
+          1700000,
+          1710000,
+          1720000
+        ],
+        "seed_key": 8192
+      },
       "status": "rejected",
       "primary_result": "D1-M0 = -8.520 Pt/半庄（corrected v2）；seed means [-7.425,-10.980,-7.155]；pooled CI95 [-13.650,-3.510]；equal-seed hierarchical CI95 [-14.025,-3.225]；3/3 负向。D1-70k pooled = -5.010（hier CI [-14.880,+4.185]）。",
       "historical_summary_correction": {
@@ -130,9 +201,17 @@
       "closure_reason": "D1 与 M0 使用不同 replay corpus、状态/行为/对手生态；D1 纯 K0 行为约 99.9894% greedy agreement，整套新 lineage 没有提供有效 policy improvement，稳定劣于 M0。不能把动作支持不足单独宣称为已隔离因果。",
       "predecessor": "M0_operational_control",
       "next_experiment": "D2_project_owned_descendant_view_mix",
-      "commits": ["90d148a", "52b4123"],
-      "artifact_paths": ["artifacts/experiments/model_pool_2026_07/D1_project_owned_population_2026_07/eval_b250_1000h_2026_08/summary/d1_b250_eval_summary.json"],
-      "report_paths": ["training/docs/mortal/experiments_zh/2026-08_D1纯K0数据路线_结果报告.md", "training/docs/mortal/project_owned_d1_2026_07.md"]
+      "commits": [
+        "90d148a",
+        "52b4123"
+      ],
+      "artifact_paths": [
+        "artifacts/experiments/model_pool_2026_07/D1_project_owned_population_2026_07/eval_b250_1000h_2026_08/summary/d1_b250_eval_summary.json"
+      ],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-08_D1纯K0数据路线_结果报告.md",
+        "training/docs/mortal/project_owned_d1_2026_07.md"
+      ]
     },
     {
       "experiment_id": "D2_project_owned_descendant_view_mix",
@@ -142,9 +221,30 @@
       "control": "M0：operational promotion control",
       "variant": "D2：V2_74000/V3_74000 各 3000 半庄 trainable view",
       "changed_variable": "训练视角：纯 K0 → 50/50 project-owned descendant views",
-      "fixed_variables": ["同一 6000 个 D1 半庄", "一局一个 trainable perspective", "final_rank_mc", "behavior_action_mc", "preserved Adam", "70k→72k", "B250 random-seat evaluation"],
-      "training_seeds": [20260806, 20260807, 20260808],
-      "evaluation_protocol": {"games_per_seed": 1000, "native_batch_games": 250, "seed_starts": [1700000, 1710000, 1720000], "seed_key": 8192},
+      "fixed_variables": [
+        "同一 6000 个 D1 半庄",
+        "一局一个 trainable perspective",
+        "final_rank_mc",
+        "behavior_action_mc",
+        "preserved Adam",
+        "70k→72k",
+        "B250 random-seat evaluation"
+      ],
+      "training_seeds": [
+        20260806,
+        20260807,
+        20260808
+      ],
+      "evaluation_protocol": {
+        "games_per_seed": 1000,
+        "native_batch_games": 250,
+        "seed_starts": [
+          1700000,
+          1710000,
+          1720000
+        ],
+        "seed_key": 8192
+      },
       "mechanistic_reference": "D1_project_owned_k0_view",
       "primary_promotion_control": "M0_operational_control",
       "status": "rejected",
@@ -166,9 +266,17 @@
       "closure_reason": "D1 是 mechanistic predecessor，M0 是 primary promotion control；后代视角 mix 没有修复 D1 退化。D2 fuuro 约 20.8%，低于 M0 约 27.0%，但没有转化为强度收益。停止 D2 和 view-ratio sweep。",
       "predecessor": "D1_project_owned_k0_view",
       "next_experiment": "D3_uncertainty_guided_exploration",
-      "commits": ["52b4123", "0c5a8ff"],
-      "artifact_paths": ["artifacts/experiments/model_pool_2026_07/D2_project_owned_descendant_view_mix_2026_08/eval_b250_1000h/summary/d2_b250_eval_summary.json"],
-      "report_paths": ["training/docs/mortal/experiments_zh/2026-08_D2后代策略视角_结果报告.md", "training/docs/mortal/d2_descendant_view_mix_2026_08.md"]
+      "commits": [
+        "52b4123",
+        "0c5a8ff"
+      ],
+      "artifact_paths": [
+        "artifacts/experiments/model_pool_2026_07/D2_project_owned_descendant_view_mix_2026_08/eval_b250_1000h/summary/d2_b250_eval_summary.json"
+      ],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-08_D2后代策略视角_结果报告.md",
+        "training/docs/mortal/d2_descendant_view_mix_2026_08.md"
+      ]
     },
     {
       "experiment_id": "D3_uncertainty_guided_exploration",
@@ -178,9 +286,49 @@
       "control": "M0_operational_control",
       "variant": "D3 generation v1：K0 discard-only low-margin deterministic top-2 exploration replay",
       "changed_variable": "生成行为策略：K0 pure greedy → 在冻结 eligible state 中以确定性 hash 25% 选择 legal top-2 discard",
-      "fixed_variables": ["K0_70k 作为唯一 trainable perspective", "discard-only top-2 exploration", "至少两个 finite legal Q", "top-1/top-2 均为 discard", "自己未立直", "top-1/top-2 margin <= 0.5", "top-2 probability = 0.25", "每个 kyoku 最多探索 1 次", "每个 hanchan 最多探索 8 次", "SHA-256 deterministic decision hash", "canonical index: seat 0-based arena seat; kyoku_index 0-based actual start_kyoku instance; decision_index 0-based K0 action output within kyoku", "stable descending Q tie-break uses smaller action id first", "不把 reviewer/NAGA 当硬标签"],
-      "training_seeds": [20260806, 20260807, 20260808],
-      "evaluation_protocol": {"generation_smoke": {"seed_start": 1799000, "games": 25, "seed_key": 8192}, "generation_production": {"seed_start": 1800000, "games": 6000, "native_batch_games": 250, "shards": 24, "seed_key": 8192, "seat_mode": "random", "amp": false}, "promotion_eval": {"games_per_seed": 1000, "native_batch_games": 250, "seed_key": 8192, "seat_mode": "random", "amp": false}},
+      "fixed_variables": [
+        "K0_70k 作为唯一 trainable perspective",
+        "discard-only top-2 exploration",
+        "至少两个 finite legal Q",
+        "top-1/top-2 均为 discard",
+        "自己未立直",
+        "top-1/top-2 margin <= 0.5",
+        "top-2 probability = 0.25",
+        "每个 kyoku 最多探索 1 次",
+        "每个 hanchan 最多探索 8 次",
+        "SHA-256 deterministic decision hash",
+        "canonical index: seat 0-based arena seat; kyoku_index 0-based actual start_kyoku instance; decision_index 0-based K0 action output within kyoku",
+        "stable descending Q tie-break uses smaller action id first",
+        "不把 reviewer/NAGA 当硬标签"
+      ],
+      "training_seeds": [
+        20260806,
+        20260807,
+        20260808
+      ],
+      "evaluation_protocol": {
+        "generation_smoke": {
+          "seed_start": 1799000,
+          "games": 25,
+          "seed_key": 8192
+        },
+        "generation_production": {
+          "seed_start": 1800000,
+          "games": 6000,
+          "native_batch_games": 250,
+          "shards": 24,
+          "seed_key": 8192,
+          "seat_mode": "random",
+          "amp": false
+        },
+        "promotion_eval": {
+          "games_per_seed": 1000,
+          "native_batch_games": 250,
+          "seed_key": 8192,
+          "seat_mode": "random",
+          "amp": false
+        }
+      },
       "status": "rejected",
       "primary_result": "D3 完整受控实验闭环：generation 6000 hanchans（151282 eligible / 27506 explored，integrity closed）→ 3×70k→72k 训练（seeds 20260806/07/08，frozen D3 dataset，preserved Adam，3/3 completion PASS）→ 3×1000h matched promotion evaluation（D3−M0 seed means [-0.855,-11.025,-2.610]，pooled -4.830 Pt/hanchan，hierarchical CI95 [-12.060,+2.070]，0/3 正向）。预注册 promotion gate FAIL：数据路线 NOT PROMOTED，checkpoint NOT PROMOTED。存在 3 个冻结的 D3 72k experimental checkpoints 但均未晋级；不存在 formal K1。",
       "promoted_data_route": null,
@@ -202,16 +350,33 @@
         "raw_eval_modified": false,
         "training_rerun": false,
         "d3_minus_m0": {
-          "seed_means": {"20260806": -0.855, "20260807": -11.025, "20260808": -2.61},
+          "seed_means": {
+            "20260806": -0.855,
+            "20260807": -11.025,
+            "20260808": -2.61
+          },
           "pooled": -4.83,
-          "pooled_ci95": [-9.84, 0.015],
-          "hierarchical_ci95": [-12.060375, 2.07037499999999],
+          "pooled_ci95": [
+            -9.84,
+            0.015
+          ],
+          "hierarchical_ci95": [
+            -12.060375,
+            2.07037499999999
+          ],
           "positive_seeds": "0/3"
         },
         "d3_minus_k0": {
-          "seed_means": {"20260806": 2.61, "20260807": -6.84, "20260808": -5.31},
+          "seed_means": {
+            "20260806": 2.61,
+            "20260807": -6.84,
+            "20260808": -5.31
+          },
           "pooled": -3.18,
-          "hierarchical_ci95": [-9.69, 3.75]
+          "hierarchical_ci95": [
+            -9.69,
+            3.75
+          ]
         },
         "route_promotion": false,
         "checkpoint_promotion": false,
@@ -232,7 +397,13 @@
         "explored_events": 1147,
         "correspondence": "6304/6304 exact native-scene mapping; unmapped 0; behavior mismatch 0; duplicates 0",
         "contract_violations": "hash/budget/threshold/action/base 全零",
-        "checks": {"provenance": "42/42", "data_integrity": "13/13", "event_contract": "12/12", "correspondence": "5/5", "lineage": "2/2"},
+        "checks": {
+          "provenance": "42/42",
+          "data_integrity": "13/13",
+          "event_contract": "12/12",
+          "correspondence": "5/5",
+          "lineage": "2/2"
+        },
         "audit_v1": {
           "verdict": "FAIL",
           "qualification": "invalid; superseded",
@@ -277,7 +448,21 @@
       },
       "predecessor": "D2_project_owned_descendant_view_mix",
       "next_experiment": null,
-      "commits": ["0aafffd", "1d8d5b6", "7eb48f1", "2cc12b4", "cf9bb86", "67f2ccb", "53cc07f", "f67f036", "35f9cea", "728e43e", "413a268", "a6b1d4b", "8b36ee8"],
+      "commits": [
+        "0aafffd",
+        "1d8d5b6",
+        "7eb48f1",
+        "2cc12b4",
+        "cf9bb86",
+        "67f2ccb",
+        "53cc07f",
+        "f67f036",
+        "35f9cea",
+        "728e43e",
+        "413a268",
+        "a6b1d4b",
+        "8b36ee8"
+      ],
       "artifact_paths": [
         "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/feasibility_audit/d3_exploration_feasibility.json",
         "artifacts/experiments/model_pool_2026_07/D3_uncertainty_guided_exploration_2026_08/feasibility_audit/d3_exploration_feasibility.md",
@@ -301,7 +486,14 @@
         "training/docs/mortal/experiments_zh/2026-08_D3_6000h生成闭环_结果报告.md",
         "training/docs/mortal/experiments_zh/2026-08_D3不确定性探索数据路线_最终结果报告.md"
       ],
-      "proposal_constraints": ["25h smoke 必须验证 hash 可复现、探索动作合法且 100% 为 discard→discard、预算不超限。", "authoritative smoke 必须 project/native clean，并冻结 project/native commit、D3 patch SHA、riichi.pyd SHA、release/CUDA、四模型 SHA。", "所有 exploration event 必须来自 primary action；auxiliary kan guard row 不得探索、消费预算或写事件。", "250h B250 production gate 必须 250 canonical unique hanchans、0 malformed、0 own-riichi exploration、0 auxiliary-row exploration、0 threshold/budget violation。", "gate 失败时关闭 D3 generation v1，不现场调整概率或阈值。", "未通过 smoke/production gate 前不得生成完整 6000h 或训练。"]
+      "proposal_constraints": [
+        "25h smoke 必须验证 hash 可复现、探索动作合法且 100% 为 discard→discard、预算不超限。",
+        "authoritative smoke 必须 project/native clean，并冻结 project/native commit、D3 patch SHA、riichi.pyd SHA、release/CUDA、四模型 SHA。",
+        "所有 exploration event 必须来自 primary action；auxiliary kan guard row 不得探索、消费预算或写事件。",
+        "250h B250 production gate 必须 250 canonical unique hanchans、0 malformed、0 own-riichi exploration、0 auxiliary-row exploration、0 threshold/budget violation。",
+        "gate 失败时关闭 D3 generation v1，不现场调整概率或阈值。",
+        "未通过 smoke/production gate 前不得生成完整 6000h 或训练。"
+      ]
     },
     {
       "experiment_id": "grp_delta_pt_reward",
@@ -311,9 +503,24 @@
       "control": "final_rank_mc",
       "variant": "mortal_grp_delta_pt",
       "changed_variable": "reward：final-rank MC → GRP delta-Pt",
-      "fixed_variables": ["M0 corpus", "behavior_action_mc", "preserved Adam", "网络与评测协议"],
-      "training_seeds": [20260718, 20260719, 20260720, 20260721, 20260722, 20260723],
-      "evaluation_protocol": {"games_per_seed": 1000, "native_batch_games": 250},
+      "fixed_variables": [
+        "M0 corpus",
+        "behavior_action_mc",
+        "preserved Adam",
+        "网络与评测协议"
+      ],
+      "training_seeds": [
+        20260718,
+        20260719,
+        20260720,
+        20260721,
+        20260722,
+        20260723
+      ],
+      "evaluation_protocol": {
+        "games_per_seed": 1000,
+        "native_batch_games": 250
+      },
       "status": "rejected",
       "primary_result": "GRP-control pooled中心趋势约 +2.235 Pt/半庄，但 hierarchical CI [-2.370,+6.810] 跨零，训练 seed 方向不稳定。",
       "promoted_data_route": null,
@@ -323,9 +530,15 @@
       "closure_reason": "未证明是稳定可复现的 reward recipe improvement；final_rank_mc 保持 operational default。",
       "predecessor": "M0_operational_control",
       "next_experiment": "D3_uncertainty_guided_exploration",
-      "commits": ["5a64e72"],
-      "artifact_paths": ["artifacts/experiments/model_pool_2026_07/reward_ab_2026_07_epoch3/eval_1000h/summary_six_seeds/reward_ab_eval_1000h_summary.json"],
-      "report_paths": ["training/docs/mortal/reward_ab_2026_07.md"]
+      "commits": [
+        "5a64e72"
+      ],
+      "artifact_paths": [
+        "artifacts/experiments/model_pool_2026_07/reward_ab_2026_07_epoch3/eval_1000h/summary_six_seeds/reward_ab_eval_1000h_summary.json"
+      ],
+      "report_paths": [
+        "training/docs/mortal/reward_ab_2026_07.md"
+      ]
     },
     {
       "experiment_id": "preserved_adam_legacy_continuation",
@@ -335,9 +548,24 @@
       "control": "fresh Adam",
       "variant": "preserved Adam moments",
       "changed_variable": "optimizer initialization：fresh → 继承 70k Adam state",
-      "fixed_variables": ["权重同为 70k", "scheduler/scaler/data stream/RNG fresh", "final_rank_mc", "behavior_action_mc"],
-      "training_seeds": [20260718, 20260719, 20260720, 20260721, 20260722, 20260723],
-      "evaluation_protocol": {"games_per_seed": 1000, "native_batch_games": 250},
+      "fixed_variables": [
+        "权重同为 70k",
+        "scheduler/scaler/data stream/RNG fresh",
+        "final_rank_mc",
+        "behavior_action_mc"
+      ],
+      "training_seeds": [
+        20260718,
+        20260719,
+        20260720,
+        20260721,
+        20260722,
+        20260723
+      ],
+      "evaluation_protocol": {
+        "games_per_seed": 1000,
+        "native_batch_games": 250
+      },
       "status": "promoted_recipe_only",
       "primary_result": "preserved-fresh = +3.825 Pt/半庄；hierarchical 95% CI [+0.285,+7.342]；6/6 同方向。preserved-70k = +2.018，CI 仍跨零。",
       "promoted_data_route": null,
@@ -347,9 +575,16 @@
       "closure_reason": "只晋级为 70k legacy continuation 的默认 optimizer initialization；未证明任何 continuation checkpoint 超过 70k。",
       "predecessor": "M0_operational_control",
       "next_experiment": "D3_uncertainty_guided_exploration",
-      "commits": ["779ba97", "08e9309"],
-      "artifact_paths": ["artifacts/experiments/model_pool_2026_07/optimizer_ab_2026_07_replication/eval_1000h/summary_six_seed/optimizer_ab_eval_1000h_summary.json"],
-      "report_paths": ["training/docs/mortal/optimizer_ab_2026_07.md"]
+      "commits": [
+        "779ba97",
+        "08e9309"
+      ],
+      "artifact_paths": [
+        "artifacts/experiments/model_pool_2026_07/optimizer_ab_2026_07_replication/eval_1000h/summary_six_seed/optimizer_ab_eval_1000h_summary.json"
+      ],
+      "report_paths": [
+        "training/docs/mortal/optimizer_ab_2026_07.md"
+      ]
     },
     {
       "experiment_id": "legal_mean_mc",
@@ -359,9 +594,21 @@
       "control": "behavior_action_mc",
       "variant": "legal_mean_mc",
       "changed_variable": "MC target 监督对象：behavior action Q → 合法动作 Q 均值",
-      "fixed_variables": ["M0 corpus", "final_rank_mc", "preserved Adam", "网络与 CQL"],
-      "training_seeds": [20260803, 20260804, 20260805],
-      "evaluation_protocol": {"games_per_seed": 1000, "native_batch_games": 250},
+      "fixed_variables": [
+        "M0 corpus",
+        "final_rank_mc",
+        "preserved Adam",
+        "网络与 CQL"
+      ],
+      "training_seeds": [
+        20260803,
+        20260804,
+        20260805
+      ],
+      "evaluation_protocol": {
+        "games_per_seed": 1000,
+        "native_batch_games": 250
+      },
       "status": "rejected",
       "primary_result": "V-C = -0.675 Pt/半庄；2/3 seed 为正；hierarchical CI [-9.060,+7.005] 跨零；行为上更保守但没有强度收益。",
       "promoted_data_route": null,
@@ -371,9 +618,15 @@
       "closure_reason": "没有证明 legal-mean objective 带来稳定强度提升；behavior_action_mc 保持 operational。",
       "predecessor": "M0_operational_control",
       "next_experiment": "D3_uncertainty_guided_exploration",
-      "commits": ["c4d8255"],
-      "artifact_paths": ["artifacts/experiments/model_pool_2026_07/legal_mean_value_ab_2026_07/eval_b250_1000h/summary/legal_mean_value_b250_summary.json"],
-      "report_paths": ["training/docs/mortal/legal_mean_value_ab_2026_07.md"]
+      "commits": [
+        "c4d8255"
+      ],
+      "artifact_paths": [
+        "artifacts/experiments/model_pool_2026_07/legal_mean_value_ab_2026_07/eval_b250_1000h/summary/legal_mean_value_b250_summary.json"
+      ],
+      "report_paths": [
+        "training/docs/mortal/legal_mean_value_ab_2026_07.md"
+      ]
     },
     {
       "experiment_id": "V2_74000_historical_candidate",
@@ -383,7 +636,9 @@
       "control": "K0_70k",
       "variant": "V2@74000",
       "changed_variable": "历史训练 recipe/data 组合；仅作为冻结对手/后代视角来源",
-      "fixed_variables": ["当前治理阶段不重新训练、不定义为正式 K lineage"],
+      "fixed_variables": [
+        "当前治理阶段不重新训练、不定义为正式 K lineage"
+      ],
       "training_seeds": [],
       "evaluation_protocol": null,
       "status": "analysis_only",
@@ -396,8 +651,12 @@
       "predecessor": "K0_70k",
       "next_experiment": "D3_uncertainty_guided_exploration",
       "commits": [],
-      "artifact_paths": ["artifacts/experiments/model_pool_2026_07/V2_population_mixed_v4_warmstart_2026_07/"],
-      "report_paths": ["training/docs/mortal/研发总览_当前.md"]
+      "artifact_paths": [
+        "artifacts/experiments/model_pool_2026_07/V2_population_mixed_v4_warmstart_2026_07/"
+      ],
+      "report_paths": [
+        "training/docs/mortal/研发总览_当前.md"
+      ]
     },
     {
       "experiment_id": "V3_74000_historical_candidate",
@@ -407,7 +666,9 @@
       "control": "K0_70k",
       "variant": "V3@74000",
       "changed_variable": "历史 final-rank MC continuation；仅作为冻结对手/后代视角来源",
-      "fixed_variables": ["当前治理阶段不重新训练、不定义为正式 K lineage"],
+      "fixed_variables": [
+        "当前治理阶段不重新训练、不定义为正式 K lineage"
+      ],
       "training_seeds": [],
       "evaluation_protocol": null,
       "status": "analysis_only",
@@ -420,8 +681,12 @@
       "predecessor": "K0_70k",
       "next_experiment": "D3_uncertainty_guided_exploration",
       "commits": [],
-      "artifact_paths": ["artifacts/experiments/model_pool_2026_07/V3_final_rank_mc_warmstart_2026_07/"],
-      "report_paths": ["training/docs/mortal/研发总览_当前.md"]
+      "artifact_paths": [
+        "artifacts/experiments/model_pool_2026_07/V3_final_rank_mc_warmstart_2026_07/"
+      ],
+      "report_paths": [
+        "training/docs/mortal/研发总览_当前.md"
+      ]
     },
     {
       "experiment_id": "C1_corpus_cql_interaction_2026_08",
@@ -446,16 +711,29 @@
         "1000 hanchans per condition per seed",
         "bootstrap B=5000 seed=20260818"
       ],
-      "training_seeds": [20260806, 20260807, 20260808],
+      "training_seeds": [
+        20260806,
+        20260807,
+        20260808
+      ],
       "evaluation_protocol": {
         "games_per_seed_per_condition": 1000,
         "objective_conditions": 2,
         "total_games": 6000,
         "native_batch_games": 250,
-        "seed_starts": [1700000, 1710000, 1720000],
+        "seed_starts": [
+          1700000,
+          1710000,
+          1720000
+        ],
         "seed_key": 8192,
         "seat_mode": "random",
-        "rank_points": [90, 45, 0, -135],
+        "rank_points": [
+          90,
+          45,
+          0,
+          -135
+        ],
         "bootstrap_reps": 5000,
         "bootstrap_seed": 20260818
       },
@@ -543,7 +821,10 @@
         "bootstrap": {
           "reps": 5000,
           "seed": 20260818,
-          "ci95": [2.96925, 19.485375]
+          "ci95": [
+            2.96925,
+            19.485375
+          ]
         },
         "gates": {
           "training_provenance": true,
@@ -576,6 +857,68 @@
         "authoritative_readout": "objective_gradient_shift_signal",
         "support_signal": false,
         "objective_gradient_shift_signal": true
+      }
+    },
+    {
+      "experiment_id": "C2_cql_calibration_gradient_attribution_2026_08",
+      "name_zh": "C2 CQL校准与梯度归因机制审计",
+      "category": "mechanistic_audit",
+      "parent_model": "K0_70k",
+      "control": "M0_operational_control (12 C1 checkpoints: M0/D1 x CURRENT/CQL_OFF x 3 seeds)",
+      "variant": "Shared panel attribution audit across 12,000 canonical rows",
+      "changed_variable": "Only read-only evaluation of behavior-Q calibration and autograd parameter-gradient conflict on identical shared panel",
+      "fixed_variables": [
+        "12 C1 frozen checkpoints",
+        "12,000 canonical rows (6,000 M0 + 6,000 D1 first occurrence per hanchan)",
+        "Centered targets {-3.0, -1.0, +1.0, +3.0}",
+        "60 microbatches per route (100 rows per batch)",
+        "model.eval() frozen BatchNorm mode",
+        "bootstrap reps 5000 seed 20260824",
+        "0 optimizer steps",
+        "0 new checkpoints"
+      ],
+      "training_seeds": [
+        20260806,
+        20260807,
+        20260808
+      ],
+      "evaluation_protocol": {
+        "shared_panel_rows": 12000,
+        "m0_rows": 6000,
+        "d1_rows": 6000,
+        "microbatches_per_route": 60,
+        "rows_per_microbatch": 100,
+        "bootstrap_reps": 5000,
+        "bootstrap_seed": 20260824
+      },
+      "status": "inconclusive",
+      "primary_result": "C2 readout = inconclusive; Q calibration vote = false (abs_residual mean interaction -0.03910 CI [-0.04935, -0.02894], overestimate_rate mean interaction -0.00758 CI [-0.01089, -0.00431] with 2/3 seeds negative); gradient conflict vote = false (gradient_cosine mean interaction -0.27502 CI [-0.31078, -0.24050], conflict rate mean interaction +0.35833 CI [+0.28056, +0.44167]). C1 causal interaction (+11.550 Pt/半庄) remains valid but is not explained by C2 calibration/gradient mechanisms.",
+      "promoted_data_route": null,
+      "promoted_checkpoint": null,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": "C2 mechanism attribution audit completed and closed. Q calibration signal is false due to inconsistent overestimate rate across seeds; gradient conflict signal is false with two seeds shifting opposite to hypothesis. Mechanism branch stopped; no recipe promotion; K1 remains null.",
+      "predecessor": "C1_corpus_cql_interaction_2026_08",
+      "next_experiment": null,
+      "commits": [
+        "8ec5f8ee94aac276d89302fdabef161c8bbab121",
+        "670fc5cd6ff9e10e9cb40d766a17e269e9047ae0"
+      ],
+      "artifact_paths": [
+        "artifacts/experiments/C2_cql_calibration_gradient_attribution_2026_08/c2_input_manifest.json",
+        "artifacts/experiments/C2_cql_calibration_gradient_attribution_2026_08/c2_summary.json"
+      ],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-08_C2_CQL校准与梯度归因_预注册设计.md",
+        "training/docs/mortal/experiments_zh/2026-08_C2_CQL校准与梯度归因_结果报告.md"
+      ],
+      "formal_adjudication": {
+        "schema": "keqing.mortal.c2_cql_mechanism_summary.v1",
+        "verdict": "inconclusive",
+        "calibration_vote": false,
+        "gradient_vote": false,
+        "summary_sha256": "02f54b48b428c695f8ce82e51f70888bfff1428065be1373d60d06a3915036ff",
+        "provenance_note": "summary implementation_commit records ca894adf; runner_sha256 matches git commit 670fc5c exactly."
       }
     }
   ]
