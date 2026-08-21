@@ -12,7 +12,7 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "C1 corpus-CQL causal interaction formal adjudication COMPLETE; result interaction_supported; no recipe/checkpoint promotion; K1 null",
+    "current_stage": "C2 mechanistic audit COMPLETE; result inconclusive; C1 interaction_supported maintained; no recipe/checkpoint promotion; K1 null",
     "next_experiment": null,
     "next_experiment_status": "not_selected",
     "prohibitions": [
@@ -25,8 +25,7 @@
       "C1 formal adjudication 已完成并得到 interaction_supported；该结果是机制 finding，不自动晋级 recipe、checkpoint 或 K1。",
       "不得重跑 C1 evaluation 或 formal adjudication、调整 seed/bootstrap/输出 artifact，或把 CQL_OFF 直接推广为 operational recipe。",
       "若继续研究 interaction 来源，必须建立新的 preregistered experiment ID；不得在 C1 身份下扩大数据量、直接训练 K1 或修改 intervention。"
-    ],
-    "stage": "C2 mechanistic audit COMPLETE; result inconclusive; C1 interaction_supported maintained; no recipe/checkpoint promotion; K1 null"
+    ]
   },
   "records": [
     {
@@ -901,8 +900,8 @@
       "predecessor": "C1_corpus_cql_interaction_2026_08",
       "next_experiment": null,
       "commits": [
-        "8ec5f8ee94aac276d89302fdabef161c8bbab121",
-        "670fc5cd6ff9e10e9cb40d766a17e269e9047ae0"
+        "670fc5cd6ff9e10e9cb40d766a17e269e9047ae0",
+        "5b4430ed6159c991e60aa7b049d5bf10874e0d4c"
       ],
       "artifact_paths": [
         "artifacts/experiments/C2_cql_calibration_gradient_attribution_2026_08/c2_input_manifest.json",
