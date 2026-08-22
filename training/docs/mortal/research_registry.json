@@ -12,9 +12,9 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "C3 absolute promotion confirmation COMPLETE; result not_supported; D1_CQL_OFF branch stopped; no recipe/checkpoint promotion; K1 null",
-    "next_experiment": null,
-    "next_experiment_status": "not_selected",
+    "current_stage": "M1 implementation complete (implemented_not_started); dataset prep, training, and evaluation pending execution",
+    "next_experiment": "M1_ext_mixed_expansion_2026_08",
+    "next_experiment_status": "implemented_not_started",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
@@ -981,6 +981,58 @@
         "promoted_k1_checkpoint": null,
         "summary_sha256": "44beb5ca34e4545b72adb2eb259f5e7da9ca7da9ca2da62250c8599eaf76cdb0"
       }
+    },
+    {
+      "experiment_id": "M1_ext_mixed_expansion_2026_08",
+      "name_zh": "M1 ext_mortal视角混合语料扩充实验",
+      "category": "corpus_expansion",
+      "parent_model": "K0_70k",
+      "control": "M0_operational_control (6,000 hanchans, ext_mortal perspective)",
+      "variant": "M1 = M0 (6,000) + D1 generation ext_mortal perspectives (6,000) = 12,000 total hanchans",
+      "changed_variable": "Training corpus expanded to 12,000 unique mixed-ecology hanchans (all ext_mortal perspective); identical architecture and training hyperparameters",
+      "fixed_variables": [
+        "K0_70k parent checkpoint (70,000 -> 72,000 steps)",
+        "Seeds 20260806, 20260807, 20260808",
+        "Preserved K0 Adam optimizer moments",
+        "Batch size 512, opt_step_every 1, AMP false",
+        "Objective behavior_action_mc, Reward final_rank_mc",
+        "CQL min_q_weight 5.0, next_rank_weight 0.2",
+        "12,000 unique hanchans with 0 overlap between M0 and D1",
+        "Fresh 3,000-game 4-player evaluation (seeds 20260806/07/08, hanchan 1930000..1950999)",
+        "Equal-seed hierarchical paired bootstrap (reps=5000, seed=20260830)"
+      ],
+      "training_seeds": [
+        20260806,
+        20260807,
+        20260808
+      ],
+      "evaluation_protocol": {
+        "total_games": 3000,
+        "total_shards": 12,
+        "games_per_shard": 250,
+        "games_per_seed": 1000,
+        "bootstrap_reps": 5000,
+        "bootstrap_seed": 20260830
+      },
+      "status": "implemented_not_started",
+      "primary_result": "M1 implementation complete (implemented_not_started); dataset builder, 3-seed training launcher, completion validator, 12-shard fresh evaluation runner, and summarizer with dual promotion gates implemented.",
+      "promoted_data_route": null,
+      "promoted_checkpoint": null,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": null,
+      "predecessor": "M0_operational_control",
+      "next_experiment": null,
+      "commits": [],
+      "artifact_paths": [
+        "artifacts/experiments/M1_ext_mixed_expansion_2026_08/dataset_prep_2026_08/file_index_m1.pth",
+        "artifacts/experiments/M1_ext_mixed_expansion_2026_08/training_implementation_2026_08/training_completion_closure.json",
+        "artifacts/experiments/M1_ext_mixed_expansion_2026_08/evaluation_implementation_2026_08/m1_summary.json"
+      ],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-08_M1_ext_mortal视角扩充实验_预注册设计.md"
+      ],
+      "formal_adjudication": null
     }
   ]
 }
