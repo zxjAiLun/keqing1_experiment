@@ -12,7 +12,7 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "C2 mechanistic audit COMPLETE; result inconclusive; C1 interaction_supported maintained; no recipe/checkpoint promotion; K1 null",
+    "current_stage": "C3 absolute promotion confirmation COMPLETE; result not_supported; D1_CQL_OFF branch stopped; no recipe/checkpoint promotion; K1 null",
     "next_experiment": null,
     "next_experiment_status": "not_selected",
     "prohibitions": [
@@ -24,7 +24,9 @@
       "D3_top2_discard_v1 数据路线已按预注册规则拒绝（0/3 方向 + hierarchical CI 下限 < 0）；不得修改 D3 参数后继续沿用同一实验身份，继续 uncertainty-guided exploration 必须建立新的 experiment ID；K1 尚未产生。",
       "C1 formal adjudication 已完成并得到 interaction_supported；该结果是机制 finding，不自动晋级 recipe、checkpoint 或 K1。",
       "不得重跑 C1 evaluation 或 formal adjudication、调整 seed/bootstrap/输出 artifact，或把 CQL_OFF 直接推广为 operational recipe。",
-      "若继续研究 interaction 来源，必须建立新的 preregistered experiment ID；不得在 C1 身份下扩大数据量、直接训练 K1 或修改 intervention。"
+      "若继续研究 interaction 来源，必须建立新的 preregistered experiment ID；不得在 C1 身份下扩大数据量、直接训练 K1 或修改 intervention。",
+      "禁止继续对 D1 或 CQL_OFF 进行调参、追加评测或扫描后代比例。",
+      "不再沿用 C1/C2/C3 机制分支，下一阶段将进行全新的 K1 路线重置（route reset）。"
     ]
   },
   "records": [
@@ -918,6 +920,66 @@
         "gradient_vote": false,
         "summary_sha256": "02f54b48b428c695f8ce82e51f70888bfff1428065be1373d60d06a3915036ff",
         "provenance_note": "summary implementation_commit records ca894adf; runner_sha256 matches git commit 670fc5c exactly."
+      }
+    },
+    {
+      "experiment_id": "C3_d1_cql_off_absolute_promotion_2026_08",
+      "name_zh": "C3 D1_CQL_OFF绝对强度晋级确认实验",
+      "category": "absolute_promotion",
+      "parent_model": "K0_70k",
+      "control": "K0_70k (promoted root) & M0_CURRENT (operational continuation control)",
+      "variant": "D1_CQL_OFF (seeds 20260806, 20260807, 20260808, 72k checkpoints from C1)",
+      "changed_variable": "Fresh independent 3000-game 4-player matched promotion evaluation on seeds 20260806/07/08",
+      "fixed_variables": [
+        "8 frozen checkpoints (70k, ext_mortal, 3x M0_CURRENT, 3x D1_CQL_OFF)",
+        "3,000 games across 12 shards (250 games/shard, 1000 games/seed)",
+        "Fresh game IDs 1900000..1920999 (no overlap with C1)",
+        "4-player fixed lineup order [70k, ext_mortal, M0_CURRENT, D1_CQL_OFF]",
+        "seed_key 8192, random seat, cuda, no-amp",
+        "tenhou_reference rank points [+90, +45, 0, -135]",
+        "ReachAccepted -1000 score parsing",
+        "equal-seed hierarchical paired bootstrap (reps=5000, seed=20260826, outer seed + inner game resampling)"
+      ],
+      "training_seeds": [
+        20260806,
+        20260807,
+        20260808
+      ],
+      "evaluation_protocol": {
+        "total_games": 3000,
+        "total_shards": 12,
+        "games_per_shard": 250,
+        "games_per_seed": 1000,
+        "bootstrap_reps": 5000,
+        "bootstrap_seed": 20260826
+      },
+      "status": "not_supported",
+      "primary_result": "D1_CQL_OFF absolute promotion clearly rejected: vs 70k equal-seed mean = -11.715 Pt/半庄 (seed means [-11.385, -21.555, -2.205], 0/3 positive, hierarchical CI95 [-21.945, -1.845]); vs M0_CURRENT equal-seed mean = -14.010 Pt/半庄 (seed means [-16.605, -18.270, -7.155], 0/3 positive, hierarchical CI95 [-20.820, -6.419]). Verdict = not_supported; no recipe/checkpoint promotion; K1 remains null.",
+      "promoted_data_route": null,
+      "promoted_checkpoint": null,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": "C3 promotion confirmation completed and closed. D1_CQL_OFF is significantly negative against both K0_70k and M0_CURRENT across all 3 seeds with both CI95 upper bounds below zero. D1/CQL_OFF branch is permanently stopped; K1 remains null.",
+      "predecessor": "C1_corpus_cql_interaction_2026_08",
+      "next_experiment": null,
+      "commits": [
+        "0726fd8b2db4d528e1f18b70805a6e2194be831b"
+      ],
+      "artifact_paths": [
+        "artifacts/experiments/C3_d1_cql_off_absolute_promotion_2026_08/c3_input_manifest.json",
+        "artifacts/experiments/C3_d1_cql_off_absolute_promotion_2026_08/c3_summary.json"
+      ],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-08_C3_D1_CQL_OFF绝对强度晋级实验_预注册设计.md",
+        "training/docs/mortal/experiments_zh/2026-08_C3_D1_CQL_OFF绝对强度晋级实验_结果报告.md"
+      ],
+      "formal_adjudication": {
+        "schema": "keqing.mortal.c3_promotion_summary.v1",
+        "verdict": "not_supported",
+        "recipe_promotion": false,
+        "checkpoint_promotion": false,
+        "promoted_k1_checkpoint": null,
+        "summary_sha256": "44beb5ca34e4545b72adb2eb259f5e7da9ca7da9ca2da62250c8599eaf76cdb0"
       }
     }
   ]
