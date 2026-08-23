@@ -12,9 +12,9 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "M1 dataset materialized and frozen (dataset_materialized_training_not_started); training prep, execution, and evaluation pending authorization",
-    "next_experiment": "M1_ext_mixed_expansion_2026_08",
-    "next_experiment_status": "dataset_materialized_training_not_started",
+    "current_stage": "M1 ext_mortal 混合语料扩充实验已完成 formal adjudication；假设未被支持（not_supported），数据路线与 Checkpoint 均未晋级，K1 保持为 null；下一实验尚未选择。",
+    "next_experiment": null,
+    "next_experiment_status": "not_selected",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
@@ -787,8 +787,8 @@
           "D1_project_owned_k0_view"
         ],
         "factor_b": {
-          "CURRENT": 5.0,
-          "CQL_OFF": 0.0
+          "CURRENT": 5,
+          "CQL_OFF": 0
         },
         "historical_current_training_reuse": "APPROVED",
         "new_training_runs": 6,
@@ -1014,13 +1014,13 @@
         "bootstrap_reps": 5000,
         "bootstrap_seed": 20260830
       },
-      "status": "dataset_materialized_training_not_started",
-      "primary_result": "M1 12,000-hanchan dataset materialized and frozen (M1-D0 complete, dataset_materialized_training_not_started). Frozen SHA256: manifest=206f5445544c55aaa88d909253ef5eb422274998c7e78c8b2d569d57b3c2dde4, file_index=3d190247fb6e16b423d786ec07bd3b0ff3cd8903306de70ba57955e45226c07f, player_names_by_file=7c1b0433a207ce1c941ff42c0d7dfbaa53087fd3968a9228927f214357164469, player_names=29f5f7c619c5481352e6fe29d4c5feb9442b6d1f1cec1ea7f4f405b330ce58d0. Verified 0 overlap, 6000 M0 ext + 6000 D1 ext, exactly 1 ext_mortal per game, and real trainer consumer compatibility. Training preparation, execution, and evaluation remain unauthorized (0 training steps, 0 games, K1=null).",
+      "status": "not_supported",
+      "primary_result": "M1 12,000半庄 ext_mortal视角混合语料扩充实验已完成全部闭环与 formal adjudication。评测包含 3,000局四人同桌对局（12 shards），hierarchical bootstrap (5000 reps) 检验显示：Pt(M1) - Pt(M0_CURRENT) 均值为 -2.970 pt（95% CI [-9.375, +3.435]，0/3 seed 正向），Pt(M1) - Pt(K0_70k) 均值为 +0.990 pt（95% CI [-4.515, +6.465]，0/3 seed 正向）。预注册 promotion gate 未通过，数据路线与 Checkpoint 均未晋级，K1 保持为 null。",
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
       "checkpoint_promotion": false,
-      "closure_reason": null,
+      "closure_reason": "预注册双重假设检验均未通过：Pt(M1) 相对 M0_CURRENT 均值为负（-2.970 pt，CI95 包含大幅负值且无 seed 稳定正向），相对 K0_70k 提升未达统计显著；证明在当前 recipe 下扩充 6000 局 ext_mortal 视角未带来稳定收益。",
       "predecessor": "M0_operational_control",
       "next_experiment": null,
       "commits": [
@@ -1029,7 +1029,12 @@
         "79b570e1a0d8ef0b8b0264dcff538b746a6692c8",
         "7055675a866df4cae1d0c61217840bd084a4375a",
         "3e485ecd8f90414a17e38fc0a0b273f4a9bf07be",
-        "428184c3a70f616e9da744007cfd32426fe03ef9"
+        "428184c3a70f616e9da744007cfd32426fe03ef9",
+        "a623a7503cf8945aac87f7af78fdbf1f1b4efd2a",
+        "ac3eb0a63d4951fa5144afb57e85d3f716ab35a4",
+        "0faca4300320568f233ce9eb04e15fe725b65e49",
+        "eafc621c191783952d56a8f3d300450865ad9a9a",
+        "3cfc86cb35c9bb78c422e08e6dc4e88ba2ccf8a6"
       ],
       "artifact_paths": [
         "artifacts/experiments/M1_ext_mixed_expansion_2026_08/dataset_prep_2026_08/file_index_m1.pth",
@@ -1037,9 +1042,28 @@
         "artifacts/experiments/M1_ext_mixed_expansion_2026_08/evaluation_implementation_2026_08/formal_adjudication/m1_summary.json"
       ],
       "report_paths": [
-        "training/docs/mortal/experiments_zh/2026-08_M1_ext_mortal视角扩充实验_预注册设计.md"
+        "training/docs/mortal/experiments_zh/2026-08_M1_ext_mortal视角扩充实验_预注册设计.md",
+        "training/docs/mortal/experiments_zh/2026-08_M1_ext_mortal视角扩充实验_最终结果报告.md"
       ],
-      "formal_adjudication": null
+      "formal_adjudication": {
+        "verdict": "not_supported",
+        "summary_path": "artifacts/experiments/M1_ext_mixed_expansion_2026_08/evaluation_implementation_2026_08/formal_adjudication/m1_summary.json",
+        "summary_sha256": "7f5ffbbcd2bb056ede68e2ff95b5c44f557fe39a311c4265f4ae56f3e6195d06",
+        "equal_seed_mean_x_vs_m0": -2.97,
+        "hierarchical_ci95_x_vs_m0": [
+          -9.375,
+          3.435375
+        ],
+        "equal_seed_mean_y_vs_70k": 0.99,
+        "hierarchical_ci95_y_vs_70k": [
+          -4.515375,
+          6.465375
+        ],
+        "recipe_promotion": false,
+        "checkpoint_promotion": false,
+        "promoted_k1_checkpoint": null
+      },
+      "promoted_k1_checkpoint": null
     }
   ]
 }
