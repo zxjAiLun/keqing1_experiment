@@ -9,12 +9,9 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
-import os
-import platform
 import subprocess
-import sys
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 import torch
@@ -188,6 +185,8 @@ def build_m1_dataset_files(
     d1_index_path: Path = SOURCE_D1_INDEX_PATH,
     expected_m0_count: int = 6000,
     expected_d1_count: int = 6000,
+    enforce_frozen_source_sha: bool = True,
+    approved_implementation_commit: str | None = None,
 ) -> tuple[Path, Path, Path, Path]:
     """Build M1 canonical file index dict, player mapping, labels, and dataset manifest."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -201,8 +200,24 @@ def build_m1_dataset_files(
         if p.exists():
             raise ContractError(f"M1 dataset artifact already exists: {p}. Refusing to overwrite.")
 
-    m0_files = load_file_index(m0_index_path)
-    d1_files = load_file_index(d1_index_path)
+    # Validate source index SHAs if enforce_frozen_source_sha is True
+    m0_p = Path(m0_index_path)
+    d1_p = Path(d1_index_path)
+    if not m0_p.exists():
+        raise FileNotFoundError(f"Source M0 index file missing: {m0_p}")
+    if not d1_p.exists():
+        raise FileNotFoundError(f"Source D1 index file missing: {d1_p}")
+
+    actual_m0_sha = sha256_file(m0_p)
+    actual_d1_sha = sha256_file(d1_p)
+    if enforce_frozen_source_sha:
+        if actual_m0_sha != SOURCE_M0_INDEX_SHA256:
+            raise ContractError(f"Source M0 index SHA mismatch: {actual_m0_sha} vs expected {SOURCE_M0_INDEX_SHA256}")
+        if actual_d1_sha != SOURCE_D1_INDEX_SHA256:
+            raise ContractError(f"Source D1 index SHA mismatch: {actual_d1_sha} vs expected {SOURCE_D1_INDEX_SHA256}")
+
+    m0_files = load_file_index(m0_p)
+    d1_files = load_file_index(d1_p)
 
     if len(m0_files) != expected_m0_count:
         raise ContractError(f"M0 file count is {len(m0_files)}, expected {expected_m0_count}")
@@ -287,15 +302,22 @@ def build_m1_dataset_files(
     manifest = {
         "schema": "keqing.mortal.m1_dataset_manifest.v1",
         "experiment_id": M1_EXPERIMENT_ID,
+        "implementation": {
+            "approved_commit": approved_implementation_commit,
+            "dataset_contract_path": "training/mortal/m1_dataset_contract_2026_08.py",
+            "dataset_contract_sha256": sha256_file(REPO_ROOT / "training/mortal/m1_dataset_contract_2026_08.py"),
+        },
         "preregistration": prereg_info,
         "source_m0_index": {
-            "path": str(Path(m0_index_path).resolve()),
-            "sha256": sha256_file(m0_index_path) if Path(m0_index_path).exists() else None,
+            "path": str(m0_p.resolve()),
+            "expected_sha256": SOURCE_M0_INDEX_SHA256 if enforce_frozen_source_sha else actual_m0_sha,
+            "actual_sha256": actual_m0_sha,
             "count": expected_m0_count,
         },
         "source_d1_index": {
-            "path": str(Path(d1_index_path).resolve()),
-            "sha256": sha256_file(d1_index_path) if Path(d1_index_path).exists() else None,
+            "path": str(d1_p.resolve()),
+            "expected_sha256": SOURCE_D1_INDEX_SHA256 if enforce_frozen_source_sha else actual_d1_sha,
+            "actual_sha256": actual_d1_sha,
             "count": expected_d1_count,
         },
         "dataset_artifacts": {
@@ -331,12 +353,12 @@ def build_m1_dataset_files(
     return m1_index_path, m1_mapping_path, m1_labels_path, manifest_path
 
 
-def validate_m1_dataset_integrity(m1_index_path: Path) -> dict[str, Any]:
+def validate_m1_dataset_integrity(m1_index_path: Path, expected_file_count: int = 12000) -> dict[str, Any]:
     """Verify integrity of M1 files: zero overlap, exactly 1 ext_mortal per game, all files exist."""
     files = load_file_index(m1_index_path)
     total_files = len(files)
-    if total_files != 12000 and total_files != 10:  # Allow 10 in small test fixtures
-        raise ContractError(f"Unexpected file count in M1 index: {total_files}")
+    if total_files != expected_file_count:
+        raise ContractError(f"Unexpected file count in M1 index: {total_files}, expected {expected_file_count}")
 
     half = total_files // 2
     m0_seeds: set[int] = set()
@@ -456,14 +478,13 @@ def generate_m1_training_config(
         },
     }
 
-    if m1_mapping_path and m1_mapping_path.exists():
-        with open(m1_mapping_path, "r", encoding="utf-8") as f:
-            cfg["dataset"]["player_names_by_file"] = json.load(f)
+    if m1_mapping_path is not None:
+        cfg["dataset"]["player_names_by_file"] = str(Path(m1_mapping_path).resolve())
 
     return cfg
 
 
-def validate_all_8_checkpoints(m1_checkpoints_dict: dict[int, Path | str] | None = None) -> tuple[bool, dict[str, Any]]:
+def validate_all_8_checkpoints(m1_checkpoints: dict[int, dict[str, str]] | None = None) -> tuple[bool, dict[str, Any]]:
     """Verify all 8 checkpoints (70k, ext_mortal, 3x M0_CURRENT, 3x M1_CURRENT)."""
     records: dict[str, Any] = {}
     all_ok = True
@@ -472,23 +493,23 @@ def validate_all_8_checkpoints(m1_checkpoints_dict: dict[int, Path | str] | None
     p_70k = Path(K0_70K_PATH)
     if not p_70k.exists():
         all_ok = False
-        records["70k"] = {"path": str(p_70k), "status": "missing"}
+        records["70k"] = {"path": str(p_70k), "status": "missing", "match": False}
     else:
         sha = sha256_file(p_70k)
         match = (sha == K0_70K_SHA256)
         all_ok = all_ok and match
-        records["70k"] = {"path": str(p_70k), "sha256": sha, "match": match}
+        records["70k"] = {"path": str(p_70k), "expected_sha256": K0_70K_SHA256, "sha256": sha, "match": match}
 
     # 2. ext_mortal
     p_ext = Path(EXT_MORTAL_PATH)
     if not p_ext.exists():
         all_ok = False
-        records["ext_mortal"] = {"path": str(p_ext), "status": "missing"}
+        records["ext_mortal"] = {"path": str(p_ext), "status": "missing", "match": False}
     else:
         sha = sha256_file(p_ext)
         match = (sha == EXT_MORTAL_SHA256)
         all_ok = all_ok and match
-        records["ext_mortal"] = {"path": str(p_ext), "sha256": sha, "match": match}
+        records["ext_mortal"] = {"path": str(p_ext), "expected_sha256": EXT_MORTAL_SHA256, "sha256": sha, "match": match}
 
     # 3. M0_CURRENT (3 seeds)
     for s, meta in M0_CURRENT_CHECKPOINTS.items():
@@ -496,33 +517,39 @@ def validate_all_8_checkpoints(m1_checkpoints_dict: dict[int, Path | str] | None
         label = f"M0_CURRENT_{s}"
         if not p.exists():
             all_ok = False
-            records[label] = {"path": str(p), "status": "missing"}
+            records[label] = {"path": str(p), "status": "missing", "match": False}
         else:
             sha = sha256_file(p)
             match = (sha == meta["sha256"])
             all_ok = all_ok and match
-            records[label] = {"path": str(p), "sha256": sha, "match": match}
+            records[label] = {"path": str(p), "expected_sha256": meta["sha256"], "sha256": sha, "match": match}
 
     # 4. M1_CURRENT (3 seeds)
-    if m1_checkpoints_dict is not None:
+    if m1_checkpoints is not None:
         for s in SEEDS:
-            p_val = m1_checkpoints_dict.get(s)
+            item = m1_checkpoints.get(s)
             label = f"M1_CURRENT_{s}"
-            if not p_val or not Path(p_val).exists():
+            if not item or not item.get("path"):
                 all_ok = False
-                records[label] = {"path": str(p_val) if p_val else None, "status": "missing"}
+                records[label] = {"path": None, "status": "missing", "match": False}
+                continue
+            p = Path(item["path"])
+            exp_sha = item.get("sha256")
+            if not p.exists():
+                all_ok = False
+                records[label] = {"path": str(p), "expected_sha256": exp_sha, "status": "missing", "match": False}
             else:
-                p = Path(p_val)
-                sha = sha256_file(p)
-                records[label] = {"path": str(p), "sha256": sha, "match": True}
+                actual_sha = sha256_file(p)
+                match = (actual_sha == exp_sha) if exp_sha else False
+                all_ok = all_ok and match
+                records[label] = {"path": str(p), "expected_sha256": exp_sha, "sha256": actual_sha, "match": match}
     else:
-        # If not provided, check default expected path
         for s in SEEDS:
-            default_p = M1_TRAINING_DIR / f"M1_variant/seed_{s}/checkpoints/mortal_{TARGET_STEP}.pth"
             label = f"M1_CURRENT_{s}"
+            default_p = M1_TRAINING_DIR / f"M1_variant/seed_{s}/checkpoints/mortal_{TARGET_STEP}.pth"
             if not default_p.exists():
                 all_ok = False
-                records[label] = {"path": str(default_p), "status": "missing"}
+                records[label] = {"path": str(default_p), "status": "missing", "match": False}
             else:
                 sha = sha256_file(default_p)
                 records[label] = {"path": str(default_p), "sha256": sha, "match": True}

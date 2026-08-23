@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
-import os
+import platform
 import shlex
 import subprocess
 import sys
@@ -20,10 +21,7 @@ from training.mortal.m1_dataset_contract_2026_08 import (
     AMP,
     DEVICE,
     EXT_MORTAL_PATH,
-    EXT_MORTAL_SHA256,
-    GAMES_PER_SHARD,
     K0_70K_PATH,
-    K0_70K_SHA256,
     M0_CURRENT_CHECKPOINTS,
     M1_EVALUATION_DIR,
     M1_EXPERIMENT_ID,
@@ -32,13 +30,10 @@ from training.mortal.m1_dataset_contract_2026_08 import (
     REPO_ROOT,
     SEAT_MODE,
     SEED_KEY,
-    SEEDS,
     SHARD_CONFIG,
     SHARDS,
-    TOTAL_GAMES,
     ContractError,
     git_blob_oid,
-    git_info,
     sha256_file,
     validate_all_8_checkpoints,
 )
@@ -56,10 +51,16 @@ class AuthorizationError(RuntimeError):
     """Raised when evaluation execution is attempted without required authorization."""
 
 
+def compute_evaluation_confirmation_token(*, approved_commit: str, plan_sha256: str) -> str:
+    """Compute deterministic confirmation token for evaluation execution."""
+    payload = f"{approved_commit}:{plan_sha256}".encode()
+    return hashlib.sha256(payload).hexdigest()[:16]
+
+
 def build_shard_command(
     shard_id: int,
     output_dir: Path,
-    m1_checkpoints: dict[int, Path | str] | None = None,
+    m1_checkpoints: dict[int, dict[str, str]] | None = None,
     device: str = DEVICE,
 ) -> list[str]:
     """Construct exact command-line arguments for four_player_native.py evaluator on a specific shard."""
@@ -69,7 +70,7 @@ def build_shard_command(
     count = cfg["games_count"]
 
     if m1_checkpoints and seed in m1_checkpoints:
-        m1_path = Path(m1_checkpoints[seed])
+        m1_path = Path(m1_checkpoints[seed]["path"])
     else:
         m1_path = M1_TRAINING_DIR / f"M1_variant/seed_{seed}/checkpoints/mortal_72000.pth"
 
@@ -104,6 +105,10 @@ def prepare_evaluation_plan(
     training_completion_closure_path: Path | None = None,
 ) -> dict[str, Any]:
     """Materialize frozen evaluation plan binding all 8 checkpoints and 12 shards."""
+    plan_path = output_dir / "evaluation_plan.json"
+    if plan_path.exists():
+        raise ContractError(f"Evaluation plan already exists at {plan_path}. Refusing to overwrite.")
+
     if training_completion_closure_path is None:
         training_completion_closure_path = M1_TRAINING_DIR / "training_completion_closure.json"
 
@@ -118,21 +123,35 @@ def prepare_evaluation_plan(
 
     closure_sha = sha256_file(training_completion_closure_path)
 
-    m1_checkpoints: dict[int, Path | str] = {}
+    m1_checkpoints: dict[int, dict[str, str]] = {}
     for run in closure.get("runs", []):
         s = int(run["training_seed"])
-        m1_checkpoints[s] = run["final_checkpoint_path"]
+        m1_checkpoints[s] = {
+            "path": run["final_checkpoint_path"],
+            "sha256": run["final_checkpoint_sha256"],
+        }
 
     ckpt_ok, ckpt_records = validate_all_8_checkpoints(m1_checkpoints)
     if not ckpt_ok:
         raise ContractError(f"Checkpoint verification failed in evaluation plan preparation: {json.dumps(ckpt_records, indent=2)}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    plan_path = output_dir / "evaluation_plan.json"
+
+    # Build shard future commands using the exact M1 checkpoints from closure
+    shards_with_commands = []
+    for cfg in SHARD_CONFIG:
+        s_id = cfg["shard_id"]
+        cmd = build_shard_command(s_id, output_dir, m1_checkpoints=m1_checkpoints, device=DEVICE)
+        shards_with_commands.append({
+            **cfg,
+            "command": cmd,
+            "command_str": shlex.join(cmd),
+        })
 
     plan = {
         "schema": "keqing.mortal.m1_evaluation_plan.v1",
         "experiment_id": M1_EXPERIMENT_ID,
+        "training_completion_closure_path": str(training_completion_closure_path.resolve()),
         "training_completion_closure_sha256": closure_sha,
         "evaluator": {
             "path": str(EVALUATOR_PATH.resolve()),
@@ -150,7 +169,11 @@ def prepare_evaluation_plan(
             "require_cuda": True,
         },
         "checkpoints": ckpt_records,
-        "shards": SHARD_CONFIG,
+        "shards": shards_with_commands,
+        "runtime_provenance": {
+            "python_version": platform.python_version(),
+            "platform": platform.platform(),
+        },
     }
 
     with open(plan_path, "w", encoding="utf-8") as f:
@@ -165,8 +188,9 @@ def prepare_evaluation_plan(
 def execute_shard(
     shard_id: int,
     output_dir: Path = M1_EVALUATION_DIR,
-    m1_checkpoints: dict[int, Path | str] | None = None,
+    m1_checkpoints: dict[int, dict[str, str]] | None = None,
     device: str = DEVICE,
+    plan: dict[str, Any] | None = None,
 ) -> None:
     """Run four_player_native evaluation for a single shard, refusing to overwrite non-empty output."""
     cfg = next(c for c in SHARD_CONFIG if c["shard_id"] == shard_id)
@@ -186,7 +210,12 @@ def execute_shard(
 
     shard_out_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = build_shard_command(shard_id, output_dir, m1_checkpoints=m1_checkpoints, device=device)
+    if plan:
+        shard_info = next(s for s in plan["shards"] if s["shard_id"] == shard_id)
+        cmd = shard_info["command"]
+    else:
+        cmd = build_shard_command(shard_id, output_dir, m1_checkpoints=m1_checkpoints, device=device)
+
     print(f"Executing shard {shard_id:02d} (seed {cfg['training_seed']}, hanchan {cfg['start_hanchan']}..{cfg['end_hanchan']})...")
     print(f"Command: {shlex.join(cmd)}")
     
@@ -199,21 +228,54 @@ def run_full_evaluation(
     output_dir: Path = M1_EVALUATION_DIR,
     shard: int | None = None,
     confirmation_token: str | None = None,
+    enforce_canonical_paths: bool = True,
 ) -> None:
-    """Execute evaluation for all shards, strictly requiring authorization."""
+    """Execute evaluation for all shards, strictly requiring authorization and plan SHA match."""
     if not EVALUATION_AUTHORIZED:
         raise AuthorizationError(
             "M1 evaluation execution is NOT authorized. "
             "Formal evaluation requires completed training, verified closure, and an authorization-only commit."
         )
 
+    if enforce_canonical_paths and output_dir.resolve() != M1_EVALUATION_DIR.resolve():
+        raise ContractError(f"Non-canonical evaluation output directory in formal execute: {output_dir}")
+
+    if not APPROVED_M1_IMPLEMENTATION_COMMIT:
+        raise AuthorizationError("APPROVED_M1_IMPLEMENTATION_COMMIT is required for evaluation execution")
+    if not AUTHORIZED_TRAINING_COMPLETION_SHA256:
+        raise AuthorizationError("AUTHORIZED_TRAINING_COMPLETION_SHA256 is required for evaluation execution")
+    if not AUTHORIZED_EVALUATION_PLAN_SHA256:
+        raise AuthorizationError("AUTHORIZED_EVALUATION_PLAN_SHA256 is required for evaluation execution")
+
     plan_path = output_dir / "evaluation_plan.json"
     if not plan_path.exists():
         raise ContractError(f"Evaluation plan missing: {plan_path}. Run --prepare-plan first.")
 
+    current_plan_sha = sha256_file(plan_path)
+    if current_plan_sha != AUTHORIZED_EVALUATION_PLAN_SHA256:
+        raise ContractError(f"Evaluation plan SHA mismatch: {current_plan_sha} vs expected {AUTHORIZED_EVALUATION_PLAN_SHA256}")
+
+    expected_token = compute_evaluation_confirmation_token(
+        approved_commit=APPROVED_M1_IMPLEMENTATION_COMMIT,
+        plan_sha256=AUTHORIZED_EVALUATION_PLAN_SHA256,
+    )
+    if confirmation_token != expected_token:
+        raise AuthorizationError(f"Invalid confirmation token: {confirmation_token}, expected {expected_token}")
+
+    with open(plan_path, "r", encoding="utf-8") as f:
+        plan = json.load(f)
+
+    # Re-verify all 8 checkpoints from plan
+    ckpt_ok, ckpt_records = validate_all_8_checkpoints({
+        int(lbl.split("_")[-1]): {"path": rec["path"], "sha256": rec["expected_sha256"]}
+        for lbl, rec in plan["checkpoints"].items() if lbl.startswith("M1_CURRENT")
+    })
+    if not ckpt_ok:
+        raise ContractError(f"Pre-execution checkpoint re-verification failed: {json.dumps(ckpt_records, indent=2)}")
+
     target_shards = [shard] if shard is not None else list(SHARDS)
     for s_id in target_shards:
-        execute_shard(s_id, output_dir=output_dir)
+        execute_shard(s_id, output_dir=output_dir, plan=plan)
 
 
 def main():

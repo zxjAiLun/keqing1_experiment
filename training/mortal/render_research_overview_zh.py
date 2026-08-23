@@ -48,6 +48,9 @@ ALLOWED_STATUSES = {
     "gate_passed",
     "generation_closed",
     "not_selected",
+    "inconclusive",
+    "not_supported",
+    "implemented_not_started",
 }
 
 
@@ -126,6 +129,9 @@ def status_text(status: str) -> str:
         "gate_passed": "首个 B250 gate 已通过",
         "generation_closed": "6000h 生成已闭环",
         "not_selected": "未选择",
+        "inconclusive": "已结束（无定论）",
+        "not_supported": "已结束（不晋级）",
+        "implemented_not_started": "已实现，未启动",
     }[status]
 
 

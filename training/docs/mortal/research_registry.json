@@ -1015,7 +1015,7 @@
         "bootstrap_seed": 20260830
       },
       "status": "implemented_not_started",
-      "primary_result": "M1 implementation hardened (M1-I0R1 complete; implemented_not_started); dataset builder with canonical dict index schema and manifest, decoupled training launcher with fail-closed authorization guards, complete 72k completion validator (steps plural), 12-shard evaluation runner with all 8 checkpoints bound, and hardened atomic summarizer implemented. All real data preparation, training, and evaluation remain unauthorized (0 data, 0 steps, 0 games, K1=null).",
+      "primary_result": "M1 implementation execution paths, authorization bindings, and fail-closed validation repaired (M1-I0R2 complete; implemented_not_started). Config path strings, fail-closed authorization tokens and manifest SHAs, strict completion validation blocks, exact 8-checkpoint closure binding in evaluation plan, and production schema checks for four_player_native metrics and detailed_stats verified. All formal dataset generation, training, and evaluation remain unauthorized (0 data, 0 steps, 0 games, K1=null).",
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
@@ -1024,7 +1024,9 @@
       "predecessor": "M0_operational_control",
       "next_experiment": null,
       "commits": [
-        "fb849f5cfeed893a4df54bef9e7adfd2bea5a277"
+        "fb849f5cfeed893a4df54bef9e7adfd2bea5a277",
+        "32f4da870838d431f266a357dc04fa47d9f87636",
+        "7efd9892e090be9ffa09c5373f70de6dced49611"
       ],
       "artifact_paths": [
         "artifacts/experiments/M1_ext_mixed_expansion_2026_08/dataset_prep_2026_08/file_index_m1.pth",

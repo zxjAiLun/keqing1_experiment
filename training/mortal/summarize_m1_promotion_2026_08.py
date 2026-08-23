@@ -20,20 +20,12 @@ if str(SCRIPT_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_REPO_ROOT))
 
 from training.mortal.m1_dataset_contract_2026_08 import (
-    BOOTSTRAP_CI,
     BOOTSTRAP_REPS,
     BOOTSTRAP_SEED,
-    CANONICAL_PROMOTION_CHECKPOINT,
     GAMES_PER_SHARD,
-    K0_70K_PATH,
-    K0_70K_SHA256,
-    M0_CURRENT_CHECKPOINTS,
-    M1_DATASET_DIR,
     M1_EVALUATION_DIR,
     M1_EXPERIMENT_ID,
-    M1_TRAINING_DIR,
     PREREG_COMMIT,
-    PREREG_PATH,
     RANK_POINTS,
     REPO_ROOT,
     SEED_KEY,
@@ -44,8 +36,6 @@ from training.mortal.m1_dataset_contract_2026_08 import (
     ContractError,
     adjudicate_m1_promotion,
     equal_seed_hierarchical_bootstrap,
-    git_blob_oid,
-    git_info,
     sha256_file,
     validate_all_8_checkpoints,
 )
@@ -85,12 +75,13 @@ def compute_final_ranks(scores: list[float]) -> list[int]:
     return ranks
 
 
-def authoritative_ranks_from_stat(path: Path) -> list[int] | None:
-    """Check native libriichi Stat per-seat final ranks (0-based seats -> 0..3 rank)."""
+def authoritative_ranks_from_stat(path: Path) -> list[int]:
+    """Check native libriichi Stat per-seat final ranks (0-based seats -> 0..3 rank, fail closed)."""
     try:
-        from libriichi.stat import Stat  # noqa: PLC0415
-    except ImportError:
-        return None
+        from libriichi.stat import Stat
+    except ImportError as exc:
+        raise ContractError(f"libriichi Stat is required for formal evaluation audit: {exc}") from exc
+
     try:
         with gzip.open(path, "rt", encoding="utf-8") as handle:
             raw_log = handle.read()
@@ -99,11 +90,11 @@ def authoritative_ranks_from_stat(path: Path) -> list[int] | None:
             stat = Stat.from_log(raw_log, player_id)
             rank = [rank_id - 1 for rank_id in (1, 2, 3, 4) if getattr(stat, f"rank_{rank_id}") == 1]
             if len(rank) != 1:
-                return None
+                raise ContractError(f"{path}: ambiguous Stat rank for player {player_id}: {rank}")
             ranks.append(rank[0])
         return ranks
-    except Exception:
-        return None
+    except Exception as exc:
+        raise ContractError(f"libriichi Stat parsing failed on {path.name}: {exc}") from exc
 
 
 def parse_raw_log_file(
@@ -111,6 +102,7 @@ def parse_raw_log_file(
     expected_training_seed: int,
     expected_hanchan_min: int,
     expected_hanchan_max: int,
+    enforce_stat_equivalence: bool = True,
 ) -> dict[str, Any]:
     """Parse one gzipped JSONL log file and validate all exact structural gates."""
     m = LOG_NAME_RE.match(path.name)
@@ -151,10 +143,10 @@ def parse_raw_log_file(
 
     ranks = compute_final_ranks(scores)
     
-    # Check Stat equivalence if available
-    stat_ranks = authoritative_ranks_from_stat(path)
-    if stat_ranks is not None and stat_ranks != ranks:
-        raise ContractError(f"Rank discrepancy with libriichi Stat in {path.name}: event_ranks={ranks} vs stat_ranks={stat_ranks}")
+    if enforce_stat_equivalence:
+        stat_ranks = authoritative_ranks_from_stat(path)
+        if stat_ranks != ranks:
+            raise ContractError(f"Rank discrepancy with libriichi Stat in {path.name}: event_ranks={ranks} vs stat_ranks={stat_ranks}")
 
     pts = [RANK_POINTS[r] for r in ranks]
     label_to_pt = {label: pts[idx] for idx, label in enumerate(names)}
@@ -168,8 +160,13 @@ def parse_raw_log_file(
     }
 
 
-def parse_shard_logs(shard_dir: Path, shard_cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    """Parse all game logs in shard_dir/logs/ directory and verify rank count consistency."""
+def parse_shard_logs(
+    shard_dir: Path,
+    shard_cfg: dict[str, Any],
+    enforce_stat_equivalence: bool = True,
+    enforce_metrics_check: bool = True,
+) -> list[dict[str, Any]]:
+    """Parse all game logs in shard_dir/logs/ directory and verify rank count consistency (3-way check)."""
     logs_dir = shard_dir / "logs"
     if not logs_dir.exists():
         raise FileNotFoundError(f"Shard logs directory not found: {logs_dir}")
@@ -189,6 +186,7 @@ def parse_shard_logs(shard_dir: Path, shard_cfg: dict[str, Any]) -> list[dict[st
             expected_training_seed=shard_cfg["training_seed"],
             expected_hanchan_min=shard_cfg["start_hanchan"],
             expected_hanchan_max=shard_cfg["end_hanchan"],
+            enforce_stat_equivalence=enforce_stat_equivalence,
         )
         gid = rec["game_id"]
         if gid in seen_game_ids:
@@ -201,27 +199,59 @@ def parse_shard_logs(shard_dir: Path, shard_cfg: dict[str, Any]) -> list[dict[st
                 label_rank_counts[lbl] = [0, 0, 0, 0]
             label_rank_counts[lbl][rk] += 1
 
-    # Check metrics.json if present
-    metrics_path = shard_dir / "metrics.json"
-    if metrics_path.exists():
-        try:
-            with open(metrics_path, "r", encoding="utf-8") as f:
-                metrics = json.load(f)
-            for lbl, counts in label_rank_counts.items():
-                if lbl in metrics:
-                    m_counts = metrics[lbl].get("rank_counts")
-                    if m_counts is not None and m_counts != counts:
-                        raise ContractError(f"Rank count mismatch in {shard_dir.name} metrics.json for {lbl}: {m_counts} vs parsed {counts}")
-        except Exception as exc:
-            raise ContractError(f"Error checking metrics.json in {shard_dir.name}: {exc}") from exc
+    if enforce_metrics_check:
+        # Check metrics.json
+        metrics_path = shard_dir / "metrics.json"
+        if not metrics_path.exists():
+            raise ContractError(f"metrics.json missing in shard directory: {shard_dir}")
+        with open(metrics_path, "r", encoding="utf-8") as f:
+            metrics_doc = json.load(f)
+
+        run_meta = metrics_doc.get("run", {})
+        if run_meta.get("kind") != "four_player_native":
+            raise ContractError(f"metrics.json run.kind mismatch in {shard_dir.name}: {run_meta.get('kind')}")
+        if run_meta.get("games") != expected_count:
+            raise ContractError(f"metrics.json run.games mismatch in {shard_dir.name}: {run_meta.get('games')}")
+        if run_meta.get("seed_key") != SEED_KEY:
+            raise ContractError(f"metrics.json run.seed_key mismatch in {shard_dir.name}")
+        if run_meta.get("seed_start") != shard_cfg["start_hanchan"]:
+            raise ContractError(f"metrics.json run.seed_start mismatch in {shard_dir.name}")
+
+        metrics_data = metrics_doc.get("metrics", {})
+        for lbl, counts in label_rank_counts.items():
+            if lbl not in metrics_data:
+                raise ContractError(f"Label {lbl} missing from metrics.json in {shard_dir.name}")
+            m_counts = metrics_data[lbl].get("rank_counts")
+            if m_counts != counts:
+                raise ContractError(f"Rank count mismatch in {shard_dir.name} metrics.json for {lbl}: {m_counts} vs parsed {counts}")
+
+        # Check detailed_stats.json
+        detailed_path = shard_dir / "detailed_stats.json"
+        if not detailed_path.exists():
+            raise ContractError(f"detailed_stats.json missing in shard directory: {shard_dir}")
+        with open(detailed_path, "r", encoding="utf-8") as f:
+            detailed_doc = json.load(f)
+
+        players_data = detailed_doc.get("players", {})
+        for lbl, counts in label_rank_counts.items():
+            if lbl not in players_data:
+                raise ContractError(f"Label {lbl} missing from detailed_stats.json in {shard_dir.name}")
+            raw_stat = players_data[lbl].get("raw", {})
+            if raw_stat.get("game") != expected_count:
+                raise ContractError(f"detailed_stats game count mismatch for {lbl} in {shard_dir.name}")
+            d_counts = [raw_stat.get("rank_1"), raw_stat.get("rank_2"), raw_stat.get("rank_3"), raw_stat.get("rank_4")]
+            if d_counts != counts:
+                raise ContractError(f"Rank count mismatch in {shard_dir.name} detailed_stats.json for {lbl}: {d_counts} vs parsed {counts}")
 
     return records
 
 
 def run_summarizer(
     output_root: Path = M1_EVALUATION_DIR,
-    m1_checkpoints: dict[int, Path | str] | None = None,
+    m1_checkpoints: dict[int, dict[str, str]] | None = None,
     destination_file: Path | None = None,
+    enforce_stat_equivalence: bool = True,
+    enforce_metrics_check: bool = True,
 ) -> dict[str, Any]:
     """Summarize full M1 evaluation output and publish atomic formal summary."""
     if destination_file is None:
@@ -232,6 +262,8 @@ def run_summarizer(
         raise ContractError(f"Destination summary file already exists: {destination_file}. Refusing to overwrite.")
 
     ckpt_ok, ckpt_records = validate_all_8_checkpoints(m1_checkpoints)
+    if not ckpt_ok:
+        raise ContractError(f"Checkpoint verification failed in summarizer: {json.dumps(ckpt_records, indent=2)}")
 
     shards_found = {}
     records_by_seed: dict[int, list[dict[str, Any]]] = {s: [] for s in SEEDS}
@@ -245,12 +277,17 @@ def run_summarizer(
             shards_found[shard_id] = {"exists": False, "count": 0}
             continue
         try:
-            parsed = parse_shard_logs(shard_dir, cfg)
+            parsed = parse_shard_logs(
+                shard_dir,
+                cfg,
+                enforce_stat_equivalence=enforce_stat_equivalence,
+                enforce_metrics_check=enforce_metrics_check,
+            )
             shards_found[shard_id] = {"exists": True, "count": len(parsed), "valid": True}
             records_by_seed[seed].extend(parsed)
             for r in parsed:
                 all_game_ids.add(r["game_id"])
-        except Exception as exc:
+        except (ContractError, ValueError, OSError, json.JSONDecodeError) as exc:
             shards_found[shard_id] = {"exists": True, "count": 0, "valid": False, "error": str(exc)}
 
     total_parsed_games = sum(len(recs) for recs in records_by_seed.values())
@@ -271,23 +308,7 @@ def run_summarizer(
     gates_pass = all(gates.values())
 
     if not gates_pass:
-        adjudication = adjudicate_m1_promotion(
-            x_seed_means={s: 0.0 for s in SEEDS},
-            x_ci95=(0.0, 0.0),
-            y_seed_means={s: 0.0 for s in SEEDS},
-            y_ci95=(0.0, 0.0),
-            gates_pass=False,
-        )
-        summary = {
-            "schema": "keqing.mortal.m1_promotion_summary.v1",
-            "experiment_id": M1_EXPERIMENT_ID,
-            "hard_gates": gates,
-            "checkpoints": ckpt_records,
-            "shards": shards_found,
-            "adjudication": adjudication,
-        }
-        _atomic_write_json(summary, destination_file)
-        return summary
+        raise ContractError(f"Formal evaluation hard gates failed: {json.dumps(gates, indent=2)}")
 
     # Compute paired deltas x and y for each game
     x_by_seed = {}
@@ -395,14 +416,12 @@ def main():
         default=M1_EVALUATION_DIR,
         help="Path to evaluation artifacts output directory",
     )
-    parser.add_argument(
-        "--destination",
-        type=Path,
-        default=None,
-        help="Destination summary JSON path",
-    )
     args = parser.parse_args()
-    run_summarizer(output_root=args.output_dir, destination_file=args.destination)
+
+    if args.output_dir.resolve() != M1_EVALUATION_DIR.resolve():
+        raise ContractError(f"Formal summary execution requires canonical directory: {M1_EVALUATION_DIR}")
+
+    run_summarizer(output_root=M1_EVALUATION_DIR)
 
 
 if __name__ == "__main__":

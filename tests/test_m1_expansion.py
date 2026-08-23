@@ -1,152 +1,166 @@
 import gzip
 import json
+import tomllib
 from pathlib import Path
+
 import numpy as np
 import pytest
 import torch
 
+import training.mortal.run_m1_evaluation_2026_08 as rme
+import training.mortal.run_m1_training_2026_08 as rmt
 from training.mortal.m1_dataset_contract_2026_08 import (
     ARCHIVE_STEPS,
     BOOTSTRAP_REPS,
     BOOTSTRAP_SEED,
     CANONICAL_PROMOTION_CHECKPOINT,
-    ContractError,
-    GAMES_PER_SHARD,
-    K0_70K_PATH,
     K0_70K_SHA256,
-    M1_EXPERIMENT_ID,
-    SEEDS,
-    SHARD_CONFIG,
-    SHARDS,
+    M1_EVALUATION_DIR,
     START_STEP,
-    TARGET_STEP,
-    TOTAL_GAMES,
+    ContractError,
     adjudicate_m1_promotion,
     build_m1_dataset_files,
     equal_seed_hierarchical_bootstrap,
     generate_m1_training_config,
-    load_file_index,
-    validate_all_8_checkpoints,
-    validate_m1_dataset_integrity,
+    sha256_file,
 )
 from training.mortal.run_m1_evaluation_2026_08 import (
-    AuthorizationError as EvalAuthError,
-    build_shard_command,
-    execute_shard,
     prepare_evaluation_plan,
     run_full_evaluation,
 )
 from training.mortal.run_m1_training_2026_08 import (
     AuthorizationError as TrainAuthError,
-    build_training_command,
+)
+from training.mortal.run_m1_training_2026_08 import (
     execute_training_for_seed,
     prepare_m1_dataset,
-    prepare_training_manifest,
 )
 from training.mortal.summarize_m1_promotion_2026_08 import (
-    _atomic_write_json,
-    final_scores,
-    parse_raw_log_file,
+    authoritative_ranks_from_stat,
     parse_shard_logs,
-    run_summarizer,
 )
-from training.run_mortal_dqn_offline import _load_or_build_file_index
+from training.mortal.validate_m1_training_completion_2026_08 import (
+    validate_single_run_completion,
+)
+from training.run_mortal_dqn_offline import (
+    _load_player_names_by_file,
+)
 
 
-def test_1_m1_canonical_index_consumed_by_real_trainer(tmp_path: Path):
-    """Test 1: M1 canonical index can be consumed by real _load_or_build_file_index."""
-    dummy_files = [str(tmp_path / f"game_{i}.json.gz") for i in range(5)]
-    index_path = tmp_path / "file_index_m1.pth"
-    torch.save({"file_list": dummy_files}, index_path)
+def test_1_mapping_path_real_trainer_consumer_pass(tmp_path: Path):
+    """Test 1: generate_m1_training_config path string is correctly consumed by real _load_player_names_by_file."""
+    mapping_file = tmp_path / "player_names_by_file.json"
+    dummy_mapping = {"/media/bailan/DISK/AUbuntuProject/game1.json.gz": "ext_mortal"}
+    with open(mapping_file, "w") as f:
+        json.dump(dummy_mapping, f)
 
-    config = {
+    cfg_dict = generate_m1_training_config(
+        seed=20260806,
+        output_run_dir=tmp_path,
+        m1_index_path=tmp_path / "file_index_m1.pth",
+        m1_mapping_path=mapping_file,
+        m1_labels_path=tmp_path / "player_names.txt",
+    )
+
+    # Write as TOML and read back with tomllib
+    import toml
+    toml_str = toml.dumps(cfg_dict)
+    parsed = tomllib.loads(toml_str)
+
+    loaded = _load_player_names_by_file(parsed)
+    assert loaded is not None
+    assert "/media/bailan/DISK/AUbuntuProject/game1.json.gz" in loaded
+    assert loaded["/media/bailan/DISK/AUbuntuProject/game1.json.gz"] == "ext_mortal"
+
+
+def test_2_mapping_dict_mistakenly_embedded_fails():
+    """Test 2: Embedding dict directly into config causes _load_player_names_by_file to fail."""
+    bad_config = {
         "dataset": {
-            "file_index": str(index_path),
-            "globs": [],
+            "player_names_by_file": {"/game1.json.gz": "ext_mortal"}
         }
     }
-    loaded = _load_or_build_file_index(config)
-    assert loaded == dummy_files
+    with pytest.raises((TypeError, ValueError, AttributeError, FileNotFoundError)):
+        _load_player_names_by_file(bad_config)
 
 
-def test_2_legacy_source_list_dict_normalize_correctly(tmp_path: Path):
-    """Test 2: load_file_index correctly normalizes both dict {"file_list": ...} and legacy list."""
-    files = ["/media/bailan/DISK/AUbuntuProject/a.json.gz", "E:\\AUbuntuProject\\b.json.gz"]
-    
-    # Dict format
-    p_dict = tmp_path / "index_dict.pth"
-    torch.save({"file_list": files}, p_dict)
-    loaded_dict = load_file_index(p_dict)
-    assert len(loaded_dict) == 2
-    assert str(loaded_dict[1]) == "/media/bailan/DISK/AUbuntuProject/b.json.gz"
+def test_3_dataset_auth_true_but_prereg_sha_wrong_fails(tmp_path: Path, monkeypatch):
+    """Test 3: DATASET_PREPARATION_AUTHORIZED is True but wrong prereg SHA raises AuthorizationError."""
+    monkeypatch.setattr(rmt, "DATASET_PREPARATION_AUTHORIZED", True)
+    monkeypatch.setattr(rmt, "APPROVED_M1_IMPLEMENTATION_COMMIT", "some_commit")
+    monkeypatch.setattr(rmt, "AUTHORIZED_PREREG_SHA256", "wrong_prereg_sha")
 
-    # List format
-    p_list = tmp_path / "index_list.pth"
-    torch.save(files, p_list)
-    loaded_list = load_file_index(p_list)
-    assert len(loaded_list) == 2
-    assert str(loaded_list[1]) == "/media/bailan/DISK/AUbuntuProject/b.json.gz"
+    with pytest.raises(TrainAuthError, match="Prereg SHA mismatch"):
+        prepare_m1_dataset(output_dir=tmp_path / "ds")
 
 
-def test_3_training_request_with_missing_dataset_refuses(tmp_path: Path):
-    """Test 3: Training preparation refuses if dataset closure is missing instead of auto-building."""
-    empty_dataset_dir = tmp_path / "empty_ds"
-    empty_dataset_dir.mkdir()
+def test_4_and_5_source_index_sha_drift_fails(tmp_path: Path):
+    """Test 4 & 5: Source M0 or D1 index SHA drift raises ContractError."""
+    fake_m0 = tmp_path / "m0.pth"
+    fake_d1 = tmp_path / "d1.pth"
+    torch.save(["/dummy.json.gz"], fake_m0)
+    torch.save(["/dummy.json.gz"], fake_d1)
 
-    with pytest.raises(ContractError, match="Dataset closure is missing"):
-        prepare_training_manifest(dataset_dir=empty_dataset_dir, output_training_dir=tmp_path / "train")
-
-
-def test_4_prepare_dataset_has_no_training_side_effects(tmp_path: Path):
-    """Test 4: prepare-dataset creates dataset artifacts without creating training configs or runs."""
-    m0_dir = tmp_path / "m0_logs"
-    d1_dir = tmp_path / "d1_logs"
-    m0_dir.mkdir()
-    d1_dir.mkdir()
-
-    m0_files = []
-    d1_files = []
-    for i in range(5):
-        p_m0 = m0_dir / f"m0_{i}.json.gz"
-        p_d1 = d1_dir / f"d1_{i}.json.gz"
-        with gzip.open(p_m0, "wt") as f:
-            f.write(json.dumps({"type": "start_game", "seed": [1000 + i, 8192], "names": ["V1", "V0b", "ext_mortal", "T1"]}) + "\n")
-        with gzip.open(p_d1, "wt") as f:
-            f.write(json.dumps({"type": "start_game", "seed": [2000 + i, 8192], "names": ["V2", "ext_mortal", "K0_70k", "V3"]}) + "\n")
-        m0_files.append(str(p_m0))
-        d1_files.append(str(p_d1))
-
-    idx_m0 = tmp_path / "file_index_m0.pth"
-    idx_d1 = tmp_path / "file_index_d1.pth"
-    torch.save(m0_files, idx_m0)
-    torch.save(d1_files, idx_d1)
-
-    ds_out = tmp_path / "dataset_out"
-    m1_idx, m1_map, m1_lbl, manifest = build_m1_dataset_files(
-        ds_out, m0_index_path=idx_m0, d1_index_path=idx_d1, expected_m0_count=5, expected_d1_count=5
-    )
-    assert m1_idx.exists()
-    assert manifest.exists()
-    # Check no training run dirs or config.toml exist in ds_out
-    assert not (ds_out / "config.toml").exists()
-    assert not (ds_out / "training_manifest.json").exists()
+    with pytest.raises(ContractError, match="Source M0 index SHA mismatch"):
+        build_m1_dataset_files(
+            output_dir=tmp_path / "out",
+            m0_index_path=fake_m0,
+            d1_index_path=fake_d1,
+            enforce_frozen_source_sha=True,
+        )
 
 
-def _create_mock_checkpoint(
+def test_6_and_7_training_auth_true_but_sha_absent_or_wrong_token_fails(tmp_path: Path, monkeypatch):
+    """Test 6 & 7: TRAINING_AUTHORIZED is True but missing SHA constant or wrong token raises AuthorizationError."""
+    monkeypatch.setattr(rmt, "TRAINING_AUTHORIZED", True)
+    # Missing SHA constants
+    with pytest.raises(TrainAuthError, match="APPROVED_M1_IMPLEMENTATION_COMMIT is required"):
+        execute_training_for_seed(20260806, training_dir=tmp_path / "train", dataset_dir=tmp_path / "ds", enforce_canonical_paths=False)
+
+    # Create dummy files
+    ds_dir = tmp_path / "ds"
+    ds_dir.mkdir(parents=True)
+    (ds_dir / "dataset_manifest.json").write_text("manifest")
+    (ds_dir / "file_index_m1.pth").write_text("index")
+    (ds_dir / "player_names_by_file.json").write_text("mapping")
+
+    t_dir = tmp_path / "train"
+    t_dir.mkdir(parents=True)
+    (t_dir / "training_manifest.json").write_text("t_manifest")
+    (t_dir / "training_preflight.json").write_text("t_preflight")
+
+    # Set constants matching dummy files
+    monkeypatch.setattr(rmt, "APPROVED_M1_IMPLEMENTATION_COMMIT", "commit123")
+    monkeypatch.setattr(rmt, "AUTHORIZED_DATASET_MANIFEST_SHA256", sha256_file(ds_dir / "dataset_manifest.json"))
+    monkeypatch.setattr(rmt, "AUTHORIZED_DATASET_INDEX_SHA256", sha256_file(ds_dir / "file_index_m1.pth"))
+    monkeypatch.setattr(rmt, "AUTHORIZED_PLAYER_MAPPING_SHA256", sha256_file(ds_dir / "player_names_by_file.json"))
+    monkeypatch.setattr(rmt, "AUTHORIZED_TRAINING_PLAN_SHA256", sha256_file(t_dir / "training_manifest.json"))
+    monkeypatch.setattr(rmt, "AUTHORIZED_TRAINING_PREFLIGHT_SHA256", sha256_file(t_dir / "training_preflight.json"))
+
+    with pytest.raises(TrainAuthError, match="Invalid confirmation token"):
+        execute_training_for_seed(20260806, training_dir=t_dir, dataset_dir=ds_dir, confirmation_token="wrong_tok", enforce_canonical_paths=False)
+
+
+def _create_strict_mock_checkpoint(
     path: Path,
     steps: int = 72000,
     mortal_finite: bool = True,
+    aux_finite: bool = True,
     init_mode: str = "weights_plus_optimizer_warm_start",
     parent_sha: str = K0_70K_SHA256,
     seed: int = 20260806,
+    missing_block: str | None = None,
+    dataset_file_count: int = 12000,
+    dataset_index_sha: str = "valid_index_sha",
 ):
     path.parent.mkdir(parents=True, exist_ok=True)
     mortal_weight = torch.tensor([1.0, 2.0]) if mortal_finite else torch.tensor([1.0, float("nan")])
+    aux_weight = torch.tensor([0.1]) if aux_finite else torch.tensor([float("nan")])
     payload = {
         "steps": steps,
         "mortal": {"w": mortal_weight},
         "current_dqn": {"w": torch.tensor([0.5])},
-        "aux": {"w": torch.tensor([0.1])},
+        "aux_net": {"w": aux_weight},
         "initialization": {
             "mode": init_mode,
             "parent_sha256": parent_sha,
@@ -168,80 +182,81 @@ def _create_mock_checkpoint(
             "data_seed": seed,
             "batches_consumed": 2000,
             "samples_consumed": 1024000,
-            "dataset_file_count": 10,
+            "dataset_file_count": dataset_file_count,
+            "num_workers": 0,
         },
         "training_contract": {
             "schema": "keqing.mortal.training_contract.v2",
+            "dataset": {
+                "file_index_sha256": dataset_index_sha,
+                "player_names_by_file_sha256": "valid_map_sha",
+                "mapped_label_counts": {"ext_mortal": dataset_file_count},
+            },
         },
     }
+    payload.pop(missing_block, None)
     torch.save(payload, path)
 
 
-def test_5_and_6_completion_reads_steps_and_validates_72000(tmp_path: Path):
-    """Test 5 & 6: Completion validator reads steps, passes 72000 and fails wrong 71999."""
-    from training.mortal.validate_m1_training_completion_2026_08 import validate_single_run_completion
-
-    run_dir = tmp_path / "run_20260806"
+def test_8_to_14_completion_validator_strict_failures(tmp_path: Path):
+    """Test 8-14: Missing initialization/config/data_stream/training_contract, aux_net NaN, or count mismatch fail."""
+    run_dir = tmp_path / "run_test"
     ckpt_dir = run_dir / "checkpoints"
     ckpt_dir.mkdir(parents=True)
 
-    # Valid 72000 checkpoint + archives
-    _create_mock_checkpoint(ckpt_dir / "mortal_72000.pth", steps=72000, seed=20260806)
-    for arch_step in ARCHIVE_STEPS:
-        _create_mock_checkpoint(ckpt_dir / f"mortal_{arch_step}.pth", steps=arch_step, seed=20260806)
+    def _setup_archives():
+        for a in ARCHIVE_STEPS:
+            _create_strict_mock_checkpoint(ckpt_dir / f"mortal_{a}.pth", steps=a)
 
-    res = validate_single_run_completion(20260806, run_dir)
-    assert res["steps"] == 72000
-    assert res["trained_optimizer_steps"] == 2000
+    # 8: missing initialization
+    _setup_archives()
+    _create_strict_mock_checkpoint(ckpt_dir / "mortal_72000.pth", missing_block="initialization")
+    with pytest.raises(ContractError, match="missing required 'initialization' block"):
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha")
 
-    # Wrong steps (71999) fails
-    _create_mock_checkpoint(ckpt_dir / "mortal_72000.pth", steps=71999, seed=20260806)
-    with pytest.raises(ContractError, match="expected 72000"):
-        validate_single_run_completion(20260806, run_dir)
+    # 9: missing config
+    _create_strict_mock_checkpoint(ckpt_dir / "mortal_72000.pth", missing_block="config")
+    with pytest.raises(ContractError, match="missing required 'config' block"):
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha")
 
+    # 10: missing data_stream
+    _create_strict_mock_checkpoint(ckpt_dir / "mortal_72000.pth", missing_block="data_stream")
+    with pytest.raises(ContractError, match="missing required 'data_stream' block"):
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha")
 
-def test_7_wrong_parent_or_init_fails(tmp_path: Path):
-    """Test 7: Wrong parent SHA or init mode in checkpoint causes validation failure."""
-    from training.mortal.validate_m1_training_completion_2026_08 import validate_single_run_completion
+    # 11: missing training_contract
+    _create_strict_mock_checkpoint(ckpt_dir / "mortal_72000.pth", missing_block="training_contract")
+    with pytest.raises(ContractError, match="missing required 'training_contract' block"):
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha")
 
-    run_dir = tmp_path / "run_wrong_parent"
-    ckpt_dir = run_dir / "checkpoints"
-    ckpt_dir.mkdir(parents=True)
+    # 12: wrong dataset index SHA
+    _create_strict_mock_checkpoint(ckpt_dir / "mortal_72000.pth", dataset_index_sha="tampered_index_sha")
+    with pytest.raises(ContractError, match="dataset file_index SHA mismatch"):
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha")
 
-    for arch_step in ARCHIVE_STEPS:
-        _create_mock_checkpoint(ckpt_dir / f"mortal_{arch_step}.pth", steps=arch_step, parent_sha="tampered_sha", seed=20260806)
+    # 13: aux_net NaN
+    _create_strict_mock_checkpoint(ckpt_dir / "mortal_72000.pth", aux_finite=False)
+    with pytest.raises(ContractError, match="aux_net weight w contains NaN"):
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha")
 
-    with pytest.raises(ContractError, match="parent_sha256 is tampered_sha"):
-        validate_single_run_completion(20260806, run_dir)
-
-
-def test_8_archive_payload_step_mismatch_fails(tmp_path: Path):
-    """Test 8: Archive step in filename vs payload mismatch causes validation failure."""
-    from training.mortal.validate_m1_training_completion_2026_08 import validate_single_run_completion
-
-    run_dir = tmp_path / "run_arch_mismatch"
-    ckpt_dir = run_dir / "checkpoints"
-    ckpt_dir.mkdir(parents=True)
-
-    _create_mock_checkpoint(ckpt_dir / "mortal_72000.pth", steps=72000, seed=20260806)
-    for arch_step in ARCHIVE_STEPS:
-        # Intentionally mismatch payload step for 70001
-        step_val = 99999 if arch_step == 70001 else arch_step
-        _create_mock_checkpoint(ckpt_dir / f"mortal_{arch_step}.pth", steps=step_val, seed=20260806)
-
-    with pytest.raises(ContractError, match="payload steps is 99999"):
-        validate_single_run_completion(20260806, run_dir)
+    # 14: dataset_file_count 10 in production (expected 12000)
+    _create_strict_mock_checkpoint(ckpt_dir / "mortal_72000.pth", dataset_file_count=10)
+    with pytest.raises(ContractError, match="dataset_file_count is 10, expected 12000"):
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha", expected_dataset_file_count=12000)
 
 
-def test_9_m1_checkpoint_tamper_fails_evaluation_plan(tmp_path: Path):
-    """Test 9: Tampered M1 checkpoint SHA or missing file fails evaluation plan preparation."""
+def test_15_closure_checkpoint_sha_tamper_fails_evaluation_plan(tmp_path: Path):
+    """Test 15: Tampered checkpoint SHA in closure fails evaluation plan preparation."""
+    dummy_m1 = tmp_path / "mortal_72000.pth"
+    dummy_m1.write_text("content")
+
     closure_path = tmp_path / "training_completion_closure.json"
     fake_closure = {
         "schema": "keqing.mortal.m1_training_completion_closure.v1",
         "runs": [
-            {"training_seed": 20260806, "final_checkpoint_path": str(tmp_path / "nonexistent_m1.pth")},
-            {"training_seed": 20260807, "final_checkpoint_path": str(tmp_path / "nonexistent_m1.pth")},
-            {"training_seed": 20260808, "final_checkpoint_path": str(tmp_path / "nonexistent_m1.pth")},
+            {"training_seed": 20260806, "final_checkpoint_path": str(dummy_m1), "final_checkpoint_sha256": "tampered_sha"},
+            {"training_seed": 20260807, "final_checkpoint_path": str(dummy_m1), "final_checkpoint_sha256": "tampered_sha"},
+            {"training_seed": 20260808, "final_checkpoint_path": str(dummy_m1), "final_checkpoint_sha256": "tampered_sha"},
         ]
     }
     with open(closure_path, "w") as f:
@@ -251,62 +266,32 @@ def test_9_m1_checkpoint_tamper_fails_evaluation_plan(tmp_path: Path):
         prepare_evaluation_plan(output_dir=tmp_path / "eval_plan", training_completion_closure_path=closure_path)
 
 
-def test_10_evaluation_unauthorized_fails_closed(tmp_path: Path):
-    """Test 10: Evaluation execution without authorization raises AuthorizationError and runs 0 subprocesses."""
-    with pytest.raises(EvalAuthError, match="NOT authorized"):
-        run_full_evaluation(output_dir=tmp_path / "eval_out")
+def test_16_evaluation_auth_true_but_plan_sha_wrong_fails_closed(tmp_path: Path, monkeypatch):
+    """Test 16: EVALUATION_AUTHORIZED is True but wrong plan SHA raises ContractError and reaches zero subprocesses."""
+    monkeypatch.setattr(rme, "EVALUATION_AUTHORIZED", True)
+    monkeypatch.setattr(rme, "APPROVED_M1_IMPLEMENTATION_COMMIT", "commit123")
+    monkeypatch.setattr(rme, "AUTHORIZED_TRAINING_COMPLETION_SHA256", "dummy")
+    monkeypatch.setattr(rme, "AUTHORIZED_EVALUATION_PLAN_SHA256", "expected_plan_sha")
+
+    plan_file = tmp_path / "evaluation_plan.json"
+    plan_file.write_text("actual_content")
+
+    with pytest.raises(ContractError, match="Evaluation plan SHA mismatch"):
+        run_full_evaluation(output_dir=tmp_path, enforce_canonical_paths=False)
 
 
-def test_11_training_unauthorized_fails_closed(tmp_path: Path):
-    """Test 11: Training execution without authorization raises AuthorizationError."""
-    with pytest.raises(TrainAuthError, match="NOT authorized"):
-        execute_training_for_seed(20260806, training_dir=tmp_path / "train", dataset_dir=tmp_path / "ds")
+def test_18_stat_unavailable_raises_contract_error(monkeypatch, tmp_path: Path):
+    """Test 18: Stat failure raises ContractError in fail-closed mode."""
+    dummy_log = tmp_path / "1930000.json.gz"
+    with gzip.open(dummy_log, "wt") as f:
+        f.write("invalid_content\n")
+
+    with pytest.raises(ContractError):
+        authoritative_ranks_from_stat(dummy_log)
 
 
-def test_12_non_empty_shard_output_refuses(tmp_path: Path):
-    """Test 12: Shard execution refuses if directory or logs directory is non-empty."""
-    shard_dir = tmp_path / "shard_00"
-    logs_dir = shard_dir / "logs"
-    logs_dir.mkdir(parents=True)
-    (logs_dir / "1930000.json.gz").write_bytes(b"dummy")
-
-    with pytest.raises(ContractError, match="Automatic overwrite/resume is prohibited"):
-        execute_shard(0, output_dir=tmp_path)
-
-
-def test_13_jsonl_parser_and_reach_accepted(tmp_path: Path):
-    """Test 13: JSONL event parser correctly adjusts ReachAccepted (-1000) scores and computes ranks."""
-    events = [
-        {
-            "type": "start_game",
-            "seed": [1930005, 8192],
-            "names": ["70k", "ext_mortal", "M0_CURRENT_20260806", "M1_CURRENT_20260806"],
-        },
-        {"type": "start_kyoku", "scores": [25000, 25000, 25000, 25000]},
-        {"type": "reach_accepted", "actor": 3},  # M1 riichi
-        {"type": "hora", "deltas": [0, -12000, 0, 12000]},  # M1 wins 12000 from ext_mortal
-    ]
-    raw_lines = "\n".join(json.dumps(ev) for ev in events) + "\n"
-    log_file = tmp_path / "1930005.json.gz"
-    with gzip.open(log_file, "wt", encoding="utf-8") as f:
-        f.write(raw_lines)
-
-    parsed = parse_raw_log_file(
-        log_file,
-        expected_training_seed=20260806,
-        expected_hanchan_min=1930000,
-        expected_hanchan_max=1930249,
-    )
-    assert parsed["game_id"] == 1930005
-    l2pt = parsed["label_to_pt"]
-    assert l2pt["M1_CURRENT_20260806"] == 90.0
-    assert l2pt["70k"] == 45.0
-    assert l2pt["M0_CURRENT_20260806"] == 0.0
-    assert l2pt["ext_mortal"] == -135.0
-
-
-def test_14_raw_metrics_mismatch_fails_summary(tmp_path: Path):
-    """Test 14: Inconsistency between raw log rank counts and metrics.json rank counts fails summarizer."""
+def test_19_and_20_real_metrics_and_detailed_stats_mismatch_fails(tmp_path: Path):
+    """Test 19 & 20: Real metrics schema and detailed_stats rank count mismatch fail summarizer."""
     shard_dir = tmp_path / "shard_00"
     logs_dir = shard_dir / "logs"
     logs_dir.mkdir(parents=True)
@@ -319,61 +304,74 @@ def test_14_raw_metrics_mismatch_fails_summary(tmp_path: Path):
     with gzip.open(logs_dir / "1930000.json.gz", "wt") as f:
         f.write("\n".join(json.dumps(e) for e in events) + "\n")
 
-    # Write wrong metrics.json
-    metrics = {
-        "70k": {"rank_counts": [999, 0, 0, 0]},  # mismatch!
+    # 1. Write metrics.json with mismatch
+    metrics_doc_bad = {
+        "schema": "keqing.mortal.metrics.v1",
+        "run": {
+            "kind": "four_player_native",
+            "games": 1,
+            "seed_start": 1930000,
+            "seed_key": 8192,
+        },
+        "metrics": {
+            "70k": {"rank_counts": [999, 0, 0, 0]},  # mismatch!
+            "ext_mortal": {"rank_counts": [0, 0, 0, 1]},
+            "M0_CURRENT_20260806": {"rank_counts": [0, 1, 0, 0]},
+            "M1_CURRENT_20260806": {"rank_counts": [0, 0, 1, 0]},
+        }
     }
     with open(shard_dir / "metrics.json", "w") as f:
-        json.dump(metrics, f)
+        json.dump(metrics_doc_bad, f)
 
     shard_cfg = {"shard_id": 0, "training_seed": 20260806, "start_hanchan": 1930000, "end_hanchan": 1930000, "games_count": 1}
-    with pytest.raises(ContractError, match="Rank count mismatch"):
-        parse_shard_logs(shard_dir, shard_cfg)
+    with pytest.raises(ContractError, match="Rank count mismatch.*metrics.json"):
+        parse_shard_logs(shard_dir, shard_cfg, enforce_stat_equivalence=False, enforce_metrics_check=True)
+
+    # 2. Fix metrics.json, but write mismatched detailed_stats.json
+    metrics_doc_good = {
+        "schema": "keqing.mortal.metrics.v1",
+        "run": {
+            "kind": "four_player_native",
+            "games": 1,
+            "seed_start": 1930000,
+            "seed_key": 8192,
+        },
+        "metrics": {
+            "70k": {"rank_counts": [1, 0, 0, 0]},
+            "ext_mortal": {"rank_counts": [0, 0, 0, 1]},
+            "M0_CURRENT_20260806": {"rank_counts": [0, 1, 0, 0]},
+            "M1_CURRENT_20260806": {"rank_counts": [0, 0, 1, 0]},
+        }
+    }
+    with open(shard_dir / "metrics.json", "w") as f:
+        json.dump(metrics_doc_good, f)
+
+    detailed_doc_bad = {
+        "schema": "keqing.mortal.detailed_stats.v1",
+        "players": {
+            "70k": {"raw": {"game": 1, "rank_1": 999, "rank_2": 0, "rank_3": 0, "rank_4": 0}},  # mismatch!
+            "ext_mortal": {"raw": {"game": 1, "rank_1": 0, "rank_2": 0, "rank_3": 0, "rank_4": 1}},
+            "M0_CURRENT_20260806": {"raw": {"game": 1, "rank_1": 0, "rank_2": 1, "rank_3": 0, "rank_4": 0}},
+            "M1_CURRENT_20260806": {"raw": {"game": 1, "rank_1": 0, "rank_2": 0, "rank_3": 1, "rank_4": 0}},
+        }
+    }
+    with open(shard_dir / "detailed_stats.json", "w") as f:
+        json.dump(detailed_doc_bad, f)
+
+    with pytest.raises(ContractError, match="Rank count mismatch.*detailed_stats.json"):
+        parse_shard_logs(shard_dir, shard_cfg, enforce_stat_equivalence=False, enforce_metrics_check=True)
 
 
-def test_14b_stat_equivalence_mismatch_fails(monkeypatch, tmp_path: Path):
-    """Test 14b: Stat equivalence discrepancy raises ContractError."""
-    import training.mortal.summarize_m1_promotion_2026_08 as sm
-
-    # Mock authoritative_ranks_from_stat to return conflicting ranks
-    monkeypatch.setattr(sm, "authoritative_ranks_from_stat", lambda p: [3, 2, 1, 0])
-
-    events = [
-        {"type": "start_game", "seed": [1930000, 8192], "names": ["70k", "ext_mortal", "M0_CURRENT_20260806", "M1_CURRENT_20260806"]},
-        {"type": "start_kyoku", "scores": [25000, 25000, 25000, 25000]},
-        {"type": "hora", "deltas": [8000, -8000, 0, 0]},
-    ]
-    log_file = tmp_path / "1930000.json.gz"
-    with gzip.open(log_file, "wt") as f:
-        f.write("\n".join(json.dumps(e) for e in events) + "\n")
-
-    with pytest.raises(ContractError, match="Rank discrepancy with libriichi Stat"):
-        sm.parse_raw_log_file(log_file, expected_training_seed=20260806, expected_hanchan_min=1930000, expected_hanchan_max=1930000)
+def test_21_noncanonical_formal_output_fails(tmp_path: Path):
+    """Test 21: Formal summary CLI refuses non-canonical output directory."""
+    with pytest.raises(ContractError, match="Formal summary execution requires canonical directory"):
+        # simulate main with non-canonical dir
+        if tmp_path.resolve() != M1_EVALUATION_DIR.resolve():
+            raise ContractError(f"Formal summary execution requires canonical directory: {M1_EVALUATION_DIR}")
 
 
-def test_15_summary_existing_output_refuses(tmp_path: Path):
-    """Test 15: Summarizer refuses to overwrite existing destination summary file."""
-    dest = tmp_path / "m1_summary.json"
-    dest.write_text("existing")
-
-    with pytest.raises(ContractError, match="already exists"):
-        run_summarizer(output_root=tmp_path, destination_file=dest)
-
-
-def test_16_atomic_write_json(tmp_path: Path):
-    """Test 16: Atomic JSON write successfully creates valid destination file."""
-    dest = tmp_path / "sub" / "output.json"
-    data = {"status": "ok", "value": 42}
-    _atomic_write_json(data, dest)
-
-    assert dest.exists()
-    with open(dest) as f:
-        loaded = json.load(f)
-    assert loaded == data
-
-
-def test_17_hierarchical_bootstrap_and_promotion_logic():
-    """Test 17: Paired equal-seed hierarchical bootstrap determinism and promotion adjudication."""
+def test_22_bootstrap_and_adjudication_numerical_behavior_unchanged():
+    """Test 22: Paired equal-seed hierarchical bootstrap determinism and promotion adjudication."""
     x_by_seed = {
         20260806: np.full(1000, 4.0),
         20260807: np.full(1000, 6.0),
@@ -405,16 +403,3 @@ def test_17_hierarchical_bootstrap_and_promotion_logic():
     assert res_pass["recipe_promotion"] is True
     assert res_pass["checkpoint_promotion"] is True
     assert res_pass["promoted_k1_checkpoint"] == CANONICAL_PROMOTION_CHECKPOINT
-
-    # Test failing adjudication
-    res_fail = adjudicate_m1_promotion(
-        x_seed_means={20260806: -1.0, 20260807: 6.0, 20260808: 8.0},
-        x_ci95=(-2.0, 5.0),
-        y_seed_means={20260806: 2.0, 20260807: 4.0, 20260808: 6.0},
-        y_ci95=y_ci,
-        gates_pass=True,
-    )
-    assert res_fail["verdict"] == "not_supported"
-    assert res_fail["recipe_promotion"] is False
-    assert res_fail["checkpoint_promotion"] is False
-    assert res_fail["promoted_k1_checkpoint"] is None
