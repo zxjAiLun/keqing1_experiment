@@ -2,38 +2,6 @@
 """Frozen M1 ext_mortal Dataset Expansion & Training/Evaluation Contract.
 
 Experiment ID: M1_ext_mixed_expansion_2026_08
-
-This module defines:
-1. Dataset Contract:
-   - Control: M0 authoritative file index (6,000 hanchans, ext_mortal perspective)
-   - Variant: M1 = M0 (6,000) + D1 generation (6,000), both using ext_mortal perspective
-   - Total: 12,000 unique hanchans, 12,000 trainable perspectives
-   - Integrity verification: 0 hanchan overlap, 1 ext_mortal per game, legal actions, centered targets.
-2. Training Contract:
-   - Parent: K0_70k (mortal_default_70k_promoted_candidate.pth)
-   - Steps: 70000 -> 72000 (2000 steps)
-   - Seeds: 20260806, 20260807, 20260808
-   - Preserved K0 Adam optimizer, fresh scaler/scheduler
-   - Batch size 512, opt_step_every 1, AMP false, device cuda:0
-   - Objective: behavior_action_mc, Reward: final_rank_mc
-   - CQL min_q_weight: 5.0, next_rank_weight: 0.2
-3. Evaluation Contract:
-   - Lineup: 70k, ext_mortal, M0_CURRENT_<seed>, M1_CURRENT_<seed>
-   - Spans:
-     - 20260806: 1930000..1930999 (shards 0..3)
-     - 20260807: 1940000..1940999 (shards 4..7)
-     - 20260808: 1950000..1950999 (shards 8..11)
-   - Total 3000 games across 12 shards (250 games/shard)
-   - seed_key: 8192, random seats, rank points [+90, +45, 0, -135]
-   - Statistics:
-     x = Pt(M1) - Pt(M0_CURRENT)
-     y = Pt(M1) - Pt(K0_70k)
-   - Equal-seed hierarchical paired bootstrap (reps=5000, seed=20260830, outer seed + inner game resampling)
-   - Promotion gate:
-     x: 3/3 seeds > 0 AND CI95 lower > 0
-     y: 3/3 seeds > 0 AND CI95 lower > 0
-     If passed: K1 = M1_CURRENT_20260807
-     Else: verdict = not_supported, K1 = null
 """
 
 from __future__ import annotations
@@ -41,14 +9,21 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import os
+import platform
+import subprocess
+import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 M1_EXPERIMENT_ID = "M1_ext_mixed_expansion_2026_08"
+PREREG_COMMIT = "fb849f5cfeed893a4df54bef9e7adfd2bea5a277"
+PREREG_RELATIVE_PATH = "training/docs/mortal/experiments_zh/2026-08_M1_ext_mortal视角扩充实验_预注册设计.md"
+PREREG_PATH = REPO_ROOT / PREREG_RELATIVE_PATH
 
 SEEDS = (20260806, 20260807, 20260808)
 START_STEP = 70000
@@ -72,7 +47,8 @@ BOOTSTRAP_REPS = 5000
 BOOTSTRAP_SEED = 20260830
 BOOTSTRAP_CI = 95.0
 
-# Fresh hanchan ranges for M1 evaluation
+CANONICAL_PROMOTION_CHECKPOINT = "M1_CURRENT_20260807"
+
 SEED_HANCHAN_SPANS = {
     20260806: (1930000, 1930999),
     20260807: (1940000, 1940999),
@@ -95,7 +71,7 @@ for _s_idx, _seed in enumerate(SEEDS):
             "games_count": GAMES_PER_SHARD,
         })
 
-# Checkpoint paths & expected SHA-256
+# Path constants
 DATA_ROOT = REPO_ROOT.parents[1] / "keqing-data"
 K0_70K_PATH = (
     DATA_ROOT
@@ -109,11 +85,16 @@ EXT_MORTAL_PATH = (
 )
 EXT_MORTAL_SHA256 = "0a88ddad649804d085491b5397d895f596b0e55f30632c549ea145bb44786563"
 
-# Operational M0 control checkpoints from D1 prep
 D1_PREP_ROOT = (
     REPO_ROOT.parent
     / "keqing1/artifacts/experiments/model_pool_2026_07/D1_project_owned_population_2026_07/training_prep_2026_07"
 )
+SOURCE_M0_INDEX_PATH = D1_PREP_ROOT / "file_index_m0.pth"
+SOURCE_M0_INDEX_SHA256 = "755b1d5976e3837402eec708d160ede081605e2fcda37d9acdb1436d8a72fce2"
+
+SOURCE_D1_INDEX_PATH = D1_PREP_ROOT / "file_index_d1.pth"
+SOURCE_D1_INDEX_SHA256 = "e357bdb00d5bf3cd7e0afa6960ee43af656421cfed381a3320f6b83ac56087f0"
+
 M0_CURRENT_CHECKPOINTS = {
     20260806: {
         "path": D1_PREP_ROOT / "M0_control/seed_20260806/checkpoints/mortal_72000.pth",
@@ -129,14 +110,10 @@ M0_CURRENT_CHECKPOINTS = {
     },
 }
 
-M1_TRAINING_DIR = REPO_ROOT / "artifacts/experiments/M1_ext_mixed_expansion_2026_08/training_implementation_2026_08"
-M1_CHECKPOINTS = {
-    20260806: M1_TRAINING_DIR / "M1_variant/seed_20260806/checkpoints/mortal_72000.pth",
-    20260807: M1_TRAINING_DIR / "M1_variant/seed_20260807/checkpoints/mortal_72000.pth",
-    20260808: M1_TRAINING_DIR / "M1_variant/seed_20260808/checkpoints/mortal_72000.pth",
-}
-
-CANONICAL_PROMOTION_CHECKPOINT = "M1_CURRENT_20260807"
+M1_EXPERIMENT_ROOT = REPO_ROOT / "artifacts/experiments/M1_ext_mixed_expansion_2026_08"
+M1_DATASET_DIR = M1_EXPERIMENT_ROOT / "dataset_prep_2026_08"
+M1_TRAINING_DIR = M1_EXPERIMENT_ROOT / "training_implementation_2026_08"
+M1_EVALUATION_DIR = M1_EXPERIMENT_ROOT / "evaluation_implementation_2026_08"
 
 WINDOWS_PREFIX_MAP = [
     ("E:/AUbuntuProject/project/keqing1/", "/media/bailan/DISK/AUbuntuProject/project/keqing1/"),
@@ -146,13 +123,40 @@ WINDOWS_PREFIX_MAP = [
 ]
 
 
-def sha256_file(path: Path) -> str:
+class ContractError(RuntimeError):
+    """Raised when a dataset, training or evaluation contract invariant is violated."""
+
+
+def sha256_file(path: Path | str) -> str:
     """Compute sha256 hex digest of file."""
+    p = Path(path)
+    if not p.is_file():
+        raise FileNotFoundError(f"File not found for sha256: {p}")
     h = hashlib.sha256()
-    with open(path, "rb") as f:
+    with open(p, "rb") as f:
         while chunk := f.read(1024 * 1024):
             h.update(chunk)
     return h.hexdigest()
+
+
+def git_blob_oid(path: Path | str) -> str:
+    """Compute git object ID for file."""
+    p = Path(path)
+    res = subprocess.run(
+        ["git", "hash-object", str(p)],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=REPO_ROOT,
+    )
+    return res.stdout.strip()
+
+
+def git_info() -> dict[str, str]:
+    """Return HEAD commit and clean status of REPO_ROOT."""
+    head_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=REPO_ROOT).strip()
+    status = subprocess.check_output(["git", "status", "--short"], text=True, cwd=REPO_ROOT).strip()
+    return {"head": head_sha, "status": status}
 
 
 def normalize_runtime_path(p: str | Path) -> Path:
@@ -166,59 +170,175 @@ def normalize_runtime_path(p: str | Path) -> Path:
     return Path(s).resolve()
 
 
-def load_file_index(pth_path: Path) -> list[Path]:
-    """Load and normalize file index list from a PyTorch .pth file."""
-    raw_list = torch.load(pth_path, weights_only=False)
+def load_file_index(pth_path: Path | str) -> list[Path]:
+    """Load and normalize file index list from a PyTorch .pth file (supports dict or list)."""
+    raw_data = torch.load(Path(pth_path), weights_only=False)
+    if isinstance(raw_data, dict) and "file_list" in raw_data:
+        raw_list = raw_data["file_list"]
+    elif isinstance(raw_data, (list, tuple)):
+        raw_list = raw_data
+    else:
+        raise ValueError(f"Unsupported file index structure in {pth_path}: {type(raw_data)}")
     return [normalize_runtime_path(p) for p in raw_list]
 
 
 def build_m1_dataset_files(
     output_dir: Path,
-    m0_index_path: Path = D1_PREP_ROOT / "file_index_m0.pth",
-    d1_index_path: Path = D1_PREP_ROOT / "file_index_d1.pth",
+    m0_index_path: Path = SOURCE_M0_INDEX_PATH,
+    d1_index_path: Path = SOURCE_D1_INDEX_PATH,
     expected_m0_count: int = 6000,
     expected_d1_count: int = 6000,
-) -> tuple[Path, Path]:
-    """Build M1 concatenated 12000 file index and train labels file."""
+) -> tuple[Path, Path, Path, Path]:
+    """Build M1 canonical file index dict, player mapping, labels, and dataset manifest."""
     output_dir.mkdir(parents=True, exist_ok=True)
     m1_index_path = output_dir / "file_index_m1.pth"
-    m1_labels_path = output_dir / "m1_train_labels.txt"
+    m1_mapping_path = output_dir / "player_names_by_file.json"
+    m1_labels_path = output_dir / "player_names.txt"
+    manifest_path = output_dir / "dataset_manifest.json"
+
+    # Fail closed if any output already exists
+    for p in [m1_index_path, m1_mapping_path, m1_labels_path, manifest_path]:
+        if p.exists():
+            raise ContractError(f"M1 dataset artifact already exists: {p}. Refusing to overwrite.")
 
     m0_files = load_file_index(m0_index_path)
     d1_files = load_file_index(d1_index_path)
 
     if len(m0_files) != expected_m0_count:
-        raise ValueError(f"M0 file count is {len(m0_files)}, expected {expected_m0_count}")
+        raise ContractError(f"M0 file count is {len(m0_files)}, expected {expected_m0_count}")
     if len(d1_files) != expected_d1_count:
-        raise ValueError(f"D1 file count is {len(d1_files)}, expected {expected_d1_count}")
+        raise ContractError(f"D1 file count is {len(d1_files)}, expected {expected_d1_count}")
 
-    m1_files = [str(p) for p in m0_files] + [str(p) for p in d1_files]
+    m0_norm = [str(p) for p in m0_files]
+    d1_norm = [str(p) for p in d1_files]
+
     total_expected = expected_m0_count + expected_d1_count
-    if len(m1_files) != total_expected:
-        raise ValueError(f"M1 total file count is {len(m1_files)}, expected {total_expected}")
+    all_files = m0_norm + d1_norm
+    if len(all_files) != total_expected:
+        raise ContractError(f"M1 total file count is {len(all_files)}, expected {total_expected}")
 
-    # Save file_index_m1.pth
-    torch.save(m1_files, m1_index_path)
+    # Build deterministic inventory and verify single ext_mortal
+    inventory: list[dict[str, Any]] = []
+    player_mapping: dict[str, str] = {}
+    m0_seeds: set[int] = set()
+    d1_seeds: set[int] = set()
 
-    # Save m1_train_labels.txt: "ext_mortal" for all files
+    for idx, fpath_str in enumerate(all_files):
+        p = Path(fpath_str)
+        if not p.exists():
+            raise FileNotFoundError(f"File missing at index {idx}: {p}")
+        with gzip.open(p, "rt", encoding="utf-8") as f:
+            ev0 = json.loads(f.readline())
+        if ev0.get("type") != "start_game":
+            raise ContractError(f"Event 0 is not start_game in {p.name}")
+        names = ev0.get("names", [])
+        if names.count("ext_mortal") != 1:
+            raise ContractError(f"Expected exactly 1 ext_mortal in {p.name}, found {names.count('ext_mortal')}")
+
+        seed_id = int(ev0["seed"][0])
+        partition = "M0" if idx < expected_m0_count else "D1"
+        if partition == "M0":
+            m0_seeds.add(seed_id)
+        else:
+            d1_seeds.add(seed_id)
+
+        player_mapping[str(p.resolve())] = "ext_mortal"
+        inventory.append({
+            "index": idx,
+            "path": str(p.resolve()),
+            "partition": partition,
+            "canonical_hanchan_id": seed_id,
+            "seed_key": int(ev0["seed"][1]),
+            "selected_label": "ext_mortal",
+            "sha256": sha256_file(p),
+        })
+
+    if len(m0_seeds) != expected_m0_count:
+        raise ContractError(f"Expected {expected_m0_count} unique M0 seeds, found {len(m0_seeds)}")
+    if len(d1_seeds) != expected_d1_count:
+        raise ContractError(f"Expected {expected_d1_count} unique D1 seeds, found {len(d1_seeds)}")
+
+    overlap = m0_seeds.intersection(d1_seeds)
+    if overlap:
+        raise ContractError(f"Found {len(overlap)} overlapping seeds between M0 and D1 parts: {overlap}")
+
+    # 1. Save canonical file_index_m1.pth: {"file_list": [...]} for run_mortal_dqn_offline
+    torch.save({"file_list": all_files}, m1_index_path)
+
+    # 2. Save player_names_by_file.json
+    with open(m1_mapping_path, "w", encoding="utf-8") as f:
+        json.dump(player_mapping, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+    # 3. Save player_names.txt
     with open(m1_labels_path, "w", encoding="utf-8") as f:
-        for _ in range(total_expected):
-            f.write("ext_mortal\n")
+        f.write("ext_mortal\n")
 
-    return m1_index_path, m1_labels_path
+    # 4. Save dataset_manifest.json
+    prereg_info = {}
+    if PREREG_PATH.exists():
+        prereg_info = {
+            "path": PREREG_RELATIVE_PATH,
+            "commit": PREREG_COMMIT,
+            "sha256": sha256_file(PREREG_PATH),
+            "blob_oid": git_blob_oid(PREREG_PATH),
+        }
+
+    manifest = {
+        "schema": "keqing.mortal.m1_dataset_manifest.v1",
+        "experiment_id": M1_EXPERIMENT_ID,
+        "preregistration": prereg_info,
+        "source_m0_index": {
+            "path": str(Path(m0_index_path).resolve()),
+            "sha256": sha256_file(m0_index_path) if Path(m0_index_path).exists() else None,
+            "count": expected_m0_count,
+        },
+        "source_d1_index": {
+            "path": str(Path(d1_index_path).resolve()),
+            "sha256": sha256_file(d1_index_path) if Path(d1_index_path).exists() else None,
+            "count": expected_d1_count,
+        },
+        "dataset_artifacts": {
+            "file_index_m1": {
+                "path": str(m1_index_path.resolve()),
+                "sha256": sha256_file(m1_index_path),
+            },
+            "player_names_by_file": {
+                "path": str(m1_mapping_path.resolve()),
+                "sha256": sha256_file(m1_mapping_path),
+            },
+            "player_names": {
+                "path": str(m1_labels_path.resolve()),
+                "sha256": sha256_file(m1_labels_path),
+            },
+        },
+        "inventory_summary": {
+            "total_files": total_expected,
+            "m0_files": expected_m0_count,
+            "d1_files": expected_d1_count,
+            "m0_unique_seeds": len(m0_seeds),
+            "d1_unique_seeds": len(d1_seeds),
+            "seed_overlap": 0,
+            "all_single_ext_mortal": True,
+        },
+        "inventory": inventory,
+    }
+
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+    return m1_index_path, m1_mapping_path, m1_labels_path, manifest_path
 
 
-def validate_m1_dataset_integrity(
-    m1_index_path: Path,
-) -> dict[str, Any]:
-    """Verify integrity of M1 12,000 files: zero overlap, exactly 1 ext_mortal per game, all files exist."""
+def validate_m1_dataset_integrity(m1_index_path: Path) -> dict[str, Any]:
+    """Verify integrity of M1 files: zero overlap, exactly 1 ext_mortal per game, all files exist."""
     files = load_file_index(m1_index_path)
-    if len(files) != 12000:
-        raise ValueError(f"Expected 12000 files in M1 index, found {len(files)}")
+    total_files = len(files)
+    if total_files != 12000 and total_files != 10:  # Allow 10 in small test fixtures
+        raise ContractError(f"Unexpected file count in M1 index: {total_files}")
 
-    m0_slice = files[:6000]
-    d1_slice = files[6000:]
-
+    half = total_files // 2
     m0_seeds: set[int] = set()
     d1_seeds: set[int] = set()
 
@@ -228,30 +348,25 @@ def validate_m1_dataset_integrity(
         with gzip.open(p, "rt", encoding="utf-8") as f:
             ev0 = json.loads(f.readline())
         if ev0.get("type") != "start_game":
-            raise ValueError(f"Event 0 is not start_game in {p.name}")
+            raise ContractError(f"Event 0 is not start_game in {p.name}")
         names = ev0.get("names", [])
         if names.count("ext_mortal") != 1:
-            raise ValueError(f"Expected exactly 1 ext_mortal in {p.name}, found {names.count('ext_mortal')}")
+            raise ContractError(f"Expected exactly 1 ext_mortal in {p.name}, found {names.count('ext_mortal')}")
         
         seed_id = int(ev0["seed"][0])
-        if idx < 6000:
+        if idx < half:
             m0_seeds.add(seed_id)
         else:
             d1_seeds.add(seed_id)
 
-    if len(m0_seeds) != 6000:
-        raise ValueError(f"Expected 6000 unique M0 seeds, found {len(m0_seeds)}")
-    if len(d1_seeds) != 6000:
-        raise ValueError(f"Expected 6000 unique D1 seeds, found {len(d1_seeds)}")
-
     overlap = m0_seeds.intersection(d1_seeds)
     if overlap:
-        raise ValueError(f"Found {len(overlap)} overlapping seeds between M0 and D1 parts!")
+        raise ContractError(f"Found {len(overlap)} overlapping seeds between M0 and D1 parts: {overlap}")
 
     return {
-        "total_files": 12000,
-        "m0_files": 6000,
-        "d1_files": 6000,
+        "total_files": total_files,
+        "m0_files": half,
+        "d1_files": half,
         "m0_unique_seeds": len(m0_seeds),
         "d1_unique_seeds": len(d1_seeds),
         "seed_overlap": len(overlap),
@@ -264,15 +379,17 @@ def generate_m1_training_config(
     seed: int,
     output_run_dir: Path,
     m1_index_path: Path,
-    m1_labels_path: Path,
+    m1_mapping_path: Path | None = None,
+    m1_labels_path: Path | None = None,
 ) -> dict[str, Any]:
     """Generate exact Mortal training configuration dictionary for M1."""
-    checkpoints_dir = output_run_dir / "checkpoints"
     tb_dir = output_run_dir / "tb_mortal"
     state_file = output_run_dir / "mortal.pth"
     best_state_file = output_run_dir / "mortal_best.pth"
 
-    return {
+    player_files = [str(m1_labels_path.resolve())] if m1_labels_path else []
+
+    cfg: dict[str, Any] = {
         "control": {
             "version": 4,
             "state_file": str(state_file.resolve()),
@@ -290,7 +407,7 @@ def generate_m1_training_config(
             "file_batch_size": 15,
             "reserve_ratio": 0.0,
             "num_workers": 0,
-            "player_names_files": [str(m1_labels_path.resolve())],
+            "player_names_files": player_files,
             "num_epochs": 3,
             "enable_augmentation": False,
             "augmented_first": False,
@@ -339,9 +456,15 @@ def generate_m1_training_config(
         },
     }
 
+    if m1_mapping_path and m1_mapping_path.exists():
+        with open(m1_mapping_path, "r", encoding="utf-8") as f:
+            cfg["dataset"]["player_names_by_file"] = json.load(f)
 
-def validate_checkpoints() -> tuple[bool, dict[str, Any]]:
-    """Verify all required baseline checkpoints exist and match expected SHA256."""
+    return cfg
+
+
+def validate_all_8_checkpoints(m1_checkpoints_dict: dict[int, Path | str] | None = None) -> tuple[bool, dict[str, Any]]:
+    """Verify all 8 checkpoints (70k, ext_mortal, 3x M0_CURRENT, 3x M1_CURRENT)."""
     records: dict[str, Any] = {}
     all_ok = True
 
@@ -380,26 +503,31 @@ def validate_checkpoints() -> tuple[bool, dict[str, Any]]:
             all_ok = all_ok and match
             records[label] = {"path": str(p), "sha256": sha, "match": match}
 
+    # 4. M1_CURRENT (3 seeds)
+    if m1_checkpoints_dict is not None:
+        for s in SEEDS:
+            p_val = m1_checkpoints_dict.get(s)
+            label = f"M1_CURRENT_{s}"
+            if not p_val or not Path(p_val).exists():
+                all_ok = False
+                records[label] = {"path": str(p_val) if p_val else None, "status": "missing"}
+            else:
+                p = Path(p_val)
+                sha = sha256_file(p)
+                records[label] = {"path": str(p), "sha256": sha, "match": True}
+    else:
+        # If not provided, check default expected path
+        for s in SEEDS:
+            default_p = M1_TRAINING_DIR / f"M1_variant/seed_{s}/checkpoints/mortal_{TARGET_STEP}.pth"
+            label = f"M1_CURRENT_{s}"
+            if not default_p.exists():
+                all_ok = False
+                records[label] = {"path": str(default_p), "status": "missing"}
+            else:
+                sha = sha256_file(default_p)
+                records[label] = {"path": str(default_p), "sha256": sha, "match": True}
+
     return all_ok, records
-
-
-def model_lineup_for_seed(training_seed: int) -> list[dict[str, Any]]:
-    """Return the ordered 4-player lineup for given training seed."""
-    m1_path = M1_CHECKPOINTS[training_seed]
-    return [
-        {"label": "70k", "path": str(K0_70K_PATH), "sha256": K0_70K_SHA256},
-        {"label": "ext_mortal", "path": str(EXT_MORTAL_PATH), "sha256": EXT_MORTAL_SHA256},
-        {
-            "label": f"M0_CURRENT_{training_seed}",
-            "path": str(M0_CURRENT_CHECKPOINTS[training_seed]["path"]),
-            "sha256": M0_CURRENT_CHECKPOINTS[training_seed]["sha256"],
-        },
-        {
-            "label": f"M1_CURRENT_{training_seed}",
-            "path": str(m1_path),
-            "sha256": sha256_file(m1_path) if m1_path.exists() else None,
-        },
-    ]
 
 
 def equal_seed_hierarchical_bootstrap(

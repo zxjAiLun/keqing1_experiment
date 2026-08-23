@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Parse raw game logs for M1 evaluation and adjudicate promotion verdict."""
+"""Parse raw game logs for M1 evaluation, verify hard gates, and adjudicate promotion verdict."""
 
 from __future__ import annotations
 
 import argparse
 import gzip
 import json
+import os
 import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -18,22 +20,39 @@ if str(SCRIPT_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPT_REPO_ROOT))
 
 from training.mortal.m1_dataset_contract_2026_08 import (
+    BOOTSTRAP_CI,
+    BOOTSTRAP_REPS,
+    BOOTSTRAP_SEED,
+    CANONICAL_PROMOTION_CHECKPOINT,
     GAMES_PER_SHARD,
+    K0_70K_PATH,
+    K0_70K_SHA256,
+    M0_CURRENT_CHECKPOINTS,
+    M1_DATASET_DIR,
+    M1_EVALUATION_DIR,
     M1_EXPERIMENT_ID,
+    M1_TRAINING_DIR,
+    PREREG_COMMIT,
+    PREREG_PATH,
     RANK_POINTS,
+    REPO_ROOT,
     SEED_KEY,
     SEEDS,
     SHARD_CONFIG,
     TOTAL_GAMES,
     TOTAL_SHARDS,
+    ContractError,
     adjudicate_m1_promotion,
     equal_seed_hierarchical_bootstrap,
-    model_lineup_for_seed,
+    git_blob_oid,
+    git_info,
     sha256_file,
-    validate_checkpoints,
+    validate_all_8_checkpoints,
 )
 
+EVALUATOR_PATH = REPO_ROOT / "training/mortal/four_player_native.py"
 LOG_NAME_RE = re.compile(r"^(?P<seed>\d+)(?:_[^/]*)?\.json\.gz$")
+FORMAL_ADJUDICATION_DIR = M1_EVALUATION_DIR / "formal_adjudication"
 
 
 def final_scores(events: list[dict[str, Any]]) -> list[float] | None:
@@ -64,6 +83,27 @@ def compute_final_ranks(scores: list[float]) -> list[int]:
     for r, seat in enumerate(sorted_seats):
         ranks[seat] = r
     return ranks
+
+
+def authoritative_ranks_from_stat(path: Path) -> list[int] | None:
+    """Check native libriichi Stat per-seat final ranks (0-based seats -> 0..3 rank)."""
+    try:
+        from libriichi.stat import Stat  # noqa: PLC0415
+    except ImportError:
+        return None
+    try:
+        with gzip.open(path, "rt", encoding="utf-8") as handle:
+            raw_log = handle.read()
+        ranks: list[int] = []
+        for player_id in range(4):
+            stat = Stat.from_log(raw_log, player_id)
+            rank = [rank_id - 1 for rank_id in (1, 2, 3, 4) if getattr(stat, f"rank_{rank_id}") == 1]
+            if len(rank) != 1:
+                return None
+            ranks.append(rank[0])
+        return ranks
+    except Exception:
+        return None
 
 
 def parse_raw_log_file(
@@ -101,7 +141,7 @@ def parse_raw_log_file(
     if not isinstance(names, list) or len(names) != 4:
         raise ValueError(f"Invalid names array in {path.name}: {names}")
     
-    expected_labels = {m["label"] for m in model_lineup_for_seed(expected_training_seed)}
+    expected_labels = {"70k", "ext_mortal", f"M0_CURRENT_{expected_training_seed}", f"M1_CURRENT_{expected_training_seed}"}
     if set(names) != expected_labels:
         raise ValueError(f"Lineup labels mismatch in {path.name}: got {set(names)}, expected {expected_labels}")
 
@@ -110,19 +150,26 @@ def parse_raw_log_file(
         raise ValueError(f"Could not reconstruct scores in {path.name}")
 
     ranks = compute_final_ranks(scores)
-    pts = [RANK_POINTS[r] for r in ranks]
+    
+    # Check Stat equivalence if available
+    stat_ranks = authoritative_ranks_from_stat(path)
+    if stat_ranks is not None and stat_ranks != ranks:
+        raise ContractError(f"Rank discrepancy with libriichi Stat in {path.name}: event_ranks={ranks} vs stat_ranks={stat_ranks}")
 
+    pts = [RANK_POINTS[r] for r in ranks]
     label_to_pt = {label: pts[idx] for idx, label in enumerate(names)}
+    label_to_rank = {label: ranks[idx] for idx, label in enumerate(names)}
 
     return {
         "game_id": hanchan_id,
         "path": str(path),
         "label_to_pt": label_to_pt,
+        "label_to_rank": label_to_rank,
     }
 
 
 def parse_shard_logs(shard_dir: Path, shard_cfg: dict[str, Any]) -> list[dict[str, Any]]:
-    """Parse all game logs in shard_dir/logs/ directory."""
+    """Parse all game logs in shard_dir/logs/ directory and verify rank count consistency."""
     logs_dir = shard_dir / "logs"
     if not logs_dir.exists():
         raise FileNotFoundError(f"Shard logs directory not found: {logs_dir}")
@@ -134,6 +181,8 @@ def parse_shard_logs(shard_dir: Path, shard_cfg: dict[str, Any]) -> list[dict[st
 
     records = []
     seen_game_ids = set()
+    label_rank_counts: dict[str, list[int]] = {}
+
     for p in files:
         rec = parse_raw_log_file(
             p,
@@ -147,12 +196,42 @@ def parse_shard_logs(shard_dir: Path, shard_cfg: dict[str, Any]) -> list[dict[st
         seen_game_ids.add(gid)
         records.append(rec)
 
+        for lbl, rk in rec["label_to_rank"].items():
+            if lbl not in label_rank_counts:
+                label_rank_counts[lbl] = [0, 0, 0, 0]
+            label_rank_counts[lbl][rk] += 1
+
+    # Check metrics.json if present
+    metrics_path = shard_dir / "metrics.json"
+    if metrics_path.exists():
+        try:
+            with open(metrics_path, "r", encoding="utf-8") as f:
+                metrics = json.load(f)
+            for lbl, counts in label_rank_counts.items():
+                if lbl in metrics:
+                    m_counts = metrics[lbl].get("rank_counts")
+                    if m_counts is not None and m_counts != counts:
+                        raise ContractError(f"Rank count mismatch in {shard_dir.name} metrics.json for {lbl}: {m_counts} vs parsed {counts}")
+        except Exception as exc:
+            raise ContractError(f"Error checking metrics.json in {shard_dir.name}: {exc}") from exc
+
     return records
 
 
-def run_summarizer(output_root: Path) -> dict[str, Any]:
-    """Summarize full M1 evaluation output and compute formal promotion verdict."""
-    ckpt_ok, ckpt_records = validate_checkpoints()
+def run_summarizer(
+    output_root: Path = M1_EVALUATION_DIR,
+    m1_checkpoints: dict[int, Path | str] | None = None,
+    destination_file: Path | None = None,
+) -> dict[str, Any]:
+    """Summarize full M1 evaluation output and publish atomic formal summary."""
+    if destination_file is None:
+        FORMAL_ADJUDICATION_DIR.mkdir(parents=True, exist_ok=True)
+        destination_file = FORMAL_ADJUDICATION_DIR / "m1_summary.json"
+
+    if destination_file.exists():
+        raise ContractError(f"Destination summary file already exists: {destination_file}. Refusing to overwrite.")
+
+    ckpt_ok, ckpt_records = validate_all_8_checkpoints(m1_checkpoints)
 
     shards_found = {}
     records_by_seed: dict[int, list[dict[str, Any]]] = {s: [] for s in SEEDS}
@@ -199,7 +278,7 @@ def run_summarizer(output_root: Path) -> dict[str, Any]:
             y_ci95=(0.0, 0.0),
             gates_pass=False,
         )
-        return {
+        summary = {
             "schema": "keqing.mortal.m1_promotion_summary.v1",
             "experiment_id": M1_EXPERIMENT_ID,
             "hard_gates": gates,
@@ -207,10 +286,10 @@ def run_summarizer(output_root: Path) -> dict[str, Any]:
             "shards": shards_found,
             "adjudication": adjudication,
         }
+        _atomic_write_json(summary, destination_file)
+        return summary
 
-    # Compute paired deltas x and y for each game:
-    # x = Pt(M1) - Pt(M0_CURRENT)
-    # y = Pt(M1) - Pt(K0_70k)
+    # Compute paired deltas x and y for each game
     x_by_seed = {}
     y_by_seed = {}
     x_seed_means = {}
@@ -250,9 +329,20 @@ def run_summarizer(output_root: Path) -> dict[str, Any]:
         gates_pass=True,
     )
 
+    result_provenance = {
+        "experiment_id": M1_EXPERIMENT_ID,
+        "prereg_commit": PREREG_COMMIT,
+        "evaluator_path": str(EVALUATOR_PATH.resolve()),
+        "evaluator_sha256": sha256_file(EVALUATOR_PATH),
+        "bootstrap_reps": BOOTSTRAP_REPS,
+        "bootstrap_seed": BOOTSTRAP_SEED,
+        "total_games": TOTAL_GAMES,
+    }
+
     summary = {
         "schema": "keqing.mortal.m1_promotion_summary.v1",
         "experiment_id": M1_EXPERIMENT_ID,
+        "result_provenance": result_provenance,
         "hard_gates": gates,
         "checkpoints": ckpt_records,
         "shards": shards_found,
@@ -277,14 +367,24 @@ def run_summarizer(output_root: Path) -> dict[str, Any]:
         "adjudication": adjudication,
     }
 
-    summary_path = output_root / "m1_summary.json"
-    with open(summary_path, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-
-    summary_sha = sha256_file(summary_path)
-    print(f"Summary written to {summary_path} (SHA256: {summary_sha})")
+    _atomic_write_json(summary, destination_file)
+    summary_sha = sha256_file(destination_file)
+    print(f"Summary written to {destination_file} (SHA256: {summary_sha})")
     return summary
+
+
+def _atomic_write_json(data: dict[str, Any], destination_path: Path) -> None:
+    """Write JSON data to a temporary file, fsync, and atomic rename to destination."""
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_dir = destination_path.parent
+    with tempfile.NamedTemporaryFile("w", dir=temp_dir, delete=False, encoding="utf-8") as tf:
+        temp_name = tf.name
+        json.dump(data, tf, indent=2, ensure_ascii=False)
+        tf.write("\n")
+        tf.flush()
+        os.fsync(tf.fileno())
+
+    os.replace(temp_name, destination_path)
 
 
 def main():
@@ -292,11 +392,17 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=SCRIPT_REPO_ROOT / "artifacts/experiments/M1_ext_mixed_expansion_2026_08/evaluation_implementation_2026_08",
+        default=M1_EVALUATION_DIR,
         help="Path to evaluation artifacts output directory",
     )
+    parser.add_argument(
+        "--destination",
+        type=Path,
+        default=None,
+        help="Destination summary JSON path",
+    )
     args = parser.parse_args()
-    run_summarizer(args.output_dir)
+    run_summarizer(output_root=args.output_dir, destination_file=args.destination)
 
 
 if __name__ == "__main__":
