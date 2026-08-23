@@ -989,7 +989,8 @@ def test_40_completion_authorization_and_provenance_checks(tmp_path: Path, monke
     t_dir = tmp_path / "train_auth_test"
     t_dir.mkdir(parents=True)
 
-    # Missing authorization constants when require_authorization=True
+    # Missing authorization constants when require_authorization=True (explicit monkeypatch test)
+    monkeypatch.setattr(rmv, "APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT", None)
     with pytest.raises(ContractError, match="APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT is required"):
         validate_all_m1_runs(output_dir=t_dir, require_authorization=True, enforce_canonical_paths=False)
 

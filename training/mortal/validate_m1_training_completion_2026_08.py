@@ -37,9 +37,9 @@ from training.mortal.m1_dataset_contract_2026_08 import (
 OFFLINE_TRAINER_SCRIPT = Path(__file__).resolve().parents[2] / "training/run_mortal_dqn_offline.py"
 
 # Authorization bindings for formal completion (fail closed by default)
-APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT = None
-AUTHORIZED_TRAINING_PLAN_SHA256 = None
-AUTHORIZED_TRAINING_PREFLIGHT_SHA256 = None
+APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT = "ac3eb0a63d4951fa5144afb57e85d3f716ab35a4"
+AUTHORIZED_TRAINING_PLAN_SHA256 = "2e0fc94eb9febf3e65f8081549738a198c9e0dbe7a7f0c4bef382ed3a87a84e6"
+AUTHORIZED_TRAINING_PREFLIGHT_SHA256 = "bbddbf6e603d835326f64340efa0e1b996f17bf48bd61c96adda49bf151534fa"
 
 
 def validate_single_run_completion(
