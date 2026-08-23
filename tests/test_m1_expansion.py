@@ -673,11 +673,11 @@ def test_31_completion_requires_training_manifest_and_preflight(tmp_path: Path):
     t_dir.mkdir(parents=True)
 
     with pytest.raises(ContractError, match="Training manifest is missing"):
-        validate_all_m1_runs(output_dir=t_dir, enforce_canonical_paths=False)
+        validate_all_m1_runs(output_dir=t_dir, require_authorization=False, enforce_canonical_paths=False)
 
     (t_dir / "training_manifest.json").write_text("{}")
     with pytest.raises(ContractError, match="Training preflight is missing"):
-        validate_all_m1_runs(output_dir=t_dir, enforce_canonical_paths=False)
+        validate_all_m1_runs(output_dir=t_dir, require_authorization=False, enforce_canonical_paths=False)
 
 
 def test_32_completion_closure_atomic_write_and_provenance(tmp_path: Path, monkeypatch):
@@ -710,10 +710,14 @@ def test_32_completion_closure_atomic_write_and_provenance(tmp_path: Path, monke
             "config_sha256": sha256_file(cfg_p),
         })
 
+    trainer_script = rmt.OFFLINE_TRAINER_SCRIPT
     t_manifest = {
         "schema": "keqing.mortal.m1_training_manifest.v1",
         "experiment_id": M1_EXPERIMENT_ID,
         "trainer_source": {
+            "path": str(trainer_script.resolve()),
+            "sha256": sha256_file(trainer_script),
+            "git_blob_oid": rmt.git_blob_oid(trainer_script),
             "approved_training_implementation_commit": "approved_t_commit_123",
         },
         "dataset": {
@@ -742,13 +746,14 @@ def test_32_completion_closure_atomic_write_and_provenance(tmp_path: Path, monke
             "files_count": 12000,
             "mappings_count": 12000,
             "all_ext_mortal": True,
+            "files_mapping_symmetric": True,
         },
     }
     t_preflight_p = t_dir / "training_preflight.json"
     with open(t_preflight_p, "w", encoding="utf-8") as f:
         json.dump(t_preflight, f)
 
-    closure = validate_all_m1_runs(output_dir=t_dir, enforce_canonical_paths=False)
+    closure = validate_all_m1_runs(output_dir=t_dir, require_authorization=False, enforce_canonical_paths=False)
     assert closure["schema"] == "keqing.mortal.m1_training_completion_closure.v1"
     assert closure["approved_training_implementation_commit"] == "approved_t_commit_123"
     assert len(closure["configs"]) == 3
@@ -757,7 +762,7 @@ def test_32_completion_closure_atomic_write_and_provenance(tmp_path: Path, monke
 
     # Refuse overwrite
     with pytest.raises(ContractError, match="Training completion closure already exists"):
-        validate_all_m1_runs(output_dir=t_dir, enforce_canonical_paths=False)
+        validate_all_m1_runs(output_dir=t_dir, require_authorization=False, enforce_canonical_paths=False)
 
 
 def test_33_training_execute_player_names_tamper_fails(tmp_path: Path, monkeypatch):
@@ -842,9 +847,16 @@ def test_36_completion_closure_fails_if_manifest_sha_tampered(tmp_path: Path):
             "config_sha256": sha256_file(cfg_p),
         })
 
+    trainer_script = rmt.OFFLINE_TRAINER_SCRIPT
     t_man = {
         "schema": "keqing.mortal.m1_training_manifest.v1",
         "experiment_id": M1_EXPERIMENT_ID,
+        "trainer_source": {
+            "path": str(trainer_script.resolve()),
+            "sha256": sha256_file(trainer_script),
+            "git_blob_oid": rmt.git_blob_oid(trainer_script),
+            "approved_training_implementation_commit": "approved_commit_123",
+        },
         "dataset": {
             "dataset_manifest": {"sha256": FROZEN_M1_DATASET_MANIFEST_SHA256},
             "file_index_m1": {"sha256": FROZEN_M1_DATASET_INDEX_SHA256},
@@ -874,4 +886,187 @@ def test_36_completion_closure_fails_if_manifest_sha_tampered(tmp_path: Path):
         json.dump(t_pref, f)
 
     with pytest.raises(ContractError, match="Preflight training_manifest_sha256 mismatch"):
-        validate_all_m1_runs(output_dir=t_dir, enforce_canonical_paths=False)
+        validate_all_m1_runs(output_dir=t_dir, require_authorization=False, enforce_canonical_paths=False)
+
+def test_37_happy_path_training_prep_produces_exact_artifacts_atomically(tmp_path: Path, monkeypatch):
+    """Test 37 (Happy Path): Un-monkeypatched canonical config generation produces exact artifacts atomically."""
+    monkeypatch.setattr(rmt, "git_info", lambda: {"status": "?? 1.md\n"})
+    t_out = tmp_path / "train_happy_path"
+
+    # Canonical dataset dir has 12000 real materialized items
+    manifest = prepare_training_manifest(
+        dataset_dir=rmt.M1_DATASET_DIR,
+        output_training_dir=t_out,
+        require_authorization=False,
+        enforce_canonical_paths=False,
+    )
+
+    assert t_out.exists()
+    assert (t_out / "training_manifest.json").exists()
+    assert (t_out / "training_preflight.json").exists()
+    assert len(manifest["runs"]) == 3
+
+    for s in SEEDS:
+        run_d = t_out / f"M1_variant/seed_{s}"
+        assert (run_d / "config.toml").exists()
+        assert (run_d / "checkpoints").is_dir()
+        assert (run_d / "tb_mortal").is_dir()
+
+        # Parse config.toml and verify resnet block
+        with open(run_d / "config.toml", "rb") as f:
+            cfg = tomllib.load(f)
+        assert "resnet" in cfg
+        assert cfg["resnet"]["conv_channels"] == 192
+        assert cfg["resnet"]["num_blocks"] == 40
+        assert "model" not in cfg
+
+    # Verify no staging directory left behind
+    assert not (tmp_path / "train_happy_path.staging").exists()
+
+
+def test_38_staging_pre_exists_fails_closed(tmp_path: Path, monkeypatch):
+    """Test 38: Existing staging directory fails closed without silently deleting it."""
+    monkeypatch.setattr(rmt, "git_info", lambda: {"status": "?? 1.md\n"})
+    t_out = tmp_path / "train_staging_test"
+    staging = tmp_path / "train_staging_test.staging"
+    staging.mkdir(parents=True)
+    (staging / "leftover.txt").write_text("leftover")
+
+    with pytest.raises(ContractError, match="Staging directory .* already exists"):
+        prepare_training_manifest(
+            dataset_dir=rmt.M1_DATASET_DIR,
+            output_training_dir=t_out,
+            require_authorization=False,
+            enforce_canonical_paths=False,
+        )
+    assert not t_out.exists()
+    assert staging.exists()
+
+
+def test_39_wrong_config_keys_fail_closed_and_zero_output(tmp_path: Path, monkeypatch):
+    """Test 39: Wrong state_file, num_workers, or player_names_files fails and output root does not exist."""
+    monkeypatch.setattr(rmt, "git_info", lambda: {"status": "?? 1.md\n"})
+    orig_gen = rmt.generate_m1_training_config
+
+    # 1. Wrong state_file
+    def _bad_state(*args, **kwargs):
+        cfg = orig_gen(*args, **kwargs)
+        cfg["control"]["state_file"] = "/tmp/wrong_state.pth"
+        return cfg
+    monkeypatch.setattr(rmt, "generate_m1_training_config", _bad_state)
+    t1 = tmp_path / "t1_bad_state"
+    with pytest.raises(ContractError, match="config state_file mismatch"):
+        prepare_training_manifest(dataset_dir=rmt.M1_DATASET_DIR, output_training_dir=t1, require_authorization=False, enforce_canonical_paths=False)
+    assert not t1.exists()
+
+    # 2. Wrong num_workers
+    def _bad_workers(*args, **kwargs):
+        cfg = orig_gen(*args, **kwargs)
+        cfg["dataset"]["num_workers"] = 4
+        return cfg
+    monkeypatch.setattr(rmt, "generate_m1_training_config", _bad_workers)
+    t2 = tmp_path / "t2_bad_workers"
+    with pytest.raises(ContractError, match="config num_workers mismatch"):
+        prepare_training_manifest(dataset_dir=rmt.M1_DATASET_DIR, output_training_dir=t2, require_authorization=False, enforce_canonical_paths=False)
+    assert not t2.exists()
+
+    # 3. Wrong player_names_files
+    def _bad_names(*args, **kwargs):
+        cfg = orig_gen(*args, **kwargs)
+        cfg["dataset"]["player_names_files"] = []
+        return cfg
+    monkeypatch.setattr(rmt, "generate_m1_training_config", _bad_names)
+    t3 = tmp_path / "t3_bad_names"
+    with pytest.raises(ContractError, match="config player_names_files mismatch"):
+        prepare_training_manifest(dataset_dir=rmt.M1_DATASET_DIR, output_training_dir=t3, require_authorization=False, enforce_canonical_paths=False)
+    assert not t3.exists()
+
+
+def test_40_completion_authorization_and_provenance_checks(tmp_path: Path, monkeypatch):
+    """Test 40: Completion strictly verifies authorization constants, trainer drift, and symmetry."""
+    import training.mortal.validate_m1_training_completion_2026_08 as rmv
+    t_dir = tmp_path / "train_auth_test"
+    t_dir.mkdir(parents=True)
+
+    # Missing authorization constants when require_authorization=True
+    with pytest.raises(ContractError, match="APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT is required"):
+        validate_all_m1_runs(output_dir=t_dir, require_authorization=True, enforce_canonical_paths=False)
+
+    # Setup valid mock files
+    runs = []
+    for s in SEEDS:
+        run_dir = t_dir / f"M1_variant/seed_{s}"
+        ckpt_dir = run_dir / "checkpoints"
+        ckpt_dir.mkdir(parents=True)
+        for a in ARCHIVE_STEPS:
+            _create_strict_mock_checkpoint(
+                ckpt_dir / f"mortal_{a}.pth",
+                steps=a,
+                seed=s,
+                dataset_index_sha=FROZEN_M1_DATASET_INDEX_SHA256,
+            )
+        _c_state = torch.load(ckpt_dir / "mortal_72000.pth", weights_only=False, map_location="cpu")
+        _c_state["training_contract"]["dataset"]["player_names_by_file_sha256"] = FROZEN_M1_PLAYER_MAPPING_SHA256
+        torch.save(_c_state, ckpt_dir / "mortal_72000.pth")
+        cfg_p = run_dir / "config.toml"
+        cfg_p.write_text(f"# config for seed {s}")
+        runs.append({
+            "seed": s,
+            "config_path": str(cfg_p.resolve()),
+            "config_sha256": sha256_file(cfg_p),
+        })
+
+    trainer_script = rmt.OFFLINE_TRAINER_SCRIPT
+    t_manifest = {
+        "schema": "keqing.mortal.m1_training_manifest.v1",
+        "experiment_id": M1_EXPERIMENT_ID,
+        "trainer_source": {
+            "path": str(trainer_script.resolve()),
+            "sha256": sha256_file(trainer_script),
+            "git_blob_oid": rmt.git_blob_oid(trainer_script),
+            "approved_training_implementation_commit": "approved_commit_abc",
+        },
+        "dataset": {
+            "dataset_manifest": {"sha256": FROZEN_M1_DATASET_MANIFEST_SHA256},
+            "file_index_m1": {"sha256": FROZEN_M1_DATASET_INDEX_SHA256},
+            "player_names_by_file": {"sha256": FROZEN_M1_PLAYER_MAPPING_SHA256},
+            "player_names": {"sha256": FROZEN_M1_PLAYER_NAMES_SHA256},
+        },
+        "parent_checkpoint": {"sha256": K0_70K_SHA256},
+        "runs": runs,
+    }
+    t_manifest_p = t_dir / "training_manifest.json"
+    with open(t_manifest_p, "w", encoding="utf-8") as f:
+        json.dump(t_manifest, f)
+
+    t_preflight = {
+        "schema": "keqing.mortal.m1_training_preflight.v1",
+        "experiment_id": M1_EXPERIMENT_ID,
+        "training_manifest_sha256": sha256_file(t_manifest_p),
+        "dataset_4_sha_pass": True,
+        "parent_k0_sha_pass": True,
+        "configs_parsed": True,
+        "commands_verified": True,
+        "run_dirs_clean": True,
+        "trainer_consumer_check": {
+            "files_count": 12000,
+            "mappings_count": 12000,
+            "all_ext_mortal": True,
+            "files_mapping_symmetric": True,
+        },
+    }
+    t_preflight_p = t_dir / "training_preflight.json"
+    with open(t_preflight_p, "w", encoding="utf-8") as f:
+        json.dump(t_preflight, f)
+
+    # Mismatch approved commit
+    monkeypatch.setattr(rmv, "APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT", "wrong_commit")
+    monkeypatch.setattr(rmv, "AUTHORIZED_TRAINING_PLAN_SHA256", sha256_file(t_manifest_p))
+    monkeypatch.setattr(rmv, "AUTHORIZED_TRAINING_PREFLIGHT_SHA256", sha256_file(t_preflight_p))
+    with pytest.raises(ContractError, match="Manifest approved training implementation commit mismatch"):
+        validate_all_m1_runs(output_dir=t_dir, require_authorization=True, enforce_canonical_paths=False)
+
+    # Set matching constants -> PASS
+    monkeypatch.setattr(rmv, "APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT", "approved_commit_abc")
+    closure = validate_all_m1_runs(output_dir=t_dir, require_authorization=True, enforce_canonical_paths=False)
+    assert closure["approved_training_implementation_commit"] == "approved_commit_abc"

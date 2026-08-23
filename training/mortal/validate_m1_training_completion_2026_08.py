@@ -34,6 +34,13 @@ from training.mortal.m1_dataset_contract_2026_08 import (
     sha256_file,
 )
 
+OFFLINE_TRAINER_SCRIPT = Path(__file__).resolve().parents[2] / "training/run_mortal_dqn_offline.py"
+
+# Authorization bindings for formal completion (fail closed by default)
+APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT = None
+AUTHORIZED_TRAINING_PLAN_SHA256 = None
+AUTHORIZED_TRAINING_PREFLIGHT_SHA256 = None
+
 
 def validate_single_run_completion(
     seed: int,
@@ -186,10 +193,19 @@ def validate_single_run_completion(
 
 def validate_all_m1_runs(
     output_dir: Path = M1_TRAINING_DIR,
+    require_authorization: bool = True,
     enforce_canonical_paths: bool = True,
     expected_dataset_file_count: int = 12000,
 ) -> dict[str, Any]:
     """Validate all 3 M1 training runs from frozen training manifest/preflight and generate closure summary."""
+    if require_authorization:
+        if not APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT:
+            raise ContractError("APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT is required for completion validation")
+        if not AUTHORIZED_TRAINING_PLAN_SHA256:
+            raise ContractError("AUTHORIZED_TRAINING_PLAN_SHA256 is required for completion validation")
+        if not AUTHORIZED_TRAINING_PREFLIGHT_SHA256:
+            raise ContractError("AUTHORIZED_TRAINING_PREFLIGHT_SHA256 is required for completion validation")
+
     if enforce_canonical_paths and output_dir.resolve() != M1_TRAINING_DIR.resolve():
         raise ContractError(f"Formal training completion requires canonical directory: {M1_TRAINING_DIR}")
 
@@ -232,7 +248,20 @@ def validate_all_m1_runs(
     if t_manifest.get("parent_checkpoint", {}).get("sha256") != K0_70K_SHA256:
         raise ContractError("Parent checkpoint SHA in training manifest does not match K0_70K_SHA256")
 
-    approved_training_commit = t_manifest.get("trainer_source", {}).get("approved_training_implementation_commit")
+    manifest_trainer_src = t_manifest.get("trainer_source", {})
+    manifest_app_commit = manifest_trainer_src.get("approved_training_implementation_commit")
+    if require_authorization and manifest_app_commit != APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT:
+        raise ContractError(f"Manifest approved training implementation commit mismatch: {manifest_app_commit} vs {APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT}")
+
+    # Re-verify trainer source on disk
+    if manifest_trainer_src.get("path") != str(OFFLINE_TRAINER_SCRIPT.resolve()):
+        raise ContractError(f"Trainer source path in manifest is non-canonical: {manifest_trainer_src.get('path')}")
+    current_trainer_sha = sha256_file(OFFLINE_TRAINER_SCRIPT)
+    current_trainer_blob = git_blob_oid(OFFLINE_TRAINER_SCRIPT)
+    if current_trainer_sha != manifest_trainer_src.get("sha256"):
+        raise ContractError(f"Trainer source SHA drift: {current_trainer_sha} vs manifest {manifest_trainer_src.get('sha256')}")
+    if current_trainer_blob != manifest_trainer_src.get("git_blob_oid"):
+        raise ContractError(f"Trainer source blob drift: {current_trainer_blob} vs manifest {manifest_trainer_src.get('git_blob_oid')}")
 
     runs_in_manifest = t_manifest.get("runs", [])
     if len(runs_in_manifest) != len(SEEDS):
@@ -265,6 +294,14 @@ def validate_all_m1_runs(
         raise ContractError(f"Training preflight experiment_id mismatch: {t_preflight.get('experiment_id')}")
 
     actual_manifest_sha = sha256_file(t_manifest_path)
+    actual_preflight_sha = sha256_file(t_preflight_path)
+
+    if require_authorization:
+        if actual_manifest_sha != AUTHORIZED_TRAINING_PLAN_SHA256:
+            raise ContractError(f"Training manifest SHA mismatch with authorized plan: {actual_manifest_sha} vs {AUTHORIZED_TRAINING_PLAN_SHA256}")
+        if actual_preflight_sha != AUTHORIZED_TRAINING_PREFLIGHT_SHA256:
+            raise ContractError(f"Training preflight SHA mismatch with authorized preflight: {actual_preflight_sha} vs {AUTHORIZED_TRAINING_PREFLIGHT_SHA256}")
+
     if t_preflight.get("training_manifest_sha256") != actual_manifest_sha:
         raise ContractError(f"Preflight training_manifest_sha256 mismatch: {t_preflight.get('training_manifest_sha256')} vs actual {actual_manifest_sha}")
 
@@ -280,7 +317,12 @@ def validate_all_m1_runs(
         raise ContractError("Preflight run_dirs_clean is not True")
 
     consumer_chk = t_preflight.get("trainer_consumer_check", {})
-    if consumer_chk.get("files_count") != 12000 or consumer_chk.get("mappings_count") != 12000 or not consumer_chk.get("all_ext_mortal"):
+    if (
+        consumer_chk.get("files_count") != 12000
+        or consumer_chk.get("mappings_count") != 12000
+        or not consumer_chk.get("all_ext_mortal")
+        or not consumer_chk.get("files_mapping_symmetric")
+    ):
         raise ContractError(f"Preflight trainer consumer check did not pass: {consumer_chk}")
 
     # 3. Validate all 3 runs
@@ -301,7 +343,7 @@ def validate_all_m1_runs(
     closure = {
         "schema": "keqing.mortal.m1_training_completion_closure.v1",
         "experiment_id": M1_EXPERIMENT_ID,
-        "approved_training_implementation_commit": approved_training_commit,
+        "approved_training_implementation_commit": manifest_app_commit,
         "dataset": {
             "dataset_manifest_sha256": FROZEN_M1_DATASET_MANIFEST_SHA256,
             "dataset_index_sha256": manifest_index_sha,
@@ -314,7 +356,7 @@ def validate_all_m1_runs(
         },
         "training_preflight": {
             "path": str(t_preflight_path.resolve()),
-            "sha256": sha256_file(t_preflight_path),
+            "sha256": actual_preflight_sha,
         },
         "configs": config_provenance,
         "parent_checkpoint": {

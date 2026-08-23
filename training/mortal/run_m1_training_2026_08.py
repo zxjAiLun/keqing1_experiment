@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -149,7 +150,7 @@ def prepare_training_manifest(
     require_authorization: bool = True,
     enforce_canonical_paths: bool = True,
 ) -> dict[str, Any]:
-    """Prepare and freeze training configs and execution manifest for all 3 seeds (fail closed)."""
+    """Prepare and freeze training configs and execution manifest for all 3 seeds with atomic publication (fail closed)."""
     if require_authorization:
         if not TRAINING_PREPARATION_AUTHORIZED:
             raise AuthorizationError(
@@ -181,6 +182,12 @@ def prepare_training_manifest(
                 f"Training directory {output_training_dir} already exists and is non-empty ({len(entries)} entries). "
                 "Formal preparation requires pristine state without prior artifacts."
             )
+
+    staging_root = output_training_dir.parent / f"{output_training_dir.name}.staging"
+    if staging_root.exists():
+        raise ContractError(
+            f"Staging directory {staging_root} already exists. Refusing to overwrite or silently delete. Pristine state required."
+        )
 
     manifest_path = dataset_dir / "dataset_manifest.json"
     m1_idx_path = dataset_dir / "file_index_m1.pth"
@@ -284,25 +291,17 @@ def prepare_training_manifest(
         if line != "?? 1.md":
             raise ContractError(f"Git working tree is dirty during training prep: {line}")
 
-    # All preflights passed: create output directory and write configs
-    output_training_dir.mkdir(parents=True, exist_ok=True)
-    t_manifest_path = output_training_dir / "training_manifest.json"
-    t_preflight_path = output_training_dir / "training_preflight.json"
-    runs: list[dict[str, Any]] = []
+    # Preflight 7: In-memory generation, serialization, re-parsing, and contract validation
+    runs_in_memory: list[dict[str, Any]] = []
+    serialized_configs: dict[int, bytes] = {}
 
     for s in SEEDS:
-        run_dir = output_training_dir / f"M1_variant/seed_{s}"
-        config_path = run_dir / "config.toml"
-        if config_path.exists():
-            raise ContractError(f"Config already exists at {config_path}. Refusing to overwrite.")
-
-        run_dir.mkdir(parents=True, exist_ok=True)
-        (run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
-        (run_dir / "tb_mortal").mkdir(parents=True, exist_ok=True)
+        canonical_run_dir = output_training_dir / f"M1_variant/seed_{s}"
+        canonical_config_path = canonical_run_dir / "config.toml"
 
         config_dict = generate_m1_training_config(
             seed=s,
-            output_run_dir=run_dir,
+            output_run_dir=canonical_run_dir,
             m1_index_path=m1_idx_path,
             m1_mapping_path=m1_map_path,
             m1_labels_path=m1_lbl_path,
@@ -310,27 +309,54 @@ def prepare_training_manifest(
 
         try:
             import tomli_w
-            with open(config_path, "wb") as f:
-                tomli_w.dump(config_dict, f)
+            cfg_bytes = tomli_w.dumps(config_dict).encode("utf-8")
         except ImportError:
             import toml
-            with open(config_path, "w", encoding="utf-8") as f:
-                toml.dump(config_dict, f)
+            cfg_bytes = toml.dumps(config_dict).encode("utf-8")
 
-        # Preflight 7: Re-parse generated config.toml and verify contract keys
+        serialized_configs[s] = cfg_bytes
+
+        # Re-parse serialized config bytes
         try:
             import tomllib
-            with open(config_path, "rb") as f:
-                parsed_cfg = tomllib.load(f)
+            parsed_cfg = tomllib.loads(cfg_bytes.decode("utf-8"))
         except ImportError:
             import tomli
-            with open(config_path, "rb") as f:
-                parsed_cfg = tomli.load(f)
+            parsed_cfg = tomli.loads(cfg_bytes.decode("utf-8"))
 
-        if parsed_cfg.get("control", {}).get("batch_size") != 512:
-            raise ContractError(f"Seed {s} parsed config batch_size mismatch: {parsed_cfg.get('control', {}).get('batch_size')}")
-        if parsed_cfg.get("control", {}).get("enable_amp") is not False:
+        # Verify exact config contract keys
+        ctrl = parsed_cfg.get("control", {})
+        if ctrl.get("version") != 4:
+            raise ContractError(f"Seed {s} config control.version mismatch: {ctrl.get('version')}")
+        if ctrl.get("batch_size") != 512:
+            raise ContractError(f"Seed {s} parsed config batch_size mismatch: {ctrl.get('batch_size')}")
+        if ctrl.get("opt_step_every") != 1:
+            raise ContractError(f"Seed {s} config opt_step_every mismatch: {ctrl.get('opt_step_every')}")
+        if ctrl.get("device") != "cuda:0":
+            raise ContractError(f"Seed {s} config device mismatch: {ctrl.get('device')}")
+        if ctrl.get("enable_amp") is not False:
             raise ContractError(f"Seed {s} parsed config enable_amp is not False")
+        if ctrl.get("state_file") != str((canonical_run_dir / "mortal.pth").resolve()):
+            raise ContractError(f"Seed {s} config state_file mismatch: {ctrl.get('state_file')}")
+        if ctrl.get("best_state_file") != str((canonical_run_dir / "mortal_best.pth").resolve()):
+            raise ContractError(f"Seed {s} config best_state_file mismatch: {ctrl.get('best_state_file')}")
+        if ctrl.get("tensorboard_dir") != str((canonical_run_dir / "tb_mortal").resolve()):
+            raise ContractError(f"Seed {s} config tensorboard_dir mismatch: {ctrl.get('tensorboard_dir')}")
+
+        ds_sec = parsed_cfg.get("dataset", {})
+        if ds_sec.get("file_index") != str(m1_idx_path.resolve()):
+            raise ContractError(f"Seed {s} parsed config file_index mismatch: {ds_sec.get('file_index')}")
+        if ds_sec.get("player_names_by_file") != str(m1_map_path.resolve()):
+            raise ContractError(f"Seed {s} parsed config player_names_by_file mismatch: {ds_sec.get('player_names_by_file')}")
+        if ds_sec.get("player_names_files") != [str(m1_lbl_path.resolve())]:
+            raise ContractError(f"Seed {s} parsed config player_names_files mismatch: {ds_sec.get('player_names_files')}")
+        if ds_sec.get("num_workers") != 0:
+            raise ContractError(f"Seed {s} parsed config num_workers mismatch: {ds_sec.get('num_workers')}")
+        if ds_sec.get("reserve_ratio") != 0.0:
+            raise ContractError(f"Seed {s} parsed config reserve_ratio mismatch: {ds_sec.get('reserve_ratio')}")
+        if ds_sec.get("enable_augmentation") is not False or ds_sec.get("augmented_first") is not False:
+            raise ContractError(f"Seed {s} parsed config data augmentation must be False")
+
         if parsed_cfg.get("objective", {}).get("mode") != "behavior_action_mc":
             raise ContractError(f"Seed {s} parsed config objective mismatch")
         if parsed_cfg.get("reward", {}).get("mode") != "final_rank_mc":
@@ -339,36 +365,38 @@ def prepare_training_manifest(
             raise ContractError(f"Seed {s} parsed config CQL min_q_weight mismatch")
         if parsed_cfg.get("aux", {}).get("next_rank_weight") != 0.2:
             raise ContractError(f"Seed {s} parsed config aux weight mismatch")
-        if parsed_cfg.get("model", {}).get("conv_channels") != 192 or parsed_cfg.get("model", {}).get("num_blocks") != 40:
-            raise ContractError(f"Seed {s} parsed config model architecture mismatch")
-        if parsed_cfg.get("dataset", {}).get("file_index") != str(m1_idx_path.resolve()):
-            raise ContractError(f"Seed {s} parsed config file_index mismatch")
-        if parsed_cfg.get("dataset", {}).get("player_names_by_file") != str(m1_map_path.resolve()):
-            raise ContractError(f"Seed {s} parsed config player_names_by_file mismatch")
+
+        resnet_sec = parsed_cfg.get("resnet", {})
+        if resnet_sec.get("conv_channels") != 192 or resnet_sec.get("num_blocks") != 40:
+            raise ContractError(f"Seed {s} parsed config resnet architecture mismatch: {resnet_sec}")
+
+        if parsed_cfg.get("env", {}).get("gamma") != 1.0:
+            raise ContractError(f"Seed {s} parsed config env.gamma mismatch: {parsed_cfg.get('env', {}).get('gamma')}")
 
         cmd = build_training_command(
             seed=s,
-            config_path=config_path,
+            config_path=canonical_config_path,
             parent_path=K0_70K_PATH,
-            run_dir=run_dir,
+            run_dir=canonical_run_dir,
         )
 
-        runs.append({
+        cfg_sha = hashlib.sha256(cfg_bytes).hexdigest()
+        runs_in_memory.append({
             "seed": s,
             "data_seed": s,
             "route": "M1_variant",
-            "run_dir": str(run_dir.resolve()),
-            "archive_dir": str((run_dir / "checkpoints").resolve()),
+            "run_dir": str(canonical_run_dir.resolve()),
+            "archive_dir": str((canonical_run_dir / "checkpoints").resolve()),
             "archive_steps": list(ARCHIVE_STEPS),
-            "config_path": str(config_path.resolve()),
-            "config_sha256": sha256_file(config_path),
+            "config_path": str(canonical_config_path.resolve()),
+            "config_sha256": cfg_sha,
             "command": cmd,
             "command_str": shlex.join(cmd),
         })
 
     # Preflight 8: Audit commands equality
     commands_verified = True
-    for r in runs:
+    for r in runs_in_memory:
         reconstructed = build_training_command(
             seed=r["seed"],
             config_path=Path(r["config_path"]),
@@ -378,14 +406,6 @@ def prepare_training_manifest(
         if reconstructed != r["command"]:
             commands_verified = False
             raise ContractError(f"Command verification failed for seed {r['seed']}")
-
-    # Preflight 9: Output run dirs checkpoint cleanliness check
-    run_dirs_clean = True
-    for r in runs:
-        ck_dir = Path(r["archive_dir"])
-        if ck_dir.exists() and any(ck_dir.iterdir()):
-            run_dirs_clean = False
-            raise ContractError(f"Checkpoints directory is not empty: {ck_dir}")
 
     trainer_blob = git_blob_oid(OFFLINE_TRAINER_SCRIPT)
     trainer_sha = sha256_file(OFFLINE_TRAINER_SCRIPT)
@@ -425,17 +445,16 @@ def prepare_training_manifest(
             "scheduler": "fresh",
             "scaler": "fresh",
         },
-        "runs": runs,
+        "runs": runs_in_memory,
     }
 
-    with open(t_manifest_path, "w", encoding="utf-8") as f:
-        json.dump(training_manifest, f, indent=2, ensure_ascii=False)
-        f.write("\n")
+    manifest_bytes = (json.dumps(training_manifest, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    manifest_sha = hashlib.sha256(manifest_bytes).hexdigest()
 
     preflight = {
         "schema": "keqing.mortal.m1_training_preflight.v1",
         "experiment_id": M1_EXPERIMENT_ID,
-        "training_manifest_sha256": sha256_file(t_manifest_path),
+        "training_manifest_sha256": manifest_sha,
         "dataset_4_sha_pass": True,
         "parent_k0_sha_pass": True,
         "configs_parsed": True,
@@ -446,15 +465,50 @@ def prepare_training_manifest(
             "files_mapping_symmetric": True,
         },
         "commands_verified": commands_verified,
-        "run_dirs_clean": run_dirs_clean,
+        "run_dirs_clean": True,
         "git": g_info,
     }
-    with open(t_preflight_path, "w", encoding="utf-8") as f:
-        json.dump(preflight, f, indent=2, ensure_ascii=False)
-        f.write("\n")
+    preflight_bytes = (json.dumps(preflight, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
 
-    print(f"Training manifest created at {t_manifest_path} (SHA256: {sha256_file(t_manifest_path)})")
-    print(f"Training preflight created at {t_preflight_path} (SHA256: {sha256_file(t_preflight_path)})")
+    # All validations passed: write to staging root and fsync
+    staging_root.mkdir(parents=True, exist_ok=True)
+    for s in SEEDS:
+        s_run_dir = staging_root / f"M1_variant/seed_{s}"
+        s_run_dir.mkdir(parents=True, exist_ok=True)
+        (s_run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
+        (s_run_dir / "tb_mortal").mkdir(parents=True, exist_ok=True)
+        cfg_out_p = s_run_dir / "config.toml"
+        with open(cfg_out_p, "wb") as f:
+            f.write(serialized_configs[s])
+            f.flush()
+            os.fsync(f.fileno())
+
+    s_manifest_p = staging_root / "training_manifest.json"
+    with open(s_manifest_p, "wb") as f:
+        f.write(manifest_bytes)
+        f.flush()
+        os.fsync(f.fileno())
+
+    s_preflight_p = staging_root / "training_preflight.json"
+    with open(s_preflight_p, "wb") as f:
+        f.write(preflight_bytes)
+        f.flush()
+        os.fsync(f.fileno())
+
+    # Ensure canonical output directory still does not exist before atomic replace
+    if output_training_dir.exists():
+        entries = list(output_training_dir.iterdir())
+        if entries:
+            raise ContractError(f"Target directory {output_training_dir} became non-empty before atomic rename.")
+        output_training_dir.rmdir()
+
+    os.replace(staging_root, output_training_dir)
+
+    final_manifest_path = output_training_dir / "training_manifest.json"
+    final_preflight_path = output_training_dir / "training_preflight.json"
+
+    print(f"Training manifest created at {final_manifest_path} (SHA256: {sha256_file(final_manifest_path)})")
+    print(f"Training preflight created at {final_preflight_path} (SHA256: {sha256_file(final_preflight_path)})")
     return training_manifest
 
 
