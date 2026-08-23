@@ -18,6 +18,10 @@ if str(SCRIPT_REPO_ROOT) not in sys.path:
 
 from training.mortal.m1_dataset_contract_2026_08 import (
     ARCHIVE_STEPS,
+    FROZEN_M1_DATASET_INDEX_SHA256,
+    FROZEN_M1_DATASET_MANIFEST_SHA256,
+    FROZEN_M1_PLAYER_MAPPING_SHA256,
+    FROZEN_M1_PLAYER_NAMES_SHA256,
     K0_70K_PATH,
     K0_70K_SHA256,
     M1_DATASET_DIR,
@@ -26,6 +30,8 @@ from training.mortal.m1_dataset_contract_2026_08 import (
     PREREG_PATH,
     REPO_ROOT,
     SEEDS,
+    SOURCE_D1_INDEX_SHA256,
+    SOURCE_M0_INDEX_SHA256,
     START_STEP,
     TARGET_STEP,
     ContractError,
@@ -35,13 +41,24 @@ from training.mortal.m1_dataset_contract_2026_08 import (
     git_info,
     sha256_file,
 )
+from training.run_mortal_dqn_offline import (
+    _load_or_build_file_index,
+    _load_player_names_by_file,
+)
 
 OFFLINE_TRAINER_SCRIPT = REPO_ROOT / "training/run_mortal_dqn_offline.py"
 
 # Authorization flags (fail closed by default)
-DATASET_PREPARATION_AUTHORIZED = True
-APPROVED_M1_IMPLEMENTATION_COMMIT = "7055675a866df4cae1d0c61217840bd084a4375a"
+DATASET_PREPARATION_AUTHORIZED = False
+APPROVED_M1_DATASET_IMPLEMENTATION_COMMIT = "7055675a866df4cae1d0c61217840bd084a4375a"
 AUTHORIZED_PREREG_SHA256 = "aa150aa1c6660428a32ad906bfaf24c05ce644dd28cdc47138c6a7d2944f4e08"
+
+TRAINING_PREPARATION_AUTHORIZED = False
+APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT = None
+AUTHORIZED_M1_DATASET_MANIFEST_SHA256 = None
+AUTHORIZED_M1_DATASET_INDEX_SHA256 = None
+AUTHORIZED_M1_PLAYER_MAPPING_SHA256 = None
+AUTHORIZED_M1_PLAYER_NAMES_SHA256 = None
 
 TRAINING_AUTHORIZED = False
 AUTHORIZED_DATASET_MANIFEST_SHA256 = None
@@ -107,8 +124,8 @@ def prepare_m1_dataset(
                 "M1 dataset preparation is NOT authorized. "
                 "Formal dataset creation requires review and an authorization-only commit."
             )
-        if not APPROVED_M1_IMPLEMENTATION_COMMIT:
-            raise AuthorizationError("APPROVED_M1_IMPLEMENTATION_COMMIT must be set when dataset prep is authorized.")
+        if not APPROVED_M1_DATASET_IMPLEMENTATION_COMMIT:
+            raise AuthorizationError("APPROVED_M1_DATASET_IMPLEMENTATION_COMMIT must be set when dataset prep is authorized.")
         if not AUTHORIZED_PREREG_SHA256:
             raise AuthorizationError("AUTHORIZED_PREREG_SHA256 must be set when dataset prep is authorized.")
         current_prereg_sha = sha256_file(PREREG_PATH)
@@ -119,7 +136,7 @@ def prepare_m1_dataset(
     m1_idx, m1_map, m1_lbl, manifest = build_m1_dataset_files(
         output_dir,
         enforce_frozen_source_sha=enforce_frozen_source_sha,
-        approved_implementation_commit=APPROVED_M1_IMPLEMENTATION_COMMIT,
+        approved_implementation_commit=APPROVED_M1_DATASET_IMPLEMENTATION_COMMIT,
     )
     print(f"Dataset manifest generated at {manifest} (SHA256: {sha256_file(manifest)})")
     return m1_idx, m1_map, m1_lbl, manifest
@@ -128,8 +145,30 @@ def prepare_m1_dataset(
 def prepare_training_manifest(
     dataset_dir: Path = M1_DATASET_DIR,
     output_training_dir: Path = M1_TRAINING_DIR,
+    require_authorization: bool = True,
+    enforce_canonical_paths: bool = True,
 ) -> dict[str, Any]:
-    """Prepare and freeze training configs and execution manifest for all 3 seeds."""
+    """Prepare and freeze training configs and execution manifest for all 3 seeds (fail closed)."""
+    if require_authorization:
+        if not TRAINING_PREPARATION_AUTHORIZED:
+            raise AuthorizationError(
+                "M1 training preparation is NOT authorized. "
+                "Formal training preparation requires dataset review and an authorization-only commit."
+            )
+        if not APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT:
+            raise AuthorizationError("APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT is required for training preparation")
+        if not AUTHORIZED_M1_DATASET_MANIFEST_SHA256:
+            raise AuthorizationError("AUTHORIZED_M1_DATASET_MANIFEST_SHA256 is required for training preparation")
+        if not AUTHORIZED_M1_DATASET_INDEX_SHA256:
+            raise AuthorizationError("AUTHORIZED_M1_DATASET_INDEX_SHA256 is required for training preparation")
+        if not AUTHORIZED_M1_PLAYER_MAPPING_SHA256:
+            raise AuthorizationError("AUTHORIZED_M1_PLAYER_MAPPING_SHA256 is required for training preparation")
+        if not AUTHORIZED_M1_PLAYER_NAMES_SHA256:
+            raise AuthorizationError("AUTHORIZED_M1_PLAYER_NAMES_SHA256 is required for training preparation")
+
+    if enforce_canonical_paths and output_training_dir.resolve() != M1_TRAINING_DIR.resolve():
+        raise ContractError(f"Formal training preparation requires canonical directory: {M1_TRAINING_DIR}")
+
     t_manifest_path = output_training_dir / "training_manifest.json"
     t_preflight_path = output_training_dir / "training_preflight.json"
 
@@ -143,17 +182,72 @@ def prepare_training_manifest(
     m1_map_path = dataset_dir / "player_names_by_file.json"
     m1_lbl_path = dataset_dir / "player_names.txt"
 
+    # Preflight 1: Check 4 dataset artifact files exist
     if not manifest_path.exists() or not m1_idx_path.exists() or not m1_map_path.exists() or not m1_lbl_path.exists():
         raise ContractError(
             f"Dataset closure is missing at {dataset_dir}. "
             "Run --prepare-dataset first before preparing training configs."
         )
 
-    # Re-verify K0 parent SHA
+    # Preflight 2: Verify dataset artifact SHAs against frozen constants
+    actual_manifest_sha = sha256_file(manifest_path)
+    actual_index_sha = sha256_file(m1_idx_path)
+    actual_map_sha = sha256_file(m1_map_path)
+    actual_lbl_sha = sha256_file(m1_lbl_path)
+
+    if actual_manifest_sha != FROZEN_M1_DATASET_MANIFEST_SHA256:
+        raise ContractError(f"Dataset manifest SHA drift: {actual_manifest_sha} vs expected {FROZEN_M1_DATASET_MANIFEST_SHA256}")
+    if actual_index_sha != FROZEN_M1_DATASET_INDEX_SHA256:
+        raise ContractError(f"Dataset index SHA drift: {actual_index_sha} vs expected {FROZEN_M1_DATASET_INDEX_SHA256}")
+    if actual_map_sha != FROZEN_M1_PLAYER_MAPPING_SHA256:
+        raise ContractError(f"Dataset player mapping SHA drift: {actual_map_sha} vs expected {FROZEN_M1_PLAYER_MAPPING_SHA256}")
+    if actual_lbl_sha != FROZEN_M1_PLAYER_NAMES_SHA256:
+        raise ContractError(f"Dataset player names SHA drift: {actual_lbl_sha} vs expected {FROZEN_M1_PLAYER_NAMES_SHA256}")
+
+    # Preflight 3: Validate dataset manifest contents
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        ds_manifest_data = json.load(f)
+
+    if ds_manifest_data.get("schema") != "keqing.mortal.m1_dataset_manifest.v1":
+        raise ContractError(f"Dataset manifest schema mismatch: {ds_manifest_data.get('schema')}")
+    if ds_manifest_data.get("experiment_id") != M1_EXPERIMENT_ID:
+        raise ContractError(f"Dataset manifest experiment_id mismatch: {ds_manifest_data.get('experiment_id')}")
+    if ds_manifest_data.get("implementation", {}).get("approved_implementation_commit") != APPROVED_M1_DATASET_IMPLEMENTATION_COMMIT:
+        raise ContractError("Dataset manifest approved_implementation_commit mismatch")
+    if ds_manifest_data.get("preregistration", {}).get("content_sha256") != AUTHORIZED_PREREG_SHA256:
+        raise ContractError("Dataset manifest preregistration SHA mismatch")
+
+    s_m0 = ds_manifest_data.get("source_m0_index", {})
+    if not s_m0.get("match") or s_m0.get("count") != 6000 or s_m0.get("actual_sha256") != SOURCE_M0_INDEX_SHA256:
+        raise ContractError("Source M0 index verification failed in manifest")
+    s_d1 = ds_manifest_data.get("source_d1_index", {})
+    if not s_d1.get("match") or s_d1.get("count") != 6000 or s_d1.get("actual_sha256") != SOURCE_D1_INDEX_SHA256:
+        raise ContractError("Source D1 index verification failed in manifest")
+
+    inv_sum = ds_manifest_data.get("inventory_summary", {})
+    if (
+        inv_sum.get("total_files") != 12000
+        or inv_sum.get("m0_files") != 6000
+        or inv_sum.get("d1_files") != 6000
+        or inv_sum.get("seed_overlap") != 0
+        or inv_sum.get("all_single_ext_mortal") is not True
+    ):
+        raise ContractError(f"Dataset inventory summary validation failed: {inv_sum}")
+
+    ds_artifacts = ds_manifest_data.get("dataset_artifacts", {})
+    if ds_artifacts.get("file_index_m1", {}).get("sha256") != actual_index_sha:
+        raise ContractError("Manifest file_index_m1 SHA does not match disk actual")
+    if ds_artifacts.get("player_names_by_file", {}).get("sha256") != actual_map_sha:
+        raise ContractError("Manifest player_names_by_file SHA does not match disk actual")
+    if ds_artifacts.get("player_names", {}).get("sha256") != actual_lbl_sha:
+        raise ContractError("Manifest player_names SHA does not match disk actual")
+
+    # Preflight 4: Re-verify K0 parent SHA
     k0_sha = sha256_file(K0_70K_PATH)
     if k0_sha != K0_70K_SHA256:
         raise ContractError(f"Parent K0_70k SHA mismatch: {k0_sha} vs {K0_70K_SHA256}")
 
+    # All preflights passed: create output directory and write configs
     output_training_dir.mkdir(parents=True, exist_ok=True)
     runs: list[dict[str, Any]] = []
 
@@ -193,29 +287,54 @@ def prepare_training_manifest(
 
         runs.append({
             "seed": s,
+            "data_seed": s,
             "route": "M1_variant",
             "run_dir": str(run_dir.resolve()),
+            "archive_dir": str((run_dir / "checkpoints").resolve()),
+            "archive_steps": list(ARCHIVE_STEPS),
             "config_path": str(config_path.resolve()),
             "config_sha256": sha256_file(config_path),
             "command": cmd,
             "command_str": shlex.join(cmd),
         })
 
+    trainer_blob = git_blob_oid(OFFLINE_TRAINER_SCRIPT)
+    trainer_sha = sha256_file(OFFLINE_TRAINER_SCRIPT)
+
     training_manifest = {
         "schema": "keqing.mortal.m1_training_manifest.v1",
         "experiment_id": M1_EXPERIMENT_ID,
-        "dataset_manifest_sha256": sha256_file(manifest_path),
-        "dataset_index_sha256": sha256_file(m1_idx_path),
-        "player_mapping_sha256": sha256_file(m1_map_path),
-        "player_names_sha256": sha256_file(m1_lbl_path),
+        "dataset": {
+            "dataset_manifest": {"path": str(manifest_path.resolve()), "sha256": actual_manifest_sha},
+            "file_index_m1": {"path": str(m1_idx_path.resolve()), "sha256": actual_index_sha},
+            "player_names_by_file": {"path": str(m1_map_path.resolve()), "sha256": actual_map_sha},
+            "player_names": {"path": str(m1_lbl_path.resolve()), "sha256": actual_lbl_sha},
+        },
         "parent_checkpoint": {
             "path": str(K0_70K_PATH.resolve()),
             "sha256": k0_sha,
         },
         "trainer_source": {
             "path": str(OFFLINE_TRAINER_SCRIPT.resolve()),
-            "sha256": sha256_file(OFFLINE_TRAINER_SCRIPT),
-            "blob_oid": git_blob_oid(OFFLINE_TRAINER_SCRIPT),
+            "sha256": trainer_sha,
+            "git_blob_oid": trainer_blob,
+            "approved_training_implementation_commit": APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT,
+        },
+        "frozen_parameters": {
+            "start_step": START_STEP,
+            "target_step": TARGET_STEP,
+            "batch_size": 512,
+            "num_workers": 0,
+            "enable_amp": False,
+            "objective_mode": "behavior_action_mc",
+            "reward_mode": "final_rank_mc",
+            "cql_min_q_weight": 5.0,
+            "aux_next_rank_weight": 0.2,
+            "conv_channels": 192,
+            "num_blocks": 40,
+            "optimizer": "preserved",
+            "scheduler": "fresh",
+            "scaler": "fresh",
         },
         "runs": runs,
     }
@@ -224,10 +343,31 @@ def prepare_training_manifest(
         json.dump(training_manifest, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
+    # Perform real consumer smoke check
+    smoke_files = _load_or_build_file_index({"control": {"version": 4}, "dataset": {"file_index": str(m1_idx_path), "globs": []}})
+    smoke_mapping = _load_player_names_by_file({"dataset": {"player_names_by_file": str(m1_map_path)}})
+
+    # Check output run dirs have no checkpoint artifacts
+    run_dirs_clean = True
+    for r in runs:
+        ck_dir = Path(r["archive_dir"])
+        if ck_dir.exists() and any(ck_dir.iterdir()):
+            run_dirs_clean = False
+
     preflight = {
         "schema": "keqing.mortal.m1_training_preflight.v1",
         "experiment_id": M1_EXPERIMENT_ID,
         "training_manifest_sha256": sha256_file(t_manifest_path),
+        "dataset_4_sha_pass": True,
+        "parent_k0_sha_pass": True,
+        "configs_parsed": True,
+        "trainer_consumer_check": {
+            "files_count": len(smoke_files),
+            "mappings_count": len(smoke_mapping) if smoke_mapping else 0,
+            "all_ext_mortal": all(v == "ext_mortal" for v in smoke_mapping.values()) if smoke_mapping else False,
+        },
+        "commands_verified": True,
+        "run_dirs_clean": run_dirs_clean,
         "git": git_info(),
     }
     with open(t_preflight_path, "w", encoding="utf-8") as f:
@@ -259,8 +399,8 @@ def execute_training_for_seed(
             raise ContractError(f"Non-canonical dataset directory in formal execute: {dataset_dir}")
 
     # Check all authorized SHA constants are non-empty
-    if not APPROVED_M1_IMPLEMENTATION_COMMIT:
-        raise AuthorizationError("APPROVED_M1_IMPLEMENTATION_COMMIT is required for training execution")
+    if not APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT:
+        raise AuthorizationError("APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT is required for training execution")
     if not AUTHORIZED_DATASET_MANIFEST_SHA256:
         raise AuthorizationError("AUTHORIZED_DATASET_MANIFEST_SHA256 is required for training execution")
     if not AUTHORIZED_DATASET_INDEX_SHA256:
@@ -293,7 +433,7 @@ def execute_training_for_seed(
     # Verify confirmation token
     expected_token = compute_confirmation_token(
         seed=seed,
-        approved_commit=APPROVED_M1_IMPLEMENTATION_COMMIT,
+        approved_commit=APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT,
         preflight_sha256=AUTHORIZED_TRAINING_PREFLIGHT_SHA256,
     )
     if confirmation_token != expected_token:
@@ -363,6 +503,10 @@ def main():
             )
         prepare_m1_dataset(output_dir=M1_DATASET_DIR)
     elif args.prepare_training:
+        if args.training_dir.resolve() != M1_TRAINING_DIR.resolve():
+            raise ContractError(
+                f"Formal --prepare-training requires canonical directory: {M1_TRAINING_DIR}, got {args.training_dir}"
+            )
         prepare_training_manifest(dataset_dir=args.dataset_dir, output_training_dir=args.training_dir)
     elif args.execute:
         if args.seed is None:
@@ -376,7 +520,8 @@ def main():
     elif args.status:
         print(f"M1 Experiment ID: {M1_EXPERIMENT_ID}")
         print(f"Dataset preparation authorized: {DATASET_PREPARATION_AUTHORIZED}")
-        print(f"Training authorized: {TRAINING_AUTHORIZED}")
+        print(f"Training preparation authorized: {TRAINING_PREPARATION_AUTHORIZED}")
+        print(f"Training execution authorized: {TRAINING_AUTHORIZED}")
 
 
 if __name__ == "__main__":

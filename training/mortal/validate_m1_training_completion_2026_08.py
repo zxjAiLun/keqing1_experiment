@@ -17,6 +17,10 @@ if str(SCRIPT_REPO_ROOT) not in sys.path:
 
 from training.mortal.m1_dataset_contract_2026_08 import (
     ARCHIVE_STEPS,
+    FROZEN_M1_DATASET_INDEX_SHA256,
+    FROZEN_M1_DATASET_MANIFEST_SHA256,
+    FROZEN_M1_PLAYER_MAPPING_SHA256,
+    FROZEN_M1_PLAYER_NAMES_SHA256,
     K0_70K_SHA256,
     M1_EXPERIMENT_ID,
     M1_TRAINING_DIR,
@@ -24,6 +28,7 @@ from training.mortal.m1_dataset_contract_2026_08 import (
     START_STEP,
     TARGET_STEP,
     ContractError,
+    git_blob_oid,
     sha256_file,
 )
 
@@ -41,7 +46,7 @@ def validate_single_run_completion(
         raise FileNotFoundError(f"Final checkpoint missing for seed {seed}: {final_path}")
 
     state = torch.load(final_path, weights_only=False, map_location="cpu")
-    
+
     # 1. Steps check
     if "steps" not in state:
         raise ContractError(f"Seed {seed} checkpoint missing 'steps' field")
@@ -121,14 +126,16 @@ def validate_single_run_completion(
         raise ContractError(f"Seed {seed} training contract schema mismatch: {t_contract.get('schema')}")
 
     ds_contract = t_contract.get("dataset", {})
-    if expected_dataset_index_sha256 and ds_contract.get("file_index_sha256") != expected_dataset_index_sha256:
+    if not expected_dataset_index_sha256:
+        raise ContractError(f"Seed {seed} expected_dataset_index_sha256 is required for validation")
+    if ds_contract.get("file_index_sha256") != expected_dataset_index_sha256:
         raise ContractError(f"Seed {seed} dataset file_index SHA mismatch in training_contract: {ds_contract.get('file_index_sha256')} vs expected {expected_dataset_index_sha256}")
     if expected_player_mapping_sha256 and ds_contract.get("player_names_by_file_sha256") != expected_player_mapping_sha256:
         raise ContractError(f"Seed {seed} player_names_by_file SHA mismatch in training_contract")
     if ds_contract.get("mapped_label_counts") != {"ext_mortal": expected_dataset_file_count}:
         raise ContractError(f"Seed {seed} mapped_label_counts mismatch: {ds_contract.get('mapped_label_counts')}")
 
-    # 7. Check all archive steps
+    # 7. Check all archive steps (FAIL CLOSED on missing state dicts)
     archives = []
     for arch_step in ARCHIVE_STEPS:
         p = run_dir / "checkpoints" / f"mortal_{arch_step}.pth"
@@ -139,12 +146,13 @@ def validate_single_run_completion(
         if arch_steps != arch_step:
             raise ContractError(f"Archive {p.name} payload steps is {arch_steps}, expected {arch_step}")
 
-        # Check finiteness of archive models
+        # Check required state dicts exist and weights are finite
         for net_key in ("mortal", "current_dqn", "aux_net"):
-            if net_key in arch_state and isinstance(arch_state[net_key], dict):
-                for k, v in arch_state[net_key].items():
-                    if isinstance(v, torch.Tensor) and not torch.isfinite(v).all():
-                        raise ContractError(f"Archive {p.name} {net_key} weight {k} contains NaN/Inf")
+            if net_key not in arch_state or not isinstance(arch_state[net_key], dict):
+                raise ContractError(f"Archive {p.name} missing required state dict for '{net_key}'")
+            for k, v in arch_state[net_key].items():
+                if isinstance(v, torch.Tensor) and not torch.isfinite(v).all():
+                    raise ContractError(f"Archive {p.name} {net_key} weight {k} contains NaN/Inf")
 
         archives.append({
             "step": arch_step,
@@ -178,6 +186,22 @@ def validate_all_m1_runs(
     if closure_path.exists():
         raise ContractError(f"Training completion closure already exists: {closure_path}. Refusing to overwrite.")
 
+    t_manifest_path = output_dir / "training_manifest.json"
+    t_preflight_path = output_dir / "training_preflight.json"
+
+    if expected_dataset_index_sha256 is None:
+        if t_manifest_path.exists():
+            with open(t_manifest_path, "r", encoding="utf-8") as f:
+                t_manifest = json.load(f)
+            expected_dataset_index_sha256 = t_manifest.get("dataset", {}).get("file_index_m1", {}).get("sha256")
+            expected_player_mapping_sha256 = t_manifest.get("dataset", {}).get("player_names_by_file", {}).get("sha256")
+        else:
+            expected_dataset_index_sha256 = FROZEN_M1_DATASET_INDEX_SHA256
+            expected_player_mapping_sha256 = FROZEN_M1_PLAYER_MAPPING_SHA256
+
+    if not expected_dataset_index_sha256:
+        raise ContractError("Cannot validate training completion without expected dataset index SHA")
+
     runs = []
     for s in SEEDS:
         run_dir = output_dir / f"M1_variant/seed_{s}"
@@ -190,9 +214,31 @@ def validate_all_m1_runs(
         )
         runs.append(run_info)
 
+    this_script = Path(__file__).resolve()
+
     closure = {
         "schema": "keqing.mortal.m1_training_completion_closure.v1",
         "experiment_id": M1_EXPERIMENT_ID,
+        "dataset": {
+            "dataset_manifest_sha256": FROZEN_M1_DATASET_MANIFEST_SHA256,
+            "dataset_index_sha256": expected_dataset_index_sha256,
+            "player_mapping_sha256": expected_player_mapping_sha256,
+            "player_names_sha256": FROZEN_M1_PLAYER_NAMES_SHA256,
+        },
+        "training_manifest": {
+            "path": str(t_manifest_path.resolve()) if t_manifest_path.exists() else None,
+            "sha256": sha256_file(t_manifest_path) if t_manifest_path.exists() else None,
+        },
+        "training_preflight": {
+            "path": str(t_preflight_path.resolve()) if t_preflight_path.exists() else None,
+            "sha256": sha256_file(t_preflight_path) if t_preflight_path.exists() else None,
+        },
+        "parent_k0_sha256": K0_70K_SHA256,
+        "validator_source": {
+            "path": str(this_script),
+            "content_sha256": sha256_file(this_script),
+            "git_blob_oid": git_blob_oid(this_script),
+        },
         "target_steps": TARGET_STEP,
         "runs": runs,
     }
@@ -209,9 +255,15 @@ def validate_all_m1_runs(
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=M1_TRAINING_DIR, help="M1 training root directory")
+    parser.add_argument("--expected-dataset-index-sha", type=str, default=None, help="Expected dataset index SHA256")
+    parser.add_argument("--expected-player-mapping-sha", type=str, default=None, help="Expected player mapping SHA256")
     args = parser.parse_args()
 
-    validate_all_m1_runs(args.output_dir)
+    validate_all_m1_runs(
+        output_dir=args.output_dir,
+        expected_dataset_index_sha256=args.expected_dataset_index_sha,
+        expected_player_mapping_sha256=args.expected_player_mapping_sha,
+    )
 
 
 if __name__ == "__main__":

@@ -112,6 +112,12 @@ M1_DATASET_DIR = M1_EXPERIMENT_ROOT / "dataset_prep_2026_08"
 M1_TRAINING_DIR = M1_EXPERIMENT_ROOT / "training_implementation_2026_08"
 M1_EVALUATION_DIR = M1_EXPERIMENT_ROOT / "evaluation_implementation_2026_08"
 
+# Frozen M1 materialized dataset artifacts SHA-256
+FROZEN_M1_DATASET_MANIFEST_SHA256 = "206f5445544c55aaa88d909253ef5eb422274998c7e78c8b2d569d57b3c2dde4"
+FROZEN_M1_DATASET_INDEX_SHA256 = "3d190247fb6e16b423d786ec07bd3b0ff3cd8903306de70ba57955e45226c07f"
+FROZEN_M1_PLAYER_MAPPING_SHA256 = "7c1b0433a207ce1c941ff42c0d7dfbaa53087fd3968a9228927f214357164469"
+FROZEN_M1_PLAYER_NAMES_SHA256 = "29f5f7c619c5481352e6fe29d4c5feb9442b6d1f1cec1ea7f4f405b330ce58d0"
+
 WINDOWS_PREFIX_MAP = [
     ("E:/AUbuntuProject/project/keqing1/", "/media/bailan/DISK/AUbuntuProject/project/keqing1/"),
     ("E:\\AUbuntuProject\\project\\keqing1\\", "/media/bailan/DISK/AUbuntuProject/project/keqing1/"),

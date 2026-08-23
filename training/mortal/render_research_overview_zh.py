@@ -51,6 +51,7 @@ ALLOWED_STATUSES = {
     "inconclusive",
     "not_supported",
     "implemented_not_started",
+    "dataset_materialized_training_not_started",
 }
 
 
@@ -132,6 +133,7 @@ def status_text(status: str) -> str:
         "inconclusive": "已结束（无定论）",
         "not_supported": "已结束（不晋级）",
         "implemented_not_started": "已实现，未启动",
+        "dataset_materialized_training_not_started": "数据已物化，训练未启动",
     }[status]
 
 

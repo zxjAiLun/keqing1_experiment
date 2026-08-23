@@ -35,6 +35,7 @@ from training.mortal.run_m1_training_2026_08 import (
 from training.mortal.run_m1_training_2026_08 import (
     execute_training_for_seed,
     prepare_m1_dataset,
+    prepare_training_manifest,
 )
 from training.mortal.summarize_m1_promotion_2026_08 import (
     authoritative_ranks_from_stat,
@@ -88,25 +89,25 @@ def test_2_mapping_dict_mistakenly_embedded_fails():
 def test_3a_dataset_auth_true_noncanonical_path_fails(tmp_path: Path, monkeypatch):
     """Test 3a: Authorized formal dataset prep with noncanonical path raises ContractError."""
     monkeypatch.setattr(rmt, "DATASET_PREPARATION_AUTHORIZED", True)
-    monkeypatch.setattr(rmt, "APPROVED_M1_IMPLEMENTATION_COMMIT", "some_commit")
+    monkeypatch.setattr(rmt, "APPROVED_M1_DATASET_IMPLEMENTATION_COMMIT", "some_commit")
     monkeypatch.setattr(rmt, "AUTHORIZED_PREREG_SHA256", sha256_file(PREREG_PATH))
 
     with pytest.raises(ContractError, match="Formal dataset preparation requires canonical path"):
         prepare_m1_dataset(output_dir=tmp_path / "noncanonical_ds", require_authorization=True)
 
 
-def test_3b_dataset_auth_true_but_prereg_sha_wrong_fails_and_no_output_dir(monkeypatch):
-    """Test 3b: DATASET_PREPARATION_AUTHORIZED is True but wrong prereg SHA raises AuthorizationError and creates no dir."""
+def test_3b_dataset_auth_true_but_prereg_sha_wrong_fails_and_no_output_dir(monkeypatch, tmp_path: Path):
+    """Test 3b: DATASET_PREPARATION_AUTHORIZED is True but wrong prereg SHA raises AuthorizationError."""
+    target_dir = tmp_path / "never_created_ds"
     monkeypatch.setattr(rmt, "DATASET_PREPARATION_AUTHORIZED", True)
-    monkeypatch.setattr(rmt, "APPROVED_M1_IMPLEMENTATION_COMMIT", "some_commit")
+    monkeypatch.setattr(rmt, "APPROVED_M1_DATASET_IMPLEMENTATION_COMMIT", "some_commit")
     monkeypatch.setattr(rmt, "AUTHORIZED_PREREG_SHA256", "wrong_prereg_sha")
+    monkeypatch.setattr(rmt, "M1_DATASET_DIR", target_dir)
 
-    from training.mortal.m1_dataset_contract_2026_08 import M1_DATASET_DIR
-    # M1_DATASET_DIR does not exist
-    assert not M1_DATASET_DIR.exists()
+    assert not target_dir.exists()
     with pytest.raises(TrainAuthError, match="Prereg SHA mismatch"):
-        prepare_m1_dataset(output_dir=M1_DATASET_DIR, require_authorization=True)
-    assert not M1_DATASET_DIR.exists()
+        prepare_m1_dataset(output_dir=target_dir, require_authorization=True)
+    assert not target_dir.exists()
 
 
 def test_4_and_5_source_index_sha_drift_fails_and_no_output_dir(tmp_path: Path):
@@ -131,8 +132,9 @@ def test_4_and_5_source_index_sha_drift_fails_and_no_output_dir(tmp_path: Path):
 def test_6_and_7_training_auth_true_but_sha_absent_or_wrong_token_fails(tmp_path: Path, monkeypatch):
     """Test 6 & 7: TRAINING_AUTHORIZED is True but missing SHA constant or wrong token raises AuthorizationError."""
     monkeypatch.setattr(rmt, "TRAINING_AUTHORIZED", True)
-    # Missing SHA constants
-    with pytest.raises(TrainAuthError, match="APPROVED_M1_IMPLEMENTATION_COMMIT is required"):
+    monkeypatch.setattr(rmt, "APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT", None)
+    # Missing implementation commit
+    with pytest.raises(TrainAuthError, match="APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT is required"):
         execute_training_for_seed(20260806, training_dir=tmp_path / "train", dataset_dir=tmp_path / "ds", enforce_canonical_paths=False)
 
     # Create dummy files
@@ -148,7 +150,7 @@ def test_6_and_7_training_auth_true_but_sha_absent_or_wrong_token_fails(tmp_path
     (t_dir / "training_preflight.json").write_text("t_preflight")
 
     # Set constants matching dummy files
-    monkeypatch.setattr(rmt, "APPROVED_M1_IMPLEMENTATION_COMMIT", "commit123")
+    monkeypatch.setattr(rmt, "APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT", "commit123")
     monkeypatch.setattr(rmt, "AUTHORIZED_DATASET_MANIFEST_SHA256", sha256_file(ds_dir / "dataset_manifest.json"))
     monkeypatch.setattr(rmt, "AUTHORIZED_DATASET_INDEX_SHA256", sha256_file(ds_dir / "file_index_m1.pth"))
     monkeypatch.setattr(rmt, "AUTHORIZED_PLAYER_MAPPING_SHA256", sha256_file(ds_dir / "player_names_by_file.json"))
@@ -505,3 +507,57 @@ def test_24_existing_canonical_artifact_fails_without_overwrite(tmp_path: Path):
         )
     # Ensure preexisting content was not modified
     assert existing_file.read_text() == "preexisting_content"
+
+def test_25_training_prep_dataset_sha_drift_fails_and_no_dir(tmp_path: Path, monkeypatch):
+    """Test 25: Prepare-training fails if dataset artifact SHA drifts, creating zero directories."""
+    monkeypatch.setattr(rmt, "TRAINING_PREPARATION_AUTHORIZED", True)
+    monkeypatch.setattr(rmt, "APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT", "some_commit")
+    monkeypatch.setattr(rmt, "AUTHORIZED_M1_DATASET_MANIFEST_SHA256", "valid_manifest_sha")
+    monkeypatch.setattr(rmt, "AUTHORIZED_M1_DATASET_INDEX_SHA256", "valid_index_sha")
+    monkeypatch.setattr(rmt, "AUTHORIZED_M1_PLAYER_MAPPING_SHA256", "valid_mapping_sha")
+    monkeypatch.setattr(rmt, "AUTHORIZED_M1_PLAYER_NAMES_SHA256", "valid_names_sha")
+
+    ds_dir = tmp_path / "ds"
+    ds_dir.mkdir(parents=True)
+    (ds_dir / "dataset_manifest.json").write_text("tampered_manifest")
+    (ds_dir / "file_index_m1.pth").write_text("tampered_index")
+    (ds_dir / "player_names_by_file.json").write_text("tampered_map")
+    (ds_dir / "player_names.txt").write_text("tampered_names")
+
+    t_out = tmp_path / "train_never_created"
+    with pytest.raises(ContractError, match="Dataset manifest SHA drift"):
+        prepare_training_manifest(dataset_dir=ds_dir, output_training_dir=t_out, enforce_canonical_paths=False)
+    assert not t_out.exists()
+
+
+def test_26_training_prep_unauthorized_fails(tmp_path: Path):
+    """Test 26: Prepare-training when unauthorized raises AuthorizationError."""
+    with pytest.raises(TrainAuthError, match="M1 training preparation is NOT authorized"):
+        prepare_training_manifest(dataset_dir=tmp_path / "ds", output_training_dir=tmp_path / "train", enforce_canonical_paths=False)
+
+
+def test_27_archive_missing_models_fail_closed(tmp_path: Path):
+    """Test 27: Archive checkpoint missing mortal, current_dqn, or aux_net fails closed."""
+    run_dir = tmp_path / "run_archive_test"
+    ckpt_dir = run_dir / "checkpoints"
+    ckpt_dir.mkdir(parents=True)
+
+    _create_strict_mock_checkpoint(ckpt_dir / "mortal_72000.pth", steps=72000)
+
+    # 1. Missing mortal in archive
+    for a in ARCHIVE_STEPS:
+        _create_strict_mock_checkpoint(ckpt_dir / f"mortal_{a}.pth", steps=a, missing_block="mortal" if a == 70001 else None)
+    with pytest.raises(ContractError, match="missing required state dict for 'mortal'"):
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha")
+
+    # 2. Missing current_dqn in archive
+    for a in ARCHIVE_STEPS:
+        _create_strict_mock_checkpoint(ckpt_dir / f"mortal_{a}.pth", steps=a, missing_block="current_dqn" if a == 70001 else None)
+    with pytest.raises(ContractError, match="missing required state dict for 'current_dqn'"):
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha")
+
+    # 3. Missing aux_net in archive
+    for a in ARCHIVE_STEPS:
+        _create_strict_mock_checkpoint(ckpt_dir / f"mortal_{a}.pth", steps=a, missing_block="aux_net" if a == 70001 else None)
+    with pytest.raises(ContractError, match="missing required state dict for 'aux_net'"):
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha")

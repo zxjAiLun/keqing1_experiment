@@ -1014,8 +1014,8 @@
         "bootstrap_reps": 5000,
         "bootstrap_seed": 20260830
       },
-      "status": "implemented_not_started",
-      "primary_result": "M1 implementation execution paths, authorization bindings, and fail-closed validation repaired (M1-I0R2 complete; implemented_not_started). Config path strings, fail-closed authorization tokens and manifest SHAs, strict completion validation blocks, exact 8-checkpoint closure binding in evaluation plan, and production schema checks for four_player_native metrics and detailed_stats verified. All formal dataset generation, training, and evaluation remain unauthorized (0 data, 0 steps, 0 games, K1=null).",
+      "status": "dataset_materialized_training_not_started",
+      "primary_result": "M1 12,000-hanchan dataset materialized and frozen (M1-D0 complete, dataset_materialized_training_not_started). Frozen SHA256: manifest=206f5445544c55aaa88d909253ef5eb422274998c7e78c8b2d569d57b3c2dde4, file_index=3d190247fb6e16b423d786ec07bd3b0ff3cd8903306de70ba57955e45226c07f, player_names_by_file=7c1b0433a207ce1c941ff42c0d7dfbaa53087fd3968a9228927f214357164469, player_names=29f5f7c619c5481352e6fe29d4c5feb9442b6d1f1cec1ea7f4f405b330ce58d0. Verified 0 overlap, 6000 M0 ext + 6000 D1 ext, exactly 1 ext_mortal per game, and real trainer consumer compatibility. Training preparation, execution, and evaluation remain unauthorized (0 training steps, 0 games, K1=null).",
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
