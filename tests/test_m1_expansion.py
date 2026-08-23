@@ -14,9 +14,15 @@ from training.mortal.m1_dataset_contract_2026_08 import (
     BOOTSTRAP_REPS,
     BOOTSTRAP_SEED,
     CANONICAL_PROMOTION_CHECKPOINT,
+    FROZEN_M1_DATASET_INDEX_SHA256,
+    FROZEN_M1_DATASET_MANIFEST_SHA256,
+    FROZEN_M1_PLAYER_MAPPING_SHA256,
+    FROZEN_M1_PLAYER_NAMES_SHA256,
     K0_70K_SHA256,
     M1_EVALUATION_DIR,
+    M1_EXPERIMENT_ID,
     PREREG_PATH,
+    SEEDS,
     START_STEP,
     ContractError,
     adjudicate_m1_promotion,
@@ -42,6 +48,7 @@ from training.mortal.summarize_m1_promotion_2026_08 import (
     parse_shard_logs,
 )
 from training.mortal.validate_m1_training_completion_2026_08 import (
+    validate_all_m1_runs,
     validate_single_run_completion,
 )
 from training.run_mortal_dqn_offline import (
@@ -143,6 +150,7 @@ def test_6_and_7_training_auth_true_but_sha_absent_or_wrong_token_fails(tmp_path
     (ds_dir / "dataset_manifest.json").write_text("manifest")
     (ds_dir / "file_index_m1.pth").write_text("index")
     (ds_dir / "player_names_by_file.json").write_text("mapping")
+    (ds_dir / "player_names.txt").write_text("names")
 
     t_dir = tmp_path / "train"
     t_dir.mkdir(parents=True)
@@ -154,6 +162,7 @@ def test_6_and_7_training_auth_true_but_sha_absent_or_wrong_token_fails(tmp_path
     monkeypatch.setattr(rmt, "AUTHORIZED_DATASET_MANIFEST_SHA256", sha256_file(ds_dir / "dataset_manifest.json"))
     monkeypatch.setattr(rmt, "AUTHORIZED_DATASET_INDEX_SHA256", sha256_file(ds_dir / "file_index_m1.pth"))
     monkeypatch.setattr(rmt, "AUTHORIZED_PLAYER_MAPPING_SHA256", sha256_file(ds_dir / "player_names_by_file.json"))
+    monkeypatch.setattr(rmt, "AUTHORIZED_PLAYER_NAMES_SHA256", sha256_file(ds_dir / "player_names.txt"))
     monkeypatch.setattr(rmt, "AUTHORIZED_TRAINING_PLAN_SHA256", sha256_file(t_dir / "training_manifest.json"))
     monkeypatch.setattr(rmt, "AUTHORIZED_TRAINING_PREFLIGHT_SHA256", sha256_file(t_dir / "training_preflight.json"))
 
@@ -232,37 +241,37 @@ def test_8_to_14_completion_validator_strict_failures(tmp_path: Path):
     _setup_archives()
     _create_strict_mock_checkpoint(ckpt_dir / "mortal_72000.pth", missing_block="initialization")
     with pytest.raises(ContractError, match="missing required 'initialization' block"):
-        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha")
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha", expected_player_mapping_sha256="valid_map_sha")
 
     # 9: missing config
     _create_strict_mock_checkpoint(ckpt_dir / "mortal_72000.pth", missing_block="config")
     with pytest.raises(ContractError, match="missing required 'config' block"):
-        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha")
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha", expected_player_mapping_sha256="valid_map_sha")
 
     # 10: missing data_stream
     _create_strict_mock_checkpoint(ckpt_dir / "mortal_72000.pth", missing_block="data_stream")
     with pytest.raises(ContractError, match="missing required 'data_stream' block"):
-        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha")
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha", expected_player_mapping_sha256="valid_map_sha")
 
     # 11: missing training_contract
     _create_strict_mock_checkpoint(ckpt_dir / "mortal_72000.pth", missing_block="training_contract")
     with pytest.raises(ContractError, match="missing required 'training_contract' block"):
-        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha")
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha", expected_player_mapping_sha256="valid_map_sha")
 
     # 12: wrong dataset index SHA
     _create_strict_mock_checkpoint(ckpt_dir / "mortal_72000.pth", dataset_index_sha="tampered_index_sha")
     with pytest.raises(ContractError, match="dataset file_index SHA mismatch"):
-        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha")
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha", expected_player_mapping_sha256="valid_map_sha")
 
     # 13: aux_net NaN
     _create_strict_mock_checkpoint(ckpt_dir / "mortal_72000.pth", aux_finite=False)
     with pytest.raises(ContractError, match="aux_net weight w contains NaN"):
-        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha")
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha", expected_player_mapping_sha256="valid_map_sha")
 
     # 14: dataset_file_count 10 in production (expected 12000)
     _create_strict_mock_checkpoint(ckpt_dir / "mortal_72000.pth", dataset_file_count=10)
     with pytest.raises(ContractError, match="dataset_file_count is 10, expected 12000"):
-        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha", expected_dataset_file_count=12000)
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha", expected_player_mapping_sha256="valid_map_sha", expected_dataset_file_count=12000)
 
 
 def test_15_closure_checkpoint_sha_tamper_fails_evaluation_plan(tmp_path: Path):
@@ -548,16 +557,321 @@ def test_27_archive_missing_models_fail_closed(tmp_path: Path):
     for a in ARCHIVE_STEPS:
         _create_strict_mock_checkpoint(ckpt_dir / f"mortal_{a}.pth", steps=a, missing_block="mortal" if a == 70001 else None)
     with pytest.raises(ContractError, match="missing required state dict for 'mortal'"):
-        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha")
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha", expected_player_mapping_sha256="valid_map_sha")
 
     # 2. Missing current_dqn in archive
     for a in ARCHIVE_STEPS:
         _create_strict_mock_checkpoint(ckpt_dir / f"mortal_{a}.pth", steps=a, missing_block="current_dqn" if a == 70001 else None)
     with pytest.raises(ContractError, match="missing required state dict for 'current_dqn'"):
-        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha")
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha", expected_player_mapping_sha256="valid_map_sha")
 
     # 3. Missing aux_net in archive
     for a in ARCHIVE_STEPS:
         _create_strict_mock_checkpoint(ckpt_dir / f"mortal_{a}.pth", steps=a, missing_block="aux_net" if a == 70001 else None)
     with pytest.raises(ContractError, match="missing required state dict for 'aux_net'"):
-        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha")
+        validate_single_run_completion(20260806, run_dir, expected_dataset_index_sha256="valid_index_sha", expected_player_mapping_sha256="valid_map_sha")
+
+
+def test_28_authorized_dataset_sha_mismatch_fails_zero_dir(tmp_path: Path, monkeypatch):
+    """Test 28: Wrong AUTHORIZED_M1_* constant fails with zero output directories created."""
+    monkeypatch.setattr(rmt, "TRAINING_PREPARATION_AUTHORIZED", True)
+    monkeypatch.setattr(rmt, "APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT", "commit123")
+    monkeypatch.setattr(rmt, "FROZEN_M1_DATASET_MANIFEST_SHA256", "frozen_manifest_sha")
+    monkeypatch.setattr(rmt, "FROZEN_M1_DATASET_INDEX_SHA256", "frozen_index_sha")
+    monkeypatch.setattr(rmt, "FROZEN_M1_PLAYER_MAPPING_SHA256", "frozen_map_sha")
+    monkeypatch.setattr(rmt, "FROZEN_M1_PLAYER_NAMES_SHA256", "frozen_names_sha")
+
+    ds_dir = tmp_path / "ds"
+    ds_dir.mkdir(parents=True)
+    (ds_dir / "dataset_manifest.json").write_text("m")
+    (ds_dir / "file_index_m1.pth").write_text("i")
+    (ds_dir / "player_names_by_file.json").write_text("map")
+    (ds_dir / "player_names.txt").write_text("lbl")
+
+    # Match frozen SHA with files
+    m_sha = sha256_file(ds_dir / "dataset_manifest.json")
+    i_sha = sha256_file(ds_dir / "file_index_m1.pth")
+    map_sha = sha256_file(ds_dir / "player_names_by_file.json")
+    lbl_sha = sha256_file(ds_dir / "player_names.txt")
+
+    monkeypatch.setattr(rmt, "FROZEN_M1_DATASET_MANIFEST_SHA256", m_sha)
+    monkeypatch.setattr(rmt, "FROZEN_M1_DATASET_INDEX_SHA256", i_sha)
+    monkeypatch.setattr(rmt, "FROZEN_M1_PLAYER_MAPPING_SHA256", map_sha)
+    monkeypatch.setattr(rmt, "FROZEN_M1_PLAYER_NAMES_SHA256", lbl_sha)
+
+    # 1. Manifest auth SHA wrong
+    monkeypatch.setattr(rmt, "AUTHORIZED_M1_DATASET_MANIFEST_SHA256", "wrong_manifest_auth")
+    monkeypatch.setattr(rmt, "AUTHORIZED_M1_DATASET_INDEX_SHA256", i_sha)
+    monkeypatch.setattr(rmt, "AUTHORIZED_M1_PLAYER_MAPPING_SHA256", map_sha)
+    monkeypatch.setattr(rmt, "AUTHORIZED_M1_PLAYER_NAMES_SHA256", lbl_sha)
+    t_out = tmp_path / "t1"
+    with pytest.raises(ContractError, match="Dataset manifest SHA mismatch with authorization"):
+        prepare_training_manifest(dataset_dir=ds_dir, output_training_dir=t_out, enforce_canonical_paths=False)
+    assert not t_out.exists()
+
+    # 2. Index auth SHA wrong
+    monkeypatch.setattr(rmt, "AUTHORIZED_M1_DATASET_MANIFEST_SHA256", m_sha)
+    monkeypatch.setattr(rmt, "AUTHORIZED_M1_DATASET_INDEX_SHA256", "wrong_index_auth")
+    t_out = tmp_path / "t2"
+    with pytest.raises(ContractError, match="Dataset index SHA mismatch with authorization"):
+        prepare_training_manifest(dataset_dir=ds_dir, output_training_dir=t_out, enforce_canonical_paths=False)
+    assert not t_out.exists()
+
+    # 3. Mapping auth SHA wrong
+    monkeypatch.setattr(rmt, "AUTHORIZED_M1_DATASET_INDEX_SHA256", i_sha)
+    monkeypatch.setattr(rmt, "AUTHORIZED_M1_PLAYER_MAPPING_SHA256", "wrong_map_auth")
+    t_out = tmp_path / "t3"
+    with pytest.raises(ContractError, match="Dataset player mapping SHA mismatch with authorization"):
+        prepare_training_manifest(dataset_dir=ds_dir, output_training_dir=t_out, enforce_canonical_paths=False)
+    assert not t_out.exists()
+
+    # 4. Player names auth SHA wrong
+    monkeypatch.setattr(rmt, "AUTHORIZED_M1_PLAYER_MAPPING_SHA256", map_sha)
+    monkeypatch.setattr(rmt, "AUTHORIZED_M1_PLAYER_NAMES_SHA256", "wrong_lbl_auth")
+    t_out = tmp_path / "t4"
+    with pytest.raises(ContractError, match="Dataset player names SHA mismatch with authorization"):
+        prepare_training_manifest(dataset_dir=ds_dir, output_training_dir=t_out, enforce_canonical_paths=False)
+    assert not t_out.exists()
+
+
+def test_29_formal_noncanonical_training_or_dataset_dir_fails(tmp_path: Path, monkeypatch):
+    """Test 29: Formal prepare_training_manifest requires canonical dataset and training paths."""
+    monkeypatch.setattr(rmt, "TRAINING_PREPARATION_AUTHORIZED", True)
+    monkeypatch.setattr(rmt, "APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT", "commit123")
+    monkeypatch.setattr(rmt, "AUTHORIZED_M1_DATASET_MANIFEST_SHA256", "m")
+    monkeypatch.setattr(rmt, "AUTHORIZED_M1_DATASET_INDEX_SHA256", "i")
+    monkeypatch.setattr(rmt, "AUTHORIZED_M1_PLAYER_MAPPING_SHA256", "map")
+    monkeypatch.setattr(rmt, "AUTHORIZED_M1_PLAYER_NAMES_SHA256", "lbl")
+
+    # Noncanonical dataset dir
+    with pytest.raises(ContractError, match="Formal training preparation requires canonical dataset directory"):
+        prepare_training_manifest(dataset_dir=tmp_path / "ds", output_training_dir=rmt.M1_TRAINING_DIR, enforce_canonical_paths=True)
+
+    # Noncanonical training dir
+    with pytest.raises(ContractError, match="Formal training preparation requires canonical training directory"):
+        prepare_training_manifest(dataset_dir=rmt.M1_DATASET_DIR, output_training_dir=tmp_path / "train", enforce_canonical_paths=True)
+
+
+def test_30_existing_non_empty_training_dir_fails_closed(tmp_path: Path, monkeypatch):
+    """Test 30: Existing non-empty training directory fails closed without overwriting."""
+    t_dir = tmp_path / "non_empty_train"
+    t_dir.mkdir(parents=True)
+    (t_dir / "mortal.pth").write_text("old_weights")
+
+    with pytest.raises(ContractError, match="already exists and is non-empty"):
+        prepare_training_manifest(
+            dataset_dir=tmp_path / "ds",
+            output_training_dir=t_dir,
+            require_authorization=False,
+            enforce_canonical_paths=False,
+        )
+
+
+def test_31_completion_requires_training_manifest_and_preflight(tmp_path: Path):
+    """Test 31: Formal completion validation strictly fails if manifest or preflight is missing."""
+    t_dir = tmp_path / "train_no_manifest"
+    t_dir.mkdir(parents=True)
+
+    with pytest.raises(ContractError, match="Training manifest is missing"):
+        validate_all_m1_runs(output_dir=t_dir, enforce_canonical_paths=False)
+
+    (t_dir / "training_manifest.json").write_text("{}")
+    with pytest.raises(ContractError, match="Training preflight is missing"):
+        validate_all_m1_runs(output_dir=t_dir, enforce_canonical_paths=False)
+
+
+def test_32_completion_closure_atomic_write_and_provenance(tmp_path: Path, monkeypatch):
+    """Test 32: Successful completion validation writes full provenance and atomic closure."""
+    t_dir = tmp_path / "train_valid"
+    t_dir.mkdir(parents=True)
+
+    # Build valid mock runs
+    runs = []
+    for s in SEEDS:
+        run_dir = t_dir / f"M1_variant/seed_{s}"
+        ckpt_dir = run_dir / "checkpoints"
+        ckpt_dir.mkdir(parents=True)
+        for a in ARCHIVE_STEPS:
+            _create_strict_mock_checkpoint(
+                ckpt_dir / f"mortal_{a}.pth",
+                steps=a,
+                seed=s,
+                dataset_index_sha=FROZEN_M1_DATASET_INDEX_SHA256,
+            )
+        # Fix mock 72000 state to also use FROZEN_M1_PLAYER_MAPPING_SHA256
+        _c_state = torch.load(ckpt_dir / "mortal_72000.pth", weights_only=False, map_location="cpu")
+        _c_state["training_contract"]["dataset"]["player_names_by_file_sha256"] = FROZEN_M1_PLAYER_MAPPING_SHA256
+        torch.save(_c_state, ckpt_dir / "mortal_72000.pth")
+        cfg_p = run_dir / "config.toml"
+        cfg_p.write_text(f"# config for seed {s}")
+        runs.append({
+            "seed": s,
+            "config_path": str(cfg_p.resolve()),
+            "config_sha256": sha256_file(cfg_p),
+        })
+
+    t_manifest = {
+        "schema": "keqing.mortal.m1_training_manifest.v1",
+        "experiment_id": M1_EXPERIMENT_ID,
+        "trainer_source": {
+            "approved_training_implementation_commit": "approved_t_commit_123",
+        },
+        "dataset": {
+            "dataset_manifest": {"sha256": FROZEN_M1_DATASET_MANIFEST_SHA256},
+            "file_index_m1": {"sha256": FROZEN_M1_DATASET_INDEX_SHA256},
+            "player_names_by_file": {"sha256": FROZEN_M1_PLAYER_MAPPING_SHA256},
+            "player_names": {"sha256": FROZEN_M1_PLAYER_NAMES_SHA256},
+        },
+        "parent_checkpoint": {"sha256": K0_70K_SHA256},
+        "runs": runs,
+    }
+    t_manifest_p = t_dir / "training_manifest.json"
+    with open(t_manifest_p, "w", encoding="utf-8") as f:
+        json.dump(t_manifest, f)
+
+    t_preflight = {
+        "schema": "keqing.mortal.m1_training_preflight.v1",
+        "experiment_id": M1_EXPERIMENT_ID,
+        "training_manifest_sha256": sha256_file(t_manifest_p),
+        "dataset_4_sha_pass": True,
+        "parent_k0_sha_pass": True,
+        "configs_parsed": True,
+        "commands_verified": True,
+        "run_dirs_clean": True,
+        "trainer_consumer_check": {
+            "files_count": 12000,
+            "mappings_count": 12000,
+            "all_ext_mortal": True,
+        },
+    }
+    t_preflight_p = t_dir / "training_preflight.json"
+    with open(t_preflight_p, "w", encoding="utf-8") as f:
+        json.dump(t_preflight, f)
+
+    closure = validate_all_m1_runs(output_dir=t_dir, enforce_canonical_paths=False)
+    assert closure["schema"] == "keqing.mortal.m1_training_completion_closure.v1"
+    assert closure["approved_training_implementation_commit"] == "approved_t_commit_123"
+    assert len(closure["configs"]) == 3
+    assert closure["dataset"]["dataset_index_sha256"] == FROZEN_M1_DATASET_INDEX_SHA256
+    assert len(closure["runs"]) == 3
+
+    # Refuse overwrite
+    with pytest.raises(ContractError, match="Training completion closure already exists"):
+        validate_all_m1_runs(output_dir=t_dir, enforce_canonical_paths=False)
+
+
+def test_33_training_execute_player_names_tamper_fails(tmp_path: Path, monkeypatch):
+    """Test 33: player_names.txt drift blocks training execution."""
+    monkeypatch.setattr(rmt, "TRAINING_AUTHORIZED", True)
+    monkeypatch.setattr(rmt, "APPROVED_M1_TRAINING_IMPLEMENTATION_COMMIT", "commit123")
+
+    ds_dir = tmp_path / "ds"
+    ds_dir.mkdir(parents=True)
+    (ds_dir / "dataset_manifest.json").write_text("m")
+    (ds_dir / "file_index_m1.pth").write_text("i")
+    (ds_dir / "player_names_by_file.json").write_text("map")
+    (ds_dir / "player_names.txt").write_text("lbl_tampered")
+
+    t_dir = tmp_path / "train"
+    t_dir.mkdir(parents=True)
+    (t_dir / "training_manifest.json").write_text("t_man")
+    (t_dir / "training_preflight.json").write_text("t_pref")
+
+    monkeypatch.setattr(rmt, "AUTHORIZED_DATASET_MANIFEST_SHA256", sha256_file(ds_dir / "dataset_manifest.json"))
+    monkeypatch.setattr(rmt, "AUTHORIZED_DATASET_INDEX_SHA256", sha256_file(ds_dir / "file_index_m1.pth"))
+    monkeypatch.setattr(rmt, "AUTHORIZED_PLAYER_MAPPING_SHA256", sha256_file(ds_dir / "player_names_by_file.json"))
+    monkeypatch.setattr(rmt, "AUTHORIZED_PLAYER_NAMES_SHA256", "expected_valid_names_sha")
+    monkeypatch.setattr(rmt, "AUTHORIZED_TRAINING_PLAN_SHA256", sha256_file(t_dir / "training_manifest.json"))
+    monkeypatch.setattr(rmt, "AUTHORIZED_TRAINING_PREFLIGHT_SHA256", sha256_file(t_dir / "training_preflight.json"))
+
+    with pytest.raises(ContractError, match="Player names SHA does not match authorized binding"):
+        execute_training_for_seed(20260806, training_dir=t_dir, dataset_dir=ds_dir, confirmation_token="any", enforce_canonical_paths=False)
+
+def test_34_real_trainer_consumer_failure_aborts_prep(tmp_path: Path, monkeypatch):
+    """Test 34: Real trainer consumer mismatch count aborts prepare_training_manifest."""
+    monkeypatch.setattr(rmt, "git_info", lambda: {"status": "?? 1.md\n"})
+    monkeypatch.setattr(rmt, "_load_or_build_file_index", lambda cfg: ["f1"])  # returns 1 instead of 12000
+    t_out = tmp_path / "train_fail_consumer"
+
+    with pytest.raises(ContractError, match="Trainer consumer loaded 1 files, expected 12000"):
+        prepare_training_manifest(
+            dataset_dir=rmt.M1_DATASET_DIR,
+            output_training_dir=t_out,
+            require_authorization=False,
+            enforce_canonical_paths=False,
+        )
+    assert not t_out.exists()
+
+
+def test_35_generated_config_reparse_failure_fails_closed(tmp_path: Path, monkeypatch):
+    """Test 35: Tampered config dictionary generation fails reparse audit and creates no preflight."""
+    monkeypatch.setattr(rmt, "git_info", lambda: {"status": "?? 1.md\n"})
+    orig_gen = rmt.generate_m1_training_config
+    def _bad_gen(*args, **kwargs):
+        cfg = orig_gen(*args, **kwargs)
+        cfg["control"]["batch_size"] = 256  # tampered
+        return cfg
+
+    monkeypatch.setattr(rmt, "generate_m1_training_config", _bad_gen)
+    t_out = tmp_path / "train_bad_cfg"
+
+    with pytest.raises(ContractError, match="parsed config batch_size mismatch"):
+        prepare_training_manifest(
+            dataset_dir=rmt.M1_DATASET_DIR,
+            output_training_dir=t_out,
+            require_authorization=False,
+            enforce_canonical_paths=False,
+        )
+    assert not (t_out / "training_preflight.json").exists()
+
+
+def test_36_completion_closure_fails_if_manifest_sha_tampered(tmp_path: Path):
+    """Test 36: Completion closure fails if preflight training_manifest_sha256 does not match actual."""
+    t_dir = tmp_path / "train_tampered_preflight"
+    t_dir.mkdir(parents=True)
+
+    runs = []
+    for s in SEEDS:
+        run_dir = t_dir / f"M1_variant/seed_{s}"
+        run_dir.mkdir(parents=True)
+        cfg_p = run_dir / "config.toml"
+        cfg_p.write_text(f"# config for seed {s}")
+        runs.append({
+            "seed": s,
+            "config_path": str(cfg_p.resolve()),
+            "config_sha256": sha256_file(cfg_p),
+        })
+
+    t_man = {
+        "schema": "keqing.mortal.m1_training_manifest.v1",
+        "experiment_id": M1_EXPERIMENT_ID,
+        "dataset": {
+            "dataset_manifest": {"sha256": FROZEN_M1_DATASET_MANIFEST_SHA256},
+            "file_index_m1": {"sha256": FROZEN_M1_DATASET_INDEX_SHA256},
+            "player_names_by_file": {"sha256": FROZEN_M1_PLAYER_MAPPING_SHA256},
+            "player_names": {"sha256": FROZEN_M1_PLAYER_NAMES_SHA256},
+        },
+        "parent_checkpoint": {"sha256": K0_70K_SHA256},
+        "runs": runs,
+    }
+    t_man_p = t_dir / "training_manifest.json"
+    with open(t_man_p, "w", encoding="utf-8") as f:
+        json.dump(t_man, f)
+
+    t_pref = {
+        "schema": "keqing.mortal.m1_training_preflight.v1",
+        "experiment_id": M1_EXPERIMENT_ID,
+        "training_manifest_sha256": "tampered_sha_abc",
+        "dataset_4_sha_pass": True,
+        "parent_k0_sha_pass": True,
+        "configs_parsed": True,
+        "commands_verified": True,
+        "run_dirs_clean": True,
+        "trainer_consumer_check": {"files_count": 12000, "mappings_count": 12000, "all_ext_mortal": True},
+    }
+    t_pref_p = t_dir / "training_preflight.json"
+    with open(t_pref_p, "w", encoding="utf-8") as f:
+        json.dump(t_pref, f)
+
+    with pytest.raises(ContractError, match="Preflight training_manifest_sha256 mismatch"):
+        validate_all_m1_runs(output_dir=t_dir, enforce_canonical_paths=False)

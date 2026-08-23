@@ -12,9 +12,9 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "M1 implementation complete (implemented_not_started); dataset prep, training, and evaluation pending execution",
+    "current_stage": "M1 dataset materialized and frozen (dataset_materialized_training_not_started); training prep, execution, and evaluation pending authorization",
     "next_experiment": "M1_ext_mixed_expansion_2026_08",
-    "next_experiment_status": "implemented_not_started",
+    "next_experiment_status": "dataset_materialized_training_not_started",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
@@ -1026,12 +1026,15 @@
       "commits": [
         "fb849f5cfeed893a4df54bef9e7adfd2bea5a277",
         "32f4da870838d431f266a357dc04fa47d9f87636",
-        "7efd9892e090be9ffa09c5373f70de6dced49611"
+        "79b570e1a0d8ef0b8b0264dcff538b746a6692c8",
+        "7055675a866df4cae1d0c61217840bd084a4375a",
+        "3e485ecd8f90414a17e38fc0a0b273f4a9bf07be",
+        "428184c3a70f616e9da744007cfd32426fe03ef9"
       ],
       "artifact_paths": [
         "artifacts/experiments/M1_ext_mixed_expansion_2026_08/dataset_prep_2026_08/file_index_m1.pth",
         "artifacts/experiments/M1_ext_mixed_expansion_2026_08/training_implementation_2026_08/training_completion_closure.json",
-        "artifacts/experiments/M1_ext_mixed_expansion_2026_08/evaluation_implementation_2026_08/m1_summary.json"
+        "artifacts/experiments/M1_ext_mixed_expansion_2026_08/evaluation_implementation_2026_08/formal_adjudication/m1_summary.json"
       ],
       "report_paths": [
         "training/docs/mortal/experiments_zh/2026-08_M1_ext_mortal视角扩充实验_预注册设计.md"

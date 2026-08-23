@@ -64,6 +64,7 @@ TRAINING_AUTHORIZED = False
 AUTHORIZED_DATASET_MANIFEST_SHA256 = None
 AUTHORIZED_DATASET_INDEX_SHA256 = None
 AUTHORIZED_PLAYER_MAPPING_SHA256 = None
+AUTHORIZED_PLAYER_NAMES_SHA256 = None
 AUTHORIZED_TRAINING_PLAN_SHA256 = None
 AUTHORIZED_TRAINING_PREFLIGHT_SHA256 = None
 
@@ -166,16 +167,20 @@ def prepare_training_manifest(
         if not AUTHORIZED_M1_PLAYER_NAMES_SHA256:
             raise AuthorizationError("AUTHORIZED_M1_PLAYER_NAMES_SHA256 is required for training preparation")
 
-    if enforce_canonical_paths and output_training_dir.resolve() != M1_TRAINING_DIR.resolve():
-        raise ContractError(f"Formal training preparation requires canonical directory: {M1_TRAINING_DIR}")
+    if enforce_canonical_paths:
+        if dataset_dir.resolve() != M1_DATASET_DIR.resolve():
+            raise ContractError(f"Formal training preparation requires canonical dataset directory: {M1_DATASET_DIR}")
+        if output_training_dir.resolve() != M1_TRAINING_DIR.resolve():
+            raise ContractError(f"Formal training preparation requires canonical training directory: {M1_TRAINING_DIR}")
 
-    t_manifest_path = output_training_dir / "training_manifest.json"
-    t_preflight_path = output_training_dir / "training_preflight.json"
-
-    if t_manifest_path.exists() or t_preflight_path.exists():
-        raise ContractError(
-            f"Training manifest or preflight already exists in {output_training_dir}. Refusing to overwrite."
-        )
+    # Check output training directory is pristine (must not exist, or must be completely empty)
+    if output_training_dir.exists():
+        entries = list(output_training_dir.iterdir())
+        if entries:
+            raise ContractError(
+                f"Training directory {output_training_dir} already exists and is non-empty ({len(entries)} entries). "
+                "Formal preparation requires pristine state without prior artifacts."
+            )
 
     manifest_path = dataset_dir / "dataset_manifest.json"
     m1_idx_path = dataset_dir / "file_index_m1.pth"
@@ -189,7 +194,7 @@ def prepare_training_manifest(
             "Run --prepare-dataset first before preparing training configs."
         )
 
-    # Preflight 2: Verify dataset artifact SHAs against frozen constants
+    # Preflight 2: Verify dataset artifact SHAs against frozen constants AND authorized bindings
     actual_manifest_sha = sha256_file(manifest_path)
     actual_index_sha = sha256_file(m1_idx_path)
     actual_map_sha = sha256_file(m1_map_path)
@@ -203,6 +208,16 @@ def prepare_training_manifest(
         raise ContractError(f"Dataset player mapping SHA drift: {actual_map_sha} vs expected {FROZEN_M1_PLAYER_MAPPING_SHA256}")
     if actual_lbl_sha != FROZEN_M1_PLAYER_NAMES_SHA256:
         raise ContractError(f"Dataset player names SHA drift: {actual_lbl_sha} vs expected {FROZEN_M1_PLAYER_NAMES_SHA256}")
+
+    if require_authorization:
+        if actual_manifest_sha != AUTHORIZED_M1_DATASET_MANIFEST_SHA256:
+            raise ContractError(f"Dataset manifest SHA mismatch with authorization: {actual_manifest_sha} vs {AUTHORIZED_M1_DATASET_MANIFEST_SHA256}")
+        if actual_index_sha != AUTHORIZED_M1_DATASET_INDEX_SHA256:
+            raise ContractError(f"Dataset index SHA mismatch with authorization: {actual_index_sha} vs {AUTHORIZED_M1_DATASET_INDEX_SHA256}")
+        if actual_map_sha != AUTHORIZED_M1_PLAYER_MAPPING_SHA256:
+            raise ContractError(f"Dataset player mapping SHA mismatch with authorization: {actual_map_sha} vs {AUTHORIZED_M1_PLAYER_MAPPING_SHA256}")
+        if actual_lbl_sha != AUTHORIZED_M1_PLAYER_NAMES_SHA256:
+            raise ContractError(f"Dataset player names SHA mismatch with authorization: {actual_lbl_sha} vs {AUTHORIZED_M1_PLAYER_NAMES_SHA256}")
 
     # Preflight 3: Validate dataset manifest contents
     with open(manifest_path, "r", encoding="utf-8") as f:
@@ -247,8 +262,32 @@ def prepare_training_manifest(
     if k0_sha != K0_70K_SHA256:
         raise ContractError(f"Parent K0_70k SHA mismatch: {k0_sha} vs {K0_70K_SHA256}")
 
+    # Preflight 5: Real trainer consumer verification
+    smoke_files = _load_or_build_file_index({"control": {"version": 4}, "dataset": {"file_index": str(m1_idx_path), "globs": []}})
+    if len(smoke_files) != 12000:
+        raise ContractError(f"Trainer consumer loaded {len(smoke_files)} files, expected 12000")
+    smoke_mapping = _load_player_names_by_file({"dataset": {"player_names_by_file": str(m1_map_path)}})
+    if not smoke_mapping or len(smoke_mapping) != 12000:
+        raise ContractError(f"Trainer consumer loaded {len(smoke_mapping) if smoke_mapping else 0} mappings, expected 12000")
+    if not all(v == "ext_mortal" for v in smoke_mapping.values()):
+        raise ContractError("Trainer consumer mappings contain labels other than 'ext_mortal'")
+    if set(smoke_files) != set(smoke_mapping.keys()):
+        raise ContractError("Trainer consumer loaded files set does not equal mapping keys set")
+
+    # Preflight 6: Git working tree cleanliness check
+    g_info = git_info()
+    git_status = g_info.get("status", "")
+    for line in git_status.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line != "?? 1.md":
+            raise ContractError(f"Git working tree is dirty during training prep: {line}")
+
     # All preflights passed: create output directory and write configs
     output_training_dir.mkdir(parents=True, exist_ok=True)
+    t_manifest_path = output_training_dir / "training_manifest.json"
+    t_preflight_path = output_training_dir / "training_preflight.json"
     runs: list[dict[str, Any]] = []
 
     for s in SEEDS:
@@ -278,6 +317,35 @@ def prepare_training_manifest(
             with open(config_path, "w", encoding="utf-8") as f:
                 toml.dump(config_dict, f)
 
+        # Preflight 7: Re-parse generated config.toml and verify contract keys
+        try:
+            import tomllib
+            with open(config_path, "rb") as f:
+                parsed_cfg = tomllib.load(f)
+        except ImportError:
+            import tomli
+            with open(config_path, "rb") as f:
+                parsed_cfg = tomli.load(f)
+
+        if parsed_cfg.get("control", {}).get("batch_size") != 512:
+            raise ContractError(f"Seed {s} parsed config batch_size mismatch: {parsed_cfg.get('control', {}).get('batch_size')}")
+        if parsed_cfg.get("control", {}).get("enable_amp") is not False:
+            raise ContractError(f"Seed {s} parsed config enable_amp is not False")
+        if parsed_cfg.get("objective", {}).get("mode") != "behavior_action_mc":
+            raise ContractError(f"Seed {s} parsed config objective mismatch")
+        if parsed_cfg.get("reward", {}).get("mode") != "final_rank_mc":
+            raise ContractError(f"Seed {s} parsed config reward mismatch")
+        if parsed_cfg.get("cql", {}).get("min_q_weight") != 5.0:
+            raise ContractError(f"Seed {s} parsed config CQL min_q_weight mismatch")
+        if parsed_cfg.get("aux", {}).get("next_rank_weight") != 0.2:
+            raise ContractError(f"Seed {s} parsed config aux weight mismatch")
+        if parsed_cfg.get("model", {}).get("conv_channels") != 192 or parsed_cfg.get("model", {}).get("num_blocks") != 40:
+            raise ContractError(f"Seed {s} parsed config model architecture mismatch")
+        if parsed_cfg.get("dataset", {}).get("file_index") != str(m1_idx_path.resolve()):
+            raise ContractError(f"Seed {s} parsed config file_index mismatch")
+        if parsed_cfg.get("dataset", {}).get("player_names_by_file") != str(m1_map_path.resolve()):
+            raise ContractError(f"Seed {s} parsed config player_names_by_file mismatch")
+
         cmd = build_training_command(
             seed=s,
             config_path=config_path,
@@ -297,6 +365,27 @@ def prepare_training_manifest(
             "command": cmd,
             "command_str": shlex.join(cmd),
         })
+
+    # Preflight 8: Audit commands equality
+    commands_verified = True
+    for r in runs:
+        reconstructed = build_training_command(
+            seed=r["seed"],
+            config_path=Path(r["config_path"]),
+            parent_path=K0_70K_PATH,
+            run_dir=Path(r["run_dir"]),
+        )
+        if reconstructed != r["command"]:
+            commands_verified = False
+            raise ContractError(f"Command verification failed for seed {r['seed']}")
+
+    # Preflight 9: Output run dirs checkpoint cleanliness check
+    run_dirs_clean = True
+    for r in runs:
+        ck_dir = Path(r["archive_dir"])
+        if ck_dir.exists() and any(ck_dir.iterdir()):
+            run_dirs_clean = False
+            raise ContractError(f"Checkpoints directory is not empty: {ck_dir}")
 
     trainer_blob = git_blob_oid(OFFLINE_TRAINER_SCRIPT)
     trainer_sha = sha256_file(OFFLINE_TRAINER_SCRIPT)
@@ -343,17 +432,6 @@ def prepare_training_manifest(
         json.dump(training_manifest, f, indent=2, ensure_ascii=False)
         f.write("\n")
 
-    # Perform real consumer smoke check
-    smoke_files = _load_or_build_file_index({"control": {"version": 4}, "dataset": {"file_index": str(m1_idx_path), "globs": []}})
-    smoke_mapping = _load_player_names_by_file({"dataset": {"player_names_by_file": str(m1_map_path)}})
-
-    # Check output run dirs have no checkpoint artifacts
-    run_dirs_clean = True
-    for r in runs:
-        ck_dir = Path(r["archive_dir"])
-        if ck_dir.exists() and any(ck_dir.iterdir()):
-            run_dirs_clean = False
-
     preflight = {
         "schema": "keqing.mortal.m1_training_preflight.v1",
         "experiment_id": M1_EXPERIMENT_ID,
@@ -363,12 +441,13 @@ def prepare_training_manifest(
         "configs_parsed": True,
         "trainer_consumer_check": {
             "files_count": len(smoke_files),
-            "mappings_count": len(smoke_mapping) if smoke_mapping else 0,
-            "all_ext_mortal": all(v == "ext_mortal" for v in smoke_mapping.values()) if smoke_mapping else False,
+            "mappings_count": len(smoke_mapping),
+            "all_ext_mortal": True,
+            "files_mapping_symmetric": True,
         },
-        "commands_verified": True,
+        "commands_verified": commands_verified,
         "run_dirs_clean": run_dirs_clean,
-        "git": git_info(),
+        "git": g_info,
     }
     with open(t_preflight_path, "w", encoding="utf-8") as f:
         json.dump(preflight, f, indent=2, ensure_ascii=False)
@@ -407,6 +486,8 @@ def execute_training_for_seed(
         raise AuthorizationError("AUTHORIZED_DATASET_INDEX_SHA256 is required for training execution")
     if not AUTHORIZED_PLAYER_MAPPING_SHA256:
         raise AuthorizationError("AUTHORIZED_PLAYER_MAPPING_SHA256 is required for training execution")
+    if not AUTHORIZED_PLAYER_NAMES_SHA256:
+        raise AuthorizationError("AUTHORIZED_PLAYER_NAMES_SHA256 is required for training execution")
     if not AUTHORIZED_TRAINING_PLAN_SHA256:
         raise AuthorizationError("AUTHORIZED_TRAINING_PLAN_SHA256 is required for training execution")
     if not AUTHORIZED_TRAINING_PREFLIGHT_SHA256:
@@ -416,6 +497,7 @@ def execute_training_for_seed(
     ds_manifest = dataset_dir / "dataset_manifest.json"
     ds_index = dataset_dir / "file_index_m1.pth"
     ds_map = dataset_dir / "player_names_by_file.json"
+    ds_lbl = dataset_dir / "player_names.txt"
     t_manifest_path = training_dir / "training_manifest.json"
     t_preflight_path = training_dir / "training_preflight.json"
 
@@ -425,6 +507,8 @@ def execute_training_for_seed(
         raise ContractError("Dataset index SHA does not match authorized binding")
     if sha256_file(ds_map) != AUTHORIZED_PLAYER_MAPPING_SHA256:
         raise ContractError("Player mapping SHA does not match authorized binding")
+    if sha256_file(ds_lbl) != AUTHORIZED_PLAYER_NAMES_SHA256:
+        raise ContractError("Player names SHA does not match authorized binding")
     if sha256_file(t_manifest_path) != AUTHORIZED_TRAINING_PLAN_SHA256:
         raise ContractError("Training manifest SHA does not match authorized binding")
     if sha256_file(t_preflight_path) != AUTHORIZED_TRAINING_PREFLIGHT_SHA256:
@@ -464,6 +548,15 @@ def execute_training_for_seed(
     if parent_sha != K0_70K_SHA256:
         raise ContractError(f"Parent K0_70k SHA mismatch: {parent_sha} vs {K0_70K_SHA256}")
 
+    # Verify trainer source SHA and blob
+    trainer_sha = sha256_file(OFFLINE_TRAINER_SCRIPT)
+    trainer_blob = git_blob_oid(OFFLINE_TRAINER_SCRIPT)
+    manifest_trainer = t_manifest.get("trainer_source", {})
+    if trainer_sha != manifest_trainer.get("sha256"):
+        raise ContractError(f"Trainer source SHA mismatch: {trainer_sha} vs manifest {manifest_trainer.get('sha256')}")
+    if trainer_blob != manifest_trainer.get("git_blob_oid"):
+        raise ContractError(f"Trainer source blob OID mismatch: {trainer_blob} vs manifest {manifest_trainer.get('git_blob_oid')}")
+
     # Reconstruct expected command and verify equality
     reconstructed_cmd = build_training_command(
         seed=seed,
@@ -492,29 +585,19 @@ def main():
 
     parser.add_argument("--seed", type=int, choices=list(SEEDS), default=None, help="Training seed (required with --execute)")
     parser.add_argument("--confirmation-token", type=str, default=None, help="Execution confirmation token")
-    parser.add_argument("--dataset-dir", type=Path, default=M1_DATASET_DIR, help="Dataset directory")
-    parser.add_argument("--training-dir", type=Path, default=M1_TRAINING_DIR, help="Training root directory")
     args = parser.parse_args()
 
     if args.prepare_dataset:
-        if args.dataset_dir.resolve() != M1_DATASET_DIR.resolve():
-            raise ContractError(
-                f"Formal --prepare-dataset requires canonical directory: {M1_DATASET_DIR}, got {args.dataset_dir}"
-            )
         prepare_m1_dataset(output_dir=M1_DATASET_DIR)
     elif args.prepare_training:
-        if args.training_dir.resolve() != M1_TRAINING_DIR.resolve():
-            raise ContractError(
-                f"Formal --prepare-training requires canonical directory: {M1_TRAINING_DIR}, got {args.training_dir}"
-            )
-        prepare_training_manifest(dataset_dir=args.dataset_dir, output_training_dir=args.training_dir)
+        prepare_training_manifest(dataset_dir=M1_DATASET_DIR, output_training_dir=M1_TRAINING_DIR)
     elif args.execute:
         if args.seed is None:
             raise ValueError("--seed is required when --execute is specified")
         execute_training_for_seed(
             seed=args.seed,
-            training_dir=args.training_dir,
-            dataset_dir=args.dataset_dir,
+            training_dir=M1_TRAINING_DIR,
+            dataset_dir=M1_DATASET_DIR,
             confirmation_token=args.confirmation_token,
         )
     elif args.status:
