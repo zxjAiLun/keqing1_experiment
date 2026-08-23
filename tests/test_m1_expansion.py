@@ -539,8 +539,9 @@ def test_25_training_prep_dataset_sha_drift_fails_and_no_dir(tmp_path: Path, mon
     assert not t_out.exists()
 
 
-def test_26_training_prep_unauthorized_fails(tmp_path: Path):
+def test_26_training_prep_unauthorized_fails(tmp_path: Path, monkeypatch):
     """Test 26: Prepare-training when unauthorized raises AuthorizationError."""
+    monkeypatch.setattr(rmt, "TRAINING_PREPARATION_AUTHORIZED", False)
     with pytest.raises(TrainAuthError, match="M1 training preparation is NOT authorized"):
         prepare_training_manifest(dataset_dir=tmp_path / "ds", output_training_dir=tmp_path / "train", enforce_canonical_paths=False)
 
