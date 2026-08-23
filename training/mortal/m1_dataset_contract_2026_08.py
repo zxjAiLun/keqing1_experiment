@@ -189,18 +189,17 @@ def build_m1_dataset_files(
     approved_implementation_commit: str | None = None,
 ) -> tuple[Path, Path, Path, Path]:
     """Build M1 canonical file index dict, player mapping, labels, and dataset manifest."""
-    output_dir.mkdir(parents=True, exist_ok=True)
     m1_index_path = output_dir / "file_index_m1.pth"
     m1_mapping_path = output_dir / "player_names_by_file.json"
     m1_labels_path = output_dir / "player_names.txt"
     manifest_path = output_dir / "dataset_manifest.json"
 
-    # Fail closed if any output already exists
+    # Preflight 1: Fail closed if any output already exists
     for p in [m1_index_path, m1_mapping_path, m1_labels_path, manifest_path]:
         if p.exists():
             raise ContractError(f"M1 dataset artifact already exists: {p}. Refusing to overwrite.")
 
-    # Validate source index SHAs if enforce_frozen_source_sha is True
+    # Preflight 2: Validate source index files exist and SHAs match frozen constants
     m0_p = Path(m0_index_path)
     d1_p = Path(d1_index_path)
     if not m0_p.exists():
@@ -216,6 +215,7 @@ def build_m1_dataset_files(
         if actual_d1_sha != SOURCE_D1_INDEX_SHA256:
             raise ContractError(f"Source D1 index SHA mismatch: {actual_d1_sha} vs expected {SOURCE_D1_INDEX_SHA256}")
 
+    # Preflight 3: Load file lists and verify counts
     m0_files = load_file_index(m0_p)
     d1_files = load_file_index(d1_p)
 
@@ -231,6 +231,9 @@ def build_m1_dataset_files(
     all_files = m0_norm + d1_norm
     if len(all_files) != total_expected:
         raise ContractError(f"M1 total file count is {len(all_files)}, expected {total_expected}")
+
+    # All preflights passed: create output directory
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # Build deterministic inventory and verify single ext_mortal
     inventory: list[dict[str, Any]] = []
@@ -293,31 +296,44 @@ def build_m1_dataset_files(
     prereg_info = {}
     if PREREG_PATH.exists():
         prereg_info = {
-            "path": PREREG_RELATIVE_PATH,
             "commit": PREREG_COMMIT,
-            "sha256": sha256_file(PREREG_PATH),
-            "blob_oid": git_blob_oid(PREREG_PATH),
+            "path": PREREG_RELATIVE_PATH,
+            "content_sha256": sha256_file(PREREG_PATH),
+            "git_blob_oid": git_blob_oid(PREREG_PATH),
         }
+
+    dataset_contract_file = REPO_ROOT / "training/mortal/m1_dataset_contract_2026_08.py"
+    dataset_launcher_file = REPO_ROOT / "training/mortal/run_m1_training_2026_08.py"
 
     manifest = {
         "schema": "keqing.mortal.m1_dataset_manifest.v1",
         "experiment_id": M1_EXPERIMENT_ID,
         "implementation": {
-            "approved_commit": approved_implementation_commit,
-            "dataset_contract_path": "training/mortal/m1_dataset_contract_2026_08.py",
-            "dataset_contract_sha256": sha256_file(REPO_ROOT / "training/mortal/m1_dataset_contract_2026_08.py"),
+            "approved_implementation_commit": approved_implementation_commit,
+            "dataset_contract": {
+                "path": "training/mortal/m1_dataset_contract_2026_08.py",
+                "content_sha256": sha256_file(dataset_contract_file),
+                "git_blob_oid": git_blob_oid(dataset_contract_file),
+            },
+            "dataset_launcher": {
+                "path": "training/mortal/run_m1_training_2026_08.py",
+                "content_sha256": sha256_file(dataset_launcher_file),
+                "git_blob_oid": git_blob_oid(dataset_launcher_file),
+            },
         },
         "preregistration": prereg_info,
         "source_m0_index": {
             "path": str(m0_p.resolve()),
-            "expected_sha256": SOURCE_M0_INDEX_SHA256 if enforce_frozen_source_sha else actual_m0_sha,
+            "expected_sha256": SOURCE_M0_INDEX_SHA256,
             "actual_sha256": actual_m0_sha,
+            "match": actual_m0_sha == SOURCE_M0_INDEX_SHA256,
             "count": expected_m0_count,
         },
         "source_d1_index": {
             "path": str(d1_p.resolve()),
-            "expected_sha256": SOURCE_D1_INDEX_SHA256 if enforce_frozen_source_sha else actual_d1_sha,
+            "expected_sha256": SOURCE_D1_INDEX_SHA256,
             "actual_sha256": actual_d1_sha,
+            "match": actual_d1_sha == SOURCE_D1_INDEX_SHA256,
             "count": expected_d1_count,
         },
         "dataset_artifacts": {

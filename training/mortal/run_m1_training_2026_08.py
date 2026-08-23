@@ -98,6 +98,10 @@ def prepare_m1_dataset(
 ) -> tuple[Path, Path, Path, Path]:
     """Build and validate M1 concatenated 12000 file index and manifest."""
     if require_authorization:
+        if output_dir.resolve() != M1_DATASET_DIR.resolve():
+            raise ContractError(
+                f"Formal dataset preparation requires canonical path: {M1_DATASET_DIR}, got {output_dir}"
+            )
         if not DATASET_PREPARATION_AUTHORIZED:
             raise AuthorizationError(
                 "M1 dataset preparation is NOT authorized. "
@@ -353,7 +357,11 @@ def main():
     args = parser.parse_args()
 
     if args.prepare_dataset:
-        prepare_m1_dataset(output_dir=args.dataset_dir)
+        if args.dataset_dir.resolve() != M1_DATASET_DIR.resolve():
+            raise ContractError(
+                f"Formal --prepare-dataset requires canonical directory: {M1_DATASET_DIR}, got {args.dataset_dir}"
+            )
+        prepare_m1_dataset(output_dir=M1_DATASET_DIR)
     elif args.prepare_training:
         prepare_training_manifest(dataset_dir=args.dataset_dir, output_training_dir=args.training_dir)
     elif args.execute:

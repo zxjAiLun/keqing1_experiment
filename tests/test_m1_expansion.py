@@ -16,6 +16,7 @@ from training.mortal.m1_dataset_contract_2026_08 import (
     CANONICAL_PROMOTION_CHECKPOINT,
     K0_70K_SHA256,
     M1_EVALUATION_DIR,
+    PREREG_PATH,
     START_STEP,
     ContractError,
     adjudicate_m1_promotion,
@@ -84,30 +85,47 @@ def test_2_mapping_dict_mistakenly_embedded_fails():
         _load_player_names_by_file(bad_config)
 
 
-def test_3_dataset_auth_true_but_prereg_sha_wrong_fails(tmp_path: Path, monkeypatch):
-    """Test 3: DATASET_PREPARATION_AUTHORIZED is True but wrong prereg SHA raises AuthorizationError."""
+def test_3a_dataset_auth_true_noncanonical_path_fails(tmp_path: Path, monkeypatch):
+    """Test 3a: Authorized formal dataset prep with noncanonical path raises ContractError."""
+    monkeypatch.setattr(rmt, "DATASET_PREPARATION_AUTHORIZED", True)
+    monkeypatch.setattr(rmt, "APPROVED_M1_IMPLEMENTATION_COMMIT", "some_commit")
+    monkeypatch.setattr(rmt, "AUTHORIZED_PREREG_SHA256", sha256_file(PREREG_PATH))
+
+    with pytest.raises(ContractError, match="Formal dataset preparation requires canonical path"):
+        prepare_m1_dataset(output_dir=tmp_path / "noncanonical_ds", require_authorization=True)
+
+
+def test_3b_dataset_auth_true_but_prereg_sha_wrong_fails_and_no_output_dir(monkeypatch):
+    """Test 3b: DATASET_PREPARATION_AUTHORIZED is True but wrong prereg SHA raises AuthorizationError and creates no dir."""
     monkeypatch.setattr(rmt, "DATASET_PREPARATION_AUTHORIZED", True)
     monkeypatch.setattr(rmt, "APPROVED_M1_IMPLEMENTATION_COMMIT", "some_commit")
     monkeypatch.setattr(rmt, "AUTHORIZED_PREREG_SHA256", "wrong_prereg_sha")
 
+    from training.mortal.m1_dataset_contract_2026_08 import M1_DATASET_DIR
+    # M1_DATASET_DIR does not exist
+    assert not M1_DATASET_DIR.exists()
     with pytest.raises(TrainAuthError, match="Prereg SHA mismatch"):
-        prepare_m1_dataset(output_dir=tmp_path / "ds")
+        prepare_m1_dataset(output_dir=M1_DATASET_DIR, require_authorization=True)
+    assert not M1_DATASET_DIR.exists()
 
 
-def test_4_and_5_source_index_sha_drift_fails(tmp_path: Path):
-    """Test 4 & 5: Source M0 or D1 index SHA drift raises ContractError."""
+def test_4_and_5_source_index_sha_drift_fails_and_no_output_dir(tmp_path: Path):
+    """Test 4 & 5: Source M0 or D1 index SHA drift raises ContractError and leaves output root non-existent."""
     fake_m0 = tmp_path / "m0.pth"
     fake_d1 = tmp_path / "d1.pth"
     torch.save(["/dummy.json.gz"], fake_m0)
     torch.save(["/dummy.json.gz"], fake_d1)
 
+    target_dir = tmp_path / "out_should_not_exist"
+
     with pytest.raises(ContractError, match="Source M0 index SHA mismatch"):
         build_m1_dataset_files(
-            output_dir=tmp_path / "out",
+            output_dir=target_dir,
             m0_index_path=fake_m0,
             d1_index_path=fake_d1,
             enforce_frozen_source_sha=True,
         )
+    assert not target_dir.exists()
 
 
 def test_6_and_7_training_auth_true_but_sha_absent_or_wrong_token_fails(tmp_path: Path, monkeypatch):
@@ -403,3 +421,87 @@ def test_22_bootstrap_and_adjudication_numerical_behavior_unchanged():
     assert res_pass["recipe_promotion"] is True
     assert res_pass["checkpoint_promotion"] is True
     assert res_pass["promoted_k1_checkpoint"] == CANONICAL_PROMOTION_CHECKPOINT
+
+def test_23_manifest_provenance_and_schema_fields(tmp_path: Path):
+    """Test 23: Dataset manifest contains full provenance, git blobs, source matching, and inventory."""
+    fake_m0 = tmp_path / "m0.pth"
+    fake_d1 = tmp_path / "d1.pth"
+
+    # Create 1 fake game log
+    game_log = tmp_path / "1930000.json.gz"
+    events = [
+        {"type": "start_game", "seed": [1930000, 8192], "names": ["ext_mortal", "p1", "p2", "p3"]},
+        {"type": "start_kyoku", "scores": [25000, 25000, 25000, 25000]},
+    ]
+    with gzip.open(game_log, "wt") as f:
+        f.write("\n".join(json.dumps(e) for e in events) + "\n")
+
+    torch.save([str(game_log)], fake_m0)
+
+    # Create a 2nd fake game log
+    game_log2 = tmp_path / "1940000.json.gz"
+    events2 = [
+        {"type": "start_game", "seed": [1940000, 8192], "names": ["p0", "ext_mortal", "p2", "p3"]},
+        {"type": "start_kyoku", "scores": [25000, 25000, 25000, 25000]},
+    ]
+    with gzip.open(game_log2, "wt") as f:
+        f.write("\n".join(json.dumps(e) for e in events2) + "\n")
+
+    torch.save([str(game_log2)], fake_d1)
+
+    out_dir = tmp_path / "ds_out"
+    idx_p, _map_p, _lbl_p, man_p = build_m1_dataset_files(
+        output_dir=out_dir,
+        m0_index_path=fake_m0,
+        d1_index_path=fake_d1,
+        expected_m0_count=1,
+        expected_d1_count=1,
+        enforce_frozen_source_sha=False,
+        approved_implementation_commit="approved_commit_abc",
+    )
+
+    with open(man_p, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    assert manifest["schema"] == "keqing.mortal.m1_dataset_manifest.v1"
+    assert manifest["implementation"]["approved_implementation_commit"] == "approved_commit_abc"
+    assert "dataset_contract" in manifest["implementation"]
+    assert "content_sha256" in manifest["implementation"]["dataset_contract"]
+    assert "dataset_launcher" in manifest["implementation"]
+    assert "content_sha256" in manifest["implementation"]["dataset_launcher"]
+    assert "preregistration" in manifest
+    assert "source_m0_index" in manifest
+    assert manifest["source_m0_index"]["count"] == 1
+    assert "source_d1_index" in manifest
+    assert manifest["source_d1_index"]["count"] == 1
+    assert len(manifest["inventory"]) == 2
+    assert manifest["inventory_summary"]["total_files"] == 2
+
+    # Verify canonical index is consumed by real _load_or_build_file_index
+    from training.run_mortal_dqn_offline import _load_or_build_file_index
+    cfg = {"control": {"version": 4}, "dataset": {"file_index": str(idx_p), "globs": []}}
+    loaded_files = _load_or_build_file_index(cfg)
+    assert len(loaded_files) == 2
+
+
+def test_24_existing_canonical_artifact_fails_without_overwrite(tmp_path: Path):
+    """Test 24: Existing canonical artifact fails without overwriting."""
+    fake_m0 = tmp_path / "m0.pth"
+    fake_d1 = tmp_path / "d1.pth"
+    torch.save(["/dummy.json.gz"], fake_m0)
+    torch.save(["/dummy.json.gz"], fake_d1)
+
+    out_dir = tmp_path / "ds_out_existing"
+    out_dir.mkdir(parents=True)
+    existing_file = out_dir / "file_index_m1.pth"
+    existing_file.write_text("preexisting_content")
+
+    with pytest.raises(ContractError, match="M1 dataset artifact already exists"):
+        build_m1_dataset_files(
+            output_dir=out_dir,
+            m0_index_path=fake_m0,
+            d1_index_path=fake_d1,
+            enforce_frozen_source_sha=False,
+        )
+    # Ensure preexisting content was not modified
+    assert existing_file.read_text() == "preexisting_content"
