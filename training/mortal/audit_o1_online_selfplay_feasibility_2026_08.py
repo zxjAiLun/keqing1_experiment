@@ -33,6 +33,8 @@ import toml
 import torch
 
 REPO = Path(__file__).resolve().parents[2]
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
 if str(REPO / "third_party" / "Mortal" / "mortal") not in sys.path:
     sys.path.insert(0, str(REPO / "third_party" / "Mortal" / "mortal"))
 
@@ -471,17 +473,17 @@ def run_feasibility_audit(
         )
 
         client_logs: dict[str, bytes] = {}
-        unique_game_seeds: set[tuple[Any, ...]] = set()
+        unique_game_identities: set[tuple[Any, ...]] = set()
         for p in sorted(client_log_dir.glob("*.json.gz")):
             content = p.read_bytes()
             client_logs[p.name] = content
-            # Parse first line to verify start_game seed identity
+            # Parse first line to verify start_game seed and seat identity
             with gzip.open(p, "rt", encoding="utf-8") as gz_f:
                 first_line = json.loads(gz_f.readline())
-                if first_line.get("type") == "start_game" and "seed" in first_line:
-                    unique_game_seeds.add(tuple(first_line["seed"]))
+                if first_line.get("type") == "start_game" and "seed" in first_line and "names" in first_line:
+                    unique_game_identities.add((tuple(first_line["seed"]), tuple(first_line["names"])))
 
-        if len(client_logs) == 4 and len(unique_game_seeds) == 4:
+        if len(client_logs) == 4 and len(unique_game_identities) == 4:
             hard_gates["exactly_four_unique_replays"] = True
 
         # 6. Worker submits replays to server
