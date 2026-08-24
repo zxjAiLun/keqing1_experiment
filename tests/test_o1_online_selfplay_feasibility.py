@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import socket
 import struct
 import sys
@@ -13,6 +14,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import toml
 import torch
 
 REPO = Path(__file__).resolve().parents[1]
@@ -324,3 +326,43 @@ def test_9_protocol_parity_and_roundtrip(tmp_path: Path) -> None:
         server.server_close()
         server_thread.join(timeout=2.0)
         assert not server_thread.is_alive()
+
+
+def test_10_file_datasets_iter_production_path_consumption(tmp_path: Path) -> None:
+    """Test 10: Verify FileDatasetsIter directly consumes sample log file and produces exact contract rows."""
+    candidates = list(REPO.glob("artifacts/**/*.json.gz"))
+    assert candidates, "No .json.gz logs found in artifacts"
+    sample_log = candidates[0]
+
+    config_path = tmp_path / "mortal_cfg.toml"
+    with open(config_path, "w", encoding="utf-8") as f:
+        toml.dump({
+            "control": {"version": 4},
+            "env": {"pts": [6.0, 4.0, 2.0, 0.0], "gamma": 1.0},
+            "reward": {"mode": "final_rank_mc"},
+        }, f)
+    os.environ["MORTAL_CFG"] = str(config_path.resolve())
+    from training.mortal.mainline_dataloader import FileDatasetsIter
+
+    dataset = FileDatasetsIter(
+        version=4,
+        file_list=[str(sample_log)],
+        pts=RANK_PTS,
+        oracle=False,
+        player_names=["ext_mortal", "trainee", "70k", "M0_CURRENT_20260806"],
+        enable_augmentation=False,
+        num_epochs=1,
+    )
+
+    rows = list(dataset)
+    assert len(rows) > 0
+
+    # Verify each row structure and value domain
+    for obs, action, mask, steps_to_done, kyoku_reward, next_rank in rows[:50]:
+        assert obs.shape == (1012, 34)
+        assert 0 <= action <= 45
+        assert mask.shape == (46,)
+        assert bool(mask[action]) is True  # Action is legal
+        assert steps_to_done >= 0
+        assert float(kyoku_reward) in {-3.0, -1.0, 1.0, 3.0}
+        assert 0 <= next_rank <= 3

@@ -29,6 +29,7 @@ from socketserver import BaseRequestHandler, ThreadingTCPServer
 from typing import Any
 
 import numpy as np
+import toml
 import torch
 
 REPO = Path(__file__).resolve().parents[2]
@@ -38,7 +39,6 @@ if str(REPO / "third_party" / "Mortal" / "mortal") not in sys.path:
 import engine
 import model
 from libriichi.arena import OneVsThree
-from libriichi.dataset import GameplayLoader
 
 from training.mortal.objective import compute_objective_losses
 
@@ -337,6 +337,17 @@ def run_feasibility_audit(
     ensure_clean_staging_dir(drain_dir, experiment_root)
     ensure_clean_staging_dir(client_log_dir, experiment_root)
 
+    # Initialize mortal config TOML for mainline_dataloader FileDatasetsIter
+    config_path = tmp_run_dir / "mortal_config.toml"
+    config_payload = {
+        "control": {"version": 4},
+        "env": {"pts": RANK_PTS.tolist(), "gamma": GAMMA},
+        "reward": {"mode": REWARD_MODE},
+    }
+    with open(config_path, "w", encoding="utf-8") as f:
+        toml.dump(config_payload, f)
+    os.environ["MORTAL_CFG"] = str(config_path.resolve())
+
     device = torch.device(device_name)
     hard_gates: dict[str, bool] = {
         "k0_identity_verified": False,
@@ -501,12 +512,23 @@ def run_feasibility_audit(
         if drain_msg.get("count", 0) == 4 and os.path.exists(drain_msg["drain_dir"]):
             hard_gates["server_client_roundtrip"] = True
 
-        # 8. GameplayLoader loads trainee perspectives and applies mainline final_rank_mc
+        # 8. Production FileDatasetsIter loads trainee perspectives directly from drained files
+        from training.mortal.mainline_dataloader import (
+            FileDatasetsIter,
+        )
+
         drained_files = sorted(
             os.path.join(drain_msg["drain_dir"], p) for p in os.listdir(drain_msg["drain_dir"])
         )
-        loader = GameplayLoader(version=4, oracle=False, player_names=["trainee"], augmented=False)
-        data = loader.load_gz_log_files(drained_files)
+        dataset = FileDatasetsIter(
+            version=4,
+            file_list=drained_files,
+            pts=RANK_PTS,
+            oracle=False,
+            player_names=["trainee"],
+            enable_augmentation=False,
+            num_epochs=1,
+        )
 
         all_obs = []
         all_actions = []
@@ -515,47 +537,16 @@ def run_feasibility_audit(
         all_q_targets = []
         all_next_rank_targets = []
 
-        pts_mean = float(RANK_PTS.mean())
-        for file in data:
-            for game in file:
-                obs = game.take_obs()
-                actions = game.take_actions()
-                masks = game.take_masks()
-                at_kyoku = game.take_at_kyoku()
-                dones = game.take_dones()
-                apply_gamma = game.take_apply_gamma()
-                grp = game.take_grp()
-                player_id = int(game.take_player_id())
-
-                game_size = len(obs)
-                grp_feature = grp.take_feature()
-                rank_by_player = grp.take_rank_by_player()
-                final_rank = int(rank_by_player[player_id])
-
-                # Mainline final_rank_mc centering: [6,4,2,0] - 3.0 -> {+3, +1, -1, -3}
-                terminal_return = float(RANK_PTS[final_rank] - pts_mean)
-                kyoku_rewards = np.full(len(grp_feature), terminal_return, dtype=np.float64)
-
-                final_scores = grp.take_final_scores()
-                scores_seq = np.concatenate((grp_feature[:, 3:] * 1e4, [final_scores]))
-                rank_by_player_seq = (-scores_seq).argsort(-1, kind="stable").argsort(-1, kind="stable")
-                player_ranks = rank_by_player_seq[:, player_id]
-
-                steps_to_done = np.zeros(game_size, dtype=np.int64)
-                for i in reversed(range(game_size)):
-                    if not dones[i]:
-                        steps_to_done[i] = steps_to_done[i + 1] + int(apply_gamma[i])
-
-                for i in range(game_size):
-                    all_obs.append(obs[i])
-                    all_actions.append(actions[i])
-                    all_masks.append(masks[i])
-                    all_steps_to_done.append(steps_to_done[i])
-                    # gamma = 1.0 -> q_target = kyoku_rewards[at_kyoku[i]]
-                    q_target = float((GAMMA ** steps_to_done[i]) * kyoku_rewards[at_kyoku[i]])
-                    all_q_targets.append(q_target)
-                    # mainline next-rank target uses player_ranks[at_kyoku[i] + 1]
-                    all_next_rank_targets.append(int(player_ranks[at_kyoku[i] + 1]))
+        for entry in dataset:
+            obs, action, mask, steps_to_done, kyoku_reward, next_rank = entry
+            all_obs.append(obs)
+            all_actions.append(action)
+            all_masks.append(mask)
+            all_steps_to_done.append(steps_to_done)
+            # gamma = 1.0 -> q_target = kyoku_reward
+            q_target = float((GAMMA ** steps_to_done) * kyoku_reward)
+            all_q_targets.append(q_target)
+            all_next_rank_targets.append(int(next_rank))
 
         total_rows_loaded = len(all_obs)
         if total_rows_loaded > 0:
