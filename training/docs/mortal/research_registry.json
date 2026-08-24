@@ -1015,12 +1015,12 @@
         "bootstrap_seed": 20260830
       },
       "status": "not_supported",
-      "primary_result": "M1 12,000半庄 ext_mortal视角混合语料扩充实验已完成全部闭环与 formal adjudication。评测包含 3,000局四人同桌对局（12 shards），hierarchical bootstrap (5000 reps) 检验显示：Pt(M1) - Pt(M0_CURRENT) 均值为 -2.970 pt（95% CI [-9.375, +3.435]，0/3 seed 正向），Pt(M1) - Pt(K0_70k) 均值为 +0.990 pt（95% CI [-4.515, +6.465]，0/3 seed 正向）。预注册 promotion gate 未通过，数据路线与 Checkpoint 均未晋级，K1 保持为 null。",
+      "primary_result": "M1 12,000半庄 ext_mortal视角混合语料扩充实验已完成全部闭环与 formal adjudication。评测包含 3,000局四人同桌对局（12 shards），hierarchical bootstrap (5000 reps) 检验显示：Pt(M1) - Pt(M0_CURRENT) 均值为 -2.970 pt（95% CI [-9.375, +3.435375]，1/3 seed 正向），Pt(M1) - Pt(K0_70k) 均值为 +0.990 pt（95% CI [-4.515375, +6.465375]，2/3 seed 正向）。promotion not supported；结果为 mixed/null，没有稳定收益证据；数据路线与 Checkpoint 均未晋级，K1 保持为 null。",
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
       "checkpoint_promotion": false,
-      "closure_reason": "预注册双重假设检验均未通过：Pt(M1) 相对 M0_CURRENT 均值为负（-2.970 pt，CI95 包含大幅负值且无 seed 稳定正向），相对 K0_70k 提升未达统计显著；证明在当前 recipe 下扩充 6000 局 ext_mortal 视角未带来稳定收益。",
+      "closure_reason": "预注册双重假设检验均未通过：Pt(M1) 相对 M0_CURRENT 均值为 -2.970 pt（1/3 seed 正向，95% CI [-9.375, +3.435375] 跨零），相对 K0_70k 均值为 +0.990 pt（2/3 seed 正向，95% CI [-4.515375, +6.465375] 跨零）；promotion not supported，结果为 mixed/null，没有稳定收益证据。",
       "predecessor": "M0_operational_control",
       "next_experiment": null,
       "commits": [
