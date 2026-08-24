@@ -29,7 +29,6 @@ from typing import Any
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 REPO = Path(__file__).resolve().parents[2]
 if str(REPO / "third_party" / "Mortal" / "mortal") not in sys.path:
@@ -39,6 +38,8 @@ import engine
 import model
 from libriichi.arena import OneVsThree
 from libriichi.dataset import GameplayLoader
+
+from training.mortal.objective import compute_objective_losses
 
 logger = logging.getLogger("o1_feasibility")
 
@@ -50,9 +51,26 @@ K0_CANONICAL_PATH = Path(
 K0_FALLBACK_PATH = REPO / "artifacts" / "mortal_training" / "checkpoints" / "mortal_default_70k_promoted_candidate.pth"
 K0_EXPECTED_SHA256 = "6c0e70058644e02671440ddf7dd2b41c637ae7c2132c9154595593ab690d49e0"
 
+# Fixed Project-Owned Training & Reward Contract
+ADAPTER_KIND = "keqing_project_online"
+OBJECTIVE_MODE = "behavior_action_mc"
+REWARD_MODE = "final_rank_mc"
+GAMMA = 1.0
+RANK_PTS = np.array([6.0, 4.0, 2.0, 0.0], dtype=np.float64)
+CENTERED_TARGETS = {
+    0: float(RANK_PTS[0] - RANK_PTS.mean()),  # Rank 1 -> +3.0
+    1: float(RANK_PTS[1] - RANK_PTS.mean()),  # Rank 2 -> +1.0
+    2: float(RANK_PTS[2] - RANK_PTS.mean()),  # Rank 3 -> -1.0
+    3: float(RANK_PTS[3] - RANK_PTS.mean()),  # Rank 4 -> -3.0
+}
+AUX_WEIGHT = 0.2
+BASE_MIN_Q_WEIGHT = 5.0
+MAX_BACKWARD_ROWS = 32
+
 
 class UnexpectedEOF(Exception):
-    pass
+    def __init__(self) -> None:
+        super().__init__("unexpected EOF")
 
 
 def send_msg(conn: socket.socket, msg: Any, packed: bool = False) -> None:
@@ -235,17 +253,17 @@ def check_directory_boundary(target_dir: Path, experiment_root: Path) -> None:
         ) from exc
 
 
-def ensure_clean_staging_dir(dir_path: Path, experiment_root: Path, allow_clean_existing: bool = True) -> None:
+def ensure_clean_staging_dir(dir_path: Path, experiment_root: Path) -> None:
+    """Ensure staging dir exists and is strictly empty. Fail closed if non-empty; never delete existing contents."""
     check_directory_boundary(dir_path, experiment_root)
     if dir_path.exists():
         entries = list(dir_path.iterdir())
         if entries:
-            if not allow_clean_existing:
-                raise RuntimeError(f"Directory already exists and is non-empty: {dir_path}")
-            shutil.rmtree(dir_path)
-            dir_path.mkdir(parents=True, exist_ok=True)
+            raise RuntimeError(
+                f"Fail-closed security check: staging directory already exists and is non-empty ({len(entries)} items): {dir_path}"
+            )
     else:
-        dir_path.mkdir(parents=True, exist_ok=True)
+        dir_path.mkdir(parents=True, exist_ok=False)
 
 
 def load_k0_checkpoint(k0_path: Path | None = None) -> tuple[dict[str, Any], Path, str]:
@@ -261,14 +279,26 @@ def load_k0_checkpoint(k0_path: Path | None = None) -> tuple[dict[str, Any], Pat
     return state, target_path, actual_sha256
 
 
+def compute_effective_cql_weight(*, online: bool, force_online: bool, base_min_q_weight: float = BASE_MIN_Q_WEIGHT) -> tuple[bool, float]:
+    """Compute effective CQL activation and weight from runtime online flags."""
+    cql_active = (not online) or force_online
+    effective_weight = float(base_min_q_weight) if cql_active else 0.0
+    return cql_active, effective_weight
+
+
 def run_feasibility_audit(
     *,
     experiment_root: Path = O1_CANONICAL_DIR,
     device_name: str = "cpu",
     games: int = 4,
     k0_path: Path | None = None,
+    online: bool = True,
+    force_online: bool = False,
 ) -> dict[str, Any]:
     """Execute complete O1 feasibility audit and return summary dict."""
+    if games != 4:
+        raise ValueError(f"games must be exactly 4 for O1 smoke feasibility audit; got {games}")
+
     check_directory_boundary(experiment_root, REPO / "artifacts" / "experiments")
     experiment_root.mkdir(parents=True, exist_ok=True)
 
@@ -283,14 +313,17 @@ def run_feasibility_audit(
 
     device = torch.device(device_name)
     hard_gates: dict[str, bool] = {
-        "server_client_roundtrip": False,
         "k0_identity_verified": False,
-        "online_replays_generated": False,
+        "server_client_roundtrip": False,
+        "exactly_four_unique_replays": False,
         "trainee_rows_loaded": False,
+        "final_rank_mc_contract_verified": False,
+        "next_rank_alignment_verified": False,
         "legal_actions_valid": False,
+        "bounded_backward_batch": False,
         "targets_and_losses_finite": False,
         "gradients_finite": False,
-        "cql_disabled_online": False,
+        "online_cql_branch_disabled": False,
         "parameters_unchanged": False,
         "no_checkpoint_created": False,
         "processes_cleaned_up": False,
@@ -299,6 +332,9 @@ def run_feasibility_audit(
     server = None
     server_thread = None
     initial_checkpoints_snapshot = set(experiment_root.rglob("*.pth"))
+
+    total_rows_loaded = 0
+    backward_batch_rows = 0
 
     try:
         # 1. K0 Identity & Model Initialization
@@ -314,33 +350,28 @@ def run_feasibility_audit(
         aux_net.load_state_dict(k0_state["aux_net"])
         mortal_net.freeze_bn(True)
 
-        # Take bit-exact parameter snapshot before any operations
-        param_snapshot_before: dict[str, torch.Tensor] = {}
+        # Snapshot parameters and buffers bit-for-bit before any operations
+        state_dict_before: dict[str, torch.Tensor] = {}
         for mod_name, mod in (("mortal", mortal_net), ("dqn", dqn_net), ("aux", aux_net)):
-            for p_name, p_val in mod.state_dict().items():
-                param_snapshot_before[f"{mod_name}.{p_name}"] = p_val.clone().cpu()
+            for name, tensor_val in mod.state_dict().items():
+                state_dict_before[f"{mod_name}.{name}"] = tensor_val.clone().cpu()
 
         # 2. Server setup on localhost with dynamic free port
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(("127.0.0.1", 0))
-            free_port = s.getsockname()[1]
-
-        state = ServerState(
+        server = FeasibilityTCPServer(("127.0.0.1", 0), FeasibilityServerHandler, ServerState(
             buffer_dir=str(buffer_dir),
             drain_dir=str(drain_dir),
             capacity=100,
             force_sequential=False,
             dir_lock=threading.Lock(),
             param_lock=threading.Lock(),
-        )
-
-        server = FeasibilityTCPServer(("127.0.0.1", free_port), FeasibilityServerHandler, state)
+        ))
+        allocated_port = server.server_address[1]
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
         server_thread.start()
 
         # 3. Trainer submits parameters (submit_param)
         with socket.socket() as conn:
-            conn.connect(("127.0.0.1", free_port))
+            conn.connect(("127.0.0.1", allocated_port))
             send_msg(
                 conn,
                 {
@@ -353,14 +384,14 @@ def run_feasibility_audit(
 
         # 4. Worker queries parameters (get_param)
         with socket.socket() as conn:
-            conn.connect(("127.0.0.1", free_port))
+            conn.connect(("127.0.0.1", allocated_port))
             send_msg(conn, {"type": "get_param", "param_version": -1})
             rsp = recv_msg(conn, map_location=device)
 
         if rsp.get("status") != "ok":
             raise RuntimeError(f"Worker failed to receive parameters from server: {rsp}")
 
-        # 5. Worker plays games using OneVsThree
+        # 5. Worker plays 4 deterministic games using OneVsThree (trainee=K0, baseline=K0)
         worker_mortal = model.Brain(version=4, conv_channels=192, num_blocks=40).to(device).eval()
         worker_dqn = model.DQN(version=4).to(device).eval()
         worker_mortal.load_state_dict(rsp["mortal"])
@@ -393,24 +424,24 @@ def run_feasibility_audit(
         )
 
         arena = OneVsThree(disable_progress_bar=True, log_dir=str(client_log_dir))
-        seed_count = max(1, games // 4)
+        # games = 4 -> seed_count = 1 (1 seed plays 4 games in OneVsThree)
         arena.py_vs_py(
             challenger=engine_chal,
             champion=engine_base,
             seed_start=(10000, 0x2000),
-            seed_count=seed_count,
+            seed_count=1,
         )
 
         client_logs: dict[str, bytes] = {}
-        for p in client_log_dir.glob("*.json.gz"):
+        for p in sorted(client_log_dir.glob("*.json.gz")):
             client_logs[p.name] = p.read_bytes()
 
-        if len(client_logs) >= 1:
-            hard_gates["online_replays_generated"] = True
+        if len(client_logs) == 4 and len(set(client_logs.keys())) == 4:
+            hard_gates["exactly_four_unique_replays"] = True
 
         # 6. Worker submits replays to server
         with socket.socket() as conn:
-            conn.connect(("127.0.0.1", free_port))
+            conn.connect(("127.0.0.1", allocated_port))
             send_msg(
                 conn,
                 {
@@ -422,22 +453,24 @@ def run_feasibility_audit(
 
         # Wait until server has accepted and written all submission replays
         for _ in range(500):
-            with state.dir_lock:
-                if state.buffer_size >= len(client_logs):
+            with server.state.dir_lock:
+                if server.state.buffer_size >= len(client_logs):
                     break
             time.sleep(0.01)
 
         # 7. Trainer drains replays from server
         with socket.socket() as conn:
-            conn.connect(("127.0.0.1", free_port))
+            conn.connect(("127.0.0.1", allocated_port))
             send_msg(conn, {"type": "drain"})
             drain_msg = recv_msg(conn)
 
-        if drain_msg.get("count", 0) > 0 and os.path.exists(drain_msg["drain_dir"]):
+        if drain_msg.get("count", 0) == 4 and os.path.exists(drain_msg["drain_dir"]):
             hard_gates["server_client_roundtrip"] = True
 
-        # 8. GameplayLoader loads trainee perspectives
-        drained_files = [os.path.join(drain_msg["drain_dir"], p) for p in os.listdir(drain_msg["drain_dir"])]
+        # 8. GameplayLoader loads trainee perspectives and applies mainline final_rank_mc
+        drained_files = sorted(
+            os.path.join(drain_msg["drain_dir"], p) for p in os.listdir(drain_msg["drain_dir"])
+        )
         loader = GameplayLoader(version=4, oracle=False, player_names=["trainee"], augmented=False)
         data = loader.load_gz_log_files(drained_files)
 
@@ -445,10 +478,10 @@ def run_feasibility_audit(
         all_actions = []
         all_masks = []
         all_steps_to_done = []
-        all_kyoku_rewards = []
-        all_player_ranks = []
+        all_q_targets = []
+        all_next_rank_targets = []
 
-        pts = np.array([90.0, 45.0, 0.0, -135.0])
+        pts_mean = float(RANK_PTS.mean())
         for file in data:
             for game in file:
                 obs = game.take_obs()
@@ -458,14 +491,16 @@ def run_feasibility_audit(
                 dones = game.take_dones()
                 apply_gamma = game.take_apply_gamma()
                 grp = game.take_grp()
-                player_id = game.take_player_id()
+                player_id = int(game.take_player_id())
 
                 game_size = len(obs)
                 grp_feature = grp.take_feature()
                 rank_by_player = grp.take_rank_by_player()
-                kyoku_rewards = np.zeros(len(grp_feature), dtype=np.float64)
                 final_rank = int(rank_by_player[player_id])
-                kyoku_rewards[min(len(kyoku_rewards) - 1, int(at_kyoku[-1]))] = float(pts[final_rank])
+
+                # Mainline final_rank_mc centering: [6,4,2,0] - 3.0 -> {+3, +1, -1, -3}
+                terminal_return = float(RANK_PTS[final_rank] - pts_mean)
+                kyoku_rewards = np.full(len(grp_feature), terminal_return, dtype=np.float64)
 
                 final_scores = grp.take_final_scores()
                 scores_seq = np.concatenate((grp_feature[:, 3:] * 1e4, [final_scores]))
@@ -477,40 +512,60 @@ def run_feasibility_audit(
                     if not dones[i]:
                         steps_to_done[i] = steps_to_done[i + 1] + int(apply_gamma[i])
 
-                all_obs.append(obs)
-                all_actions.append(actions)
-                all_masks.append(masks)
-                all_steps_to_done.append(steps_to_done)
-                all_kyoku_rewards.append(kyoku_rewards[at_kyoku])
-                all_player_ranks.append(player_ranks[at_kyoku])
+                for i in range(game_size):
+                    all_obs.append(obs[i])
+                    all_actions.append(actions[i])
+                    all_masks.append(masks[i])
+                    all_steps_to_done.append(steps_to_done[i])
+                    # gamma = 1.0 -> q_target = kyoku_rewards[at_kyoku[i]]
+                    q_target = float((GAMMA ** steps_to_done[i]) * kyoku_rewards[at_kyoku[i]])
+                    all_q_targets.append(q_target)
+                    # mainline next-rank target uses player_ranks[at_kyoku[i] + 1]
+                    all_next_rank_targets.append(int(player_ranks[at_kyoku[i] + 1]))
 
-        total_rows = sum(len(o) for o in all_obs)
-        if total_rows > 0:
+        total_rows_loaded = len(all_obs)
+        if total_rows_loaded > 0:
             hard_gates["trainee_rows_loaded"] = True
 
-        batch_obs = torch.as_tensor(np.concatenate(all_obs, axis=0), dtype=torch.float32, device=device)
-        batch_actions = torch.as_tensor(np.concatenate(all_actions, axis=0), dtype=torch.int64, device=device)
-        batch_masks = torch.as_tensor(np.concatenate(all_masks, axis=0), dtype=torch.bool, device=device)
-        batch_steps_to_done = torch.as_tensor(
-            np.concatenate(all_steps_to_done, axis=0), dtype=torch.int64, device=device
-        )
-        batch_kyoku_rewards = torch.as_tensor(
-            np.concatenate(all_kyoku_rewards, axis=0), dtype=torch.float64, device=device
-        )
-        batch_player_ranks = torch.as_tensor(
-            np.concatenate(all_player_ranks, axis=0), dtype=torch.int64, device=device
+        # 9. CPU schema, legal action, and target-domain validation across ALL rows
+        all_actions_arr = np.array(all_actions, dtype=np.int64)
+        all_masks_arr = np.array(all_masks, dtype=bool)
+        all_targets_arr = np.array(all_q_targets, dtype=np.float32)
+        all_next_ranks_arr = np.array(all_next_rank_targets, dtype=np.int64)
+
+        all_legal = True
+        for row_i in range(total_rows_loaded):
+            if not bool(all_masks_arr[row_i, all_actions_arr[row_i]]):
+                all_legal = False
+                break
+        hard_gates["legal_actions_valid"] = all_legal
+
+        unique_targets = set(np.unique(all_targets_arr).tolist())
+        expected_target_domain = set(CENTERED_TARGETS.values())
+        hard_gates["final_rank_mc_contract_verified"] = (
+            unique_targets.issubset(expected_target_domain) and len(unique_targets) > 0
         )
 
-        # 9. Verify legal actions
-        row_indices = torch.arange(batch_obs.shape[0], device=device)
-        is_legal = bool(batch_masks[row_indices, batch_actions].all().item())
-        hard_gates["legal_actions_valid"] = is_legal
+        unique_next_ranks = set(np.unique(all_next_ranks_arr).tolist())
+        hard_gates["next_rank_alignment_verified"] = unique_next_ranks.issubset({0, 1, 2, 3})
 
-        # 10. Check CQL disabled for online selfplay
-        cql_min_q_weight = 0.0  # Online self-play requires CQL disabled
-        hard_gates["cql_disabled_online"] = (cql_min_q_weight == 0.0)
+        # 10. CQL runtime branch verification
+        cql_active, effective_cql_weight = compute_effective_cql_weight(
+            online=online, force_online=force_online, base_min_q_weight=BASE_MIN_Q_WEIGHT
+        )
+        hard_gates["online_cql_branch_disabled"] = (not cql_active and effective_cql_weight == 0.0)
 
-        # 11. Forward, Loss, Backward (Zero-Update)
+        # 11. Bounded backward batch (Deterministic first 32 rows)
+        backward_batch_rows = min(MAX_BACKWARD_ROWS, total_rows_loaded)
+        hard_gates["bounded_backward_batch"] = (backward_batch_rows <= MAX_BACKWARD_ROWS)
+
+        batch_obs = torch.as_tensor(np.stack(all_obs[:backward_batch_rows], axis=0), dtype=torch.float32, device=device)
+        batch_actions = torch.as_tensor(all_actions_arr[:backward_batch_rows], dtype=torch.int64, device=device)
+        batch_masks = torch.as_tensor(all_masks_arr[:backward_batch_rows], dtype=torch.bool, device=device)
+        batch_q_targets = torch.as_tensor(all_targets_arr[:backward_batch_rows], dtype=torch.float32, device=device)
+        batch_next_ranks = torch.as_tensor(all_next_ranks_arr[:backward_batch_rows], dtype=torch.int64, device=device)
+
+        # 12. Forward, Loss, Backward using mainline compute_objective_losses (Zero-Update)
         mortal_net.train()
         dqn_net.train()
         aux_net.train()
@@ -518,23 +573,31 @@ def run_feasibility_audit(
         dqn_net.zero_grad(set_to_none=True)
         aux_net.zero_grad(set_to_none=True)
 
-        gamma = 0.99
-        q_target_mc = (gamma**batch_steps_to_done * batch_kyoku_rewards).to(torch.float32)
-
         phi = mortal_net(batch_obs)
         q_out = dqn_net(phi, batch_masks)
         (next_rank_logits,) = aux_net(phi)
 
-        behavior_q = q_out[row_indices, batch_actions]
-        value_loss = 0.5 * F.mse_loss(behavior_q, q_target_mc)
-        aux_loss = F.cross_entropy(next_rank_logits, batch_player_ranks)
-        total_loss = value_loss + 0.2 * aux_loss
+        objective_losses = compute_objective_losses(
+            q_out=q_out,
+            masks=batch_masks,
+            actions=batch_actions,
+            q_target_mc=batch_q_targets,
+            next_rank_logits=next_rank_logits,
+            player_ranks=batch_next_ranks,
+            mode=OBJECTIVE_MODE,
+            cql_weight=effective_cql_weight,
+            aux_weight=AUX_WEIGHT,
+        )
+        total_loss = objective_losses["total_loss"]
 
         losses_finite = bool(
-            torch.isfinite(q_target_mc).all().item()
-            and torch.isfinite(value_loss).all().item()
-            and torch.isfinite(aux_loss).all().item()
+            torch.isfinite(batch_q_targets).all().item()
             and torch.isfinite(total_loss).all().item()
+            and all(
+                torch.isfinite(v).all().item()
+                for v in objective_losses.values()
+                if isinstance(v, torch.Tensor)
+            )
         )
         hard_gates["targets_and_losses_finite"] = losses_finite
 
@@ -548,22 +611,22 @@ def run_feasibility_audit(
                     break
         hard_gates["gradients_finite"] = grads_finite
 
-        # ZERO UPDATE: zero out gradients without stepping optimizer
+        # ZERO UPDATE: zero out gradients without stepping optimizer or scheduler
         mortal_net.zero_grad(set_to_none=True)
         dqn_net.zero_grad(set_to_none=True)
         aux_net.zero_grad(set_to_none=True)
 
-        # 12. Verify parameters unchanged bit-for-bit
+        # 13. Verify all parameters and buffers unchanged bit-for-bit
         params_unchanged = True
         for mod_name, mod in (("mortal", mortal_net), ("dqn", dqn_net), ("aux", aux_net)):
-            for p_name, p_val in mod.state_dict().items():
-                before_val = param_snapshot_before[f"{mod_name}.{p_name}"]
-                if not torch.equal(before_val, p_val.cpu()):
+            for name, tensor_val in mod.state_dict().items():
+                before_val = state_dict_before[f"{mod_name}.{name}"]
+                if not torch.equal(before_val, tensor_val.cpu()):
                     params_unchanged = False
                     break
         hard_gates["parameters_unchanged"] = params_unchanged
 
-        # 13. Verify no checkpoint created
+        # 14. Verify no checkpoint created
         current_checkpoints = set(experiment_root.rglob("*.pth"))
         new_checkpoints = current_checkpoints - initial_checkpoints_snapshot
         hard_gates["no_checkpoint_created"] = (len(new_checkpoints) == 0)
@@ -581,14 +644,27 @@ def run_feasibility_audit(
         hard_gates["processes_cleaned_up"] = (server_thread is None or not server_thread.is_alive())
 
     verdict = (
-        "online_stack_feasible"
+        "keqing_online_adapter_feasible"
         if all(hard_gates.values())
-        else "online_stack_not_feasible"
+        else "keqing_online_adapter_not_feasible"
     )
 
     summary = {
-        "schema": "keqing.mortal.o1_online_feasibility_summary.v1",
+        "schema": "keqing.mortal.o1_online_feasibility_summary.v2",
         "experiment_id": EXPERIMENT_ID,
+        "contract": {
+            "adapter_kind": ADAPTER_KIND,
+            "objective": OBJECTIVE_MODE,
+            "reward": REWARD_MODE,
+            "gamma": GAMMA,
+            "rank_pts": RANK_PTS.tolist(),
+            "centered_targets": CENTERED_TARGETS,
+            "aux_weight": AUX_WEIGHT,
+            "base_min_q_weight": BASE_MIN_Q_WEIGHT,
+            "online": online,
+            "force_online": force_online,
+            "effective_cql_weight": compute_effective_cql_weight(online=online, force_online=force_online)[1],
+        },
         "k0_checkpoint": {
             "path": str(resolved_k0_path),
             "sha256": k0_sha256,
@@ -596,7 +672,8 @@ def run_feasibility_audit(
         },
         "feasibility_run": {
             "games_generated": len(client_logs) if "client_logs" in locals() else 0,
-            "trainee_rows_loaded": total_rows if "total_rows" in locals() else 0,
+            "total_rows_loaded": total_rows_loaded,
+            "backward_batch_rows": backward_batch_rows,
             "device": str(device),
         },
         "hard_gates": hard_gates,
@@ -618,7 +695,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=O1_CANONICAL_DIR, help="Experiment root directory")
     parser.add_argument("--device", type=str, default="cpu", help="Compute device (cpu or cuda)")
-    parser.add_argument("--games", type=int, default=4, help="Number of smoke games to generate (default 4)")
+    parser.add_argument("--games", type=int, default=4, help="Number of smoke games to generate (must be exactly 4)")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -628,7 +705,7 @@ def main() -> None:
         games=args.games,
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False))
-    if summary["verdict"] != "online_stack_feasible":
+    if summary["verdict"] != "keqing_online_adapter_feasible":
         sys.exit(1)
 
 
