@@ -1,4 +1,4 @@
-"""Tests for O1 Online Self-play Training Stack Feasibility Auditor."""
+"""Tests for O1: Keqing project-owned online adapter feasibility."""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ from training.mortal.audit_o1_online_selfplay_feasibility_2026_08 import (
     check_directory_boundary,
     compute_effective_cql_weight,
     ensure_clean_staging_dir,
+    fetch_param_with_retry,
     recv_msg,
     send_msg,
 )
@@ -225,7 +226,7 @@ def test_8_zero_update_parameter_and_buffer_invariant() -> None:
 
 
 def test_9_protocol_parity_and_roundtrip(tmp_path: Path) -> None:
-    """Test 9: Socket framing parity (struct <Q prefix + torch serialization) and full roundtrip."""
+    """Test 9: Socket framing parity, get_param retry against races, and full roundtrip."""
     # Test binary framing directly
     msg = {"test_key": [1, 2, 3], "nested": {"a": "b"}}
     buf = BytesIO()
@@ -257,28 +258,39 @@ def test_9_protocol_parity_and_roundtrip(tmp_path: Path) -> None:
     server_thread.start()
 
     try:
-        # 1. Trainer submits parameters
+        # A. Verify fetch_param_with_retry retries on 'empty param' and succeeds when param is submitted concurrently
         dummy_mortal = OrderedDict({"weight": torch.tensor([10.0, 20.0])})
         dummy_dqn = OrderedDict({"weight": torch.tensor([30.0, 40.0])})
-        with socket.socket() as conn:
-            conn.connect(("127.0.0.1", allocated_port))
-            send_msg(conn, {
-                "type": "submit_param",
-                "mortal": dummy_mortal,
-                "dqn": dummy_dqn,
-                "is_idle": True,
-            })
 
-        # 2. Worker gets parameters
-        with socket.socket() as conn:
-            conn.connect(("127.0.0.1", allocated_port))
-            send_msg(conn, {"type": "get_param", "param_version": -1})
-            rsp = recv_msg(conn)
+        def delayed_submit():
+            time.sleep(0.05)
+            with socket.socket() as conn:
+                conn.connect(("127.0.0.1", allocated_port))
+                send_msg(conn, {
+                    "type": "submit_param",
+                    "mortal": dummy_mortal,
+                    "dqn": dummy_dqn,
+                    "is_idle": True,
+                })
+
+        submitter_thread = threading.Thread(target=delayed_submit)
+        submitter_thread.start()
+
+        # Worker calls fetch_param_with_retry while param is initially empty
+        rsp = fetch_param_with_retry(
+            host="127.0.0.1",
+            port=allocated_port,
+            param_version=-1,
+            timeout_s=3.0,
+            poll_interval_s=0.01,
+        )
+        submitter_thread.join()
+
         assert rsp["status"] == "ok"
         assert torch.equal(rsp["mortal"]["weight"], dummy_mortal["weight"])
         assert rsp["param_version"] == 1
 
-        # 3. Worker submits 4 replays
+        # B. Worker submits 4 replays
         logs = {f"sample_{i}.json.gz": f"content-{i}".encode() for i in range(4)}
         with socket.socket() as conn:
             conn.connect(("127.0.0.1", allocated_port))
@@ -297,7 +309,7 @@ def test_9_protocol_parity_and_roundtrip(tmp_path: Path) -> None:
         assert state.buffer_size == 4
         assert len(list(buffer_dir.iterdir())) == 4
 
-        # 4. Trainer drains replays
+        # C. Trainer drains replays
         with socket.socket() as conn:
             conn.connect(("127.0.0.1", allocated_port))
             send_msg(conn, {"type": "drain"})

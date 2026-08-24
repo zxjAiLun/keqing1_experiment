@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""O1: Online Self-play Training Stack Feasibility Auditor.
+"""O1: Keqing project-owned online adapter feasibility.
 
-Verifies that the existing Mortal online server / client / trainer loop can
-safely and correctly be used for online continuation without weight drift,
-leakage, CQL interference, or leftover background processes.
+Verifies that the Keqing project-owned online adapter loop can safely and
+correctly be used for online continuation without weight drift, leakage, CQL
+interference, or leftover background processes.
 """
 
 from __future__ import annotations
 
 import argparse
+import gzip
 import hashlib
 import json
 import logging
@@ -102,6 +103,31 @@ def recv_msg(conn: socket.socket, map_location: str | torch.device = "cpu") -> A
     (size,) = struct.unpack("<Q", rx)
     rx = recv_binary(conn, size)
     return torch.load(BytesIO(rx), weights_only=True, map_location=map_location)
+
+
+def fetch_param_with_retry(
+    host: str,
+    port: int,
+    param_version: int = -1,
+    device: str | torch.device = "cpu",
+    timeout_s: float = 5.0,
+    poll_interval_s: float = 0.02,
+) -> dict[str, Any]:
+    """Poll get_param on server with retry on 'empty param' or busy status until deadline."""
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        with socket.socket() as conn:
+            conn.connect((host, port))
+            send_msg(conn, {"type": "get_param", "param_version": param_version})
+            rsp = recv_msg(conn, map_location=device)
+        status = rsp.get("status")
+        if status == "ok":
+            return rsp
+        if status in ("empty param", "samples overflow", "trainer is busy"):
+            time.sleep(poll_interval_s)
+            continue
+        raise RuntimeError(f"Unexpected get_param response status: {rsp}")
+    raise TimeoutError(f"Timed out after {timeout_s}s waiting for parameters from server (last rsp: {rsp})")
 
 
 @dataclass
@@ -382,14 +408,15 @@ def run_feasibility_audit(
                 },
             )
 
-        # 4. Worker queries parameters (get_param)
-        with socket.socket() as conn:
-            conn.connect(("127.0.0.1", allocated_port))
-            send_msg(conn, {"type": "get_param", "param_version": -1})
-            rsp = recv_msg(conn, map_location=device)
-
-        if rsp.get("status") != "ok":
-            raise RuntimeError(f"Worker failed to receive parameters from server: {rsp}")
+        # 4. Worker queries parameters (get_param) with deadline-bounded retry
+        rsp = fetch_param_with_retry(
+            host="127.0.0.1",
+            port=allocated_port,
+            param_version=-1,
+            device=device,
+            timeout_s=5.0,
+            poll_interval_s=0.02,
+        )
 
         # 5. Worker plays 4 deterministic games using OneVsThree (trainee=K0, baseline=K0)
         worker_mortal = model.Brain(version=4, conv_channels=192, num_blocks=40).to(device).eval()
@@ -433,10 +460,17 @@ def run_feasibility_audit(
         )
 
         client_logs: dict[str, bytes] = {}
+        unique_game_seeds: set[tuple[Any, ...]] = set()
         for p in sorted(client_log_dir.glob("*.json.gz")):
-            client_logs[p.name] = p.read_bytes()
+            content = p.read_bytes()
+            client_logs[p.name] = content
+            # Parse first line to verify start_game seed identity
+            with gzip.open(p, "rt", encoding="utf-8") as gz_f:
+                first_line = json.loads(gz_f.readline())
+                if first_line.get("type") == "start_game" and "seed" in first_line:
+                    unique_game_seeds.add(tuple(first_line["seed"]))
 
-        if len(client_logs) == 4 and len(set(client_logs.keys())) == 4:
+        if len(client_logs) == 4 and len(unique_game_seeds) == 4:
             hard_gates["exactly_four_unique_replays"] = True
 
         # 6. Worker submits replays to server
