@@ -12,9 +12,9 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "O2 在线自对弈 continuation 方向筛选实验已闭环（verdict=not_promising，CI 跨零且均值为负，不启动 O3 复验）；P1 项目自研 Policy Improvement Target 可行性审计已完成（直接快照 API 审计 verdict=direct_snapshot_api_blocked，确定性 seed-replay 分支 smoke 验证通过，综合 verdict=seed_replay_counterfactual_feasible），K1 保持为 null。",
-    "next_experiment": null,
-    "next_experiment_status": "not_selected",
+    "current_stage": "P1 项目自研 Policy Improvement Target 可行性审计已完成并闭环（综合 verdict=seed_replay_counterfactual_feasible）；P2 128 局 counterfactual panel 目标质量评测实验已完成代码实现与契约测试（status=implemented_not_started），K1 保持为 null。",
+    "next_experiment": "P2_seed_replay_counterfactual_target_quality_2026_09",
+    "next_experiment_status": "implemented_not_started",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
@@ -1195,9 +1195,62 @@
       "checkpoint_promotion": false,
       "closure_reason": "只读可行性审计与确定性 seed-replay smoke 均已通过，确认无需修改 Rust 即可生成配对 counterfactual rollout 目标；未进行模型训练，K1 保持为 null。",
       "predecessor": "O2_keqing_online_continuation_pilot_2026_08",
+      "next_experiment": "P2_seed_replay_counterfactual_target_quality_2026_09",
+      "commits": [
+        "1f633cd177596640394a48f1047d0fc11bdb340a",
+        "3563af1c3b6544dbb1993f4b74236fad189d48e4"
+      ],
+      "artifact_paths": [],
+      "report_paths": [
+        "training/docs/mortal/研发总览_当前.md"
+      ]
+    },
+    {
+      "experiment_id": "P2_seed_replay_counterfactual_target_quality_2026_09",
+      "name_zh": "P2 确定性 Seed-Replay Counterfactual 目标质量评测",
+      "category": "target_quality_evaluation",
+      "parent_model": "K0_70k",
+      "control": "K0_70k (top1 greedy choice)",
+      "variant": "128 hanchans deterministic top1 vs top2 counterfactual rollouts",
+      "changed_variable": "在每局首个合法非立直两选舍牌决策点分别强制执行 top1 与 top2 动作，测量后续半庄结果与顺位/得点差值分布",
+      "fixed_variables": [
+        "K0_70k parent model",
+        "128 hanchans, seeds 3000000..3000127, seed_key 8192",
+        "focal engine on seat 0 (split 'a')",
+        "opponents: fixed K0_70k with agari guard",
+        "deterministic target context selection (first eligible non-riichi 2-discard context)",
+        "exact bit-for-bit event prefix match before intervention",
+        "first divergence strictly verified as focal actor top1 vs top2 dahai",
+        "target context intervened exactly once per branch",
+        "both branches complete full hanchan ending in end_game",
+        "no training, no checkpoint creation, no K1 promotion",
+        "paired bootstrap analysis (5000 reps, seed 20260904)"
+      ],
+      "training_seeds": [],
+      "evaluation_protocol": {
+        "total_pairs": 128,
+        "seed_start": 3000000,
+        "seed_end_exclusive": 3000128,
+        "seed_key": 8192,
+        "focal_seat": 0,
+        "split_name": "a",
+        "bootstrap_reps": 5000,
+        "bootstrap_seed": 20260904
+      },
+      "status": "implemented_not_started",
+      "primary_result": "P2 确定性 seed-replay counterfactual panel 生成器与统计汇总器已实现并通过 5 项定向测试（覆盖契约不可变量、前缀逐字一致与首次 dahai 差异硬门禁、固定子集重跑 bit-exact 重现性、Bootstrap 统计与 mock 汇总闭环）。128 局正式生成就绪，等待 review。",
+      "promoted_data_route": null,
+      "promoted_checkpoint": null,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": null,
+      "predecessor": "P1_project_owned_policy_improvement_target_feasibility_2026_09",
       "next_experiment": null,
       "commits": [],
-      "artifact_paths": [],
+      "artifact_paths": [
+        "artifacts/experiments/P2_seed_replay_counterfactual_target_quality_2026_09/counterfactual_panel/counterfactual_panel_manifest.json",
+        "artifacts/experiments/P2_seed_replay_counterfactual_target_quality_2026_09/summary/p2_summary.json"
+      ],
       "report_paths": [
         "training/docs/mortal/研发总览_当前.md"
       ]
