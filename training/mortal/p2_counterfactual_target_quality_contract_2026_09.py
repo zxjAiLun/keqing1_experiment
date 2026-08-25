@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
 from pathlib import Path
 from typing import Any
@@ -38,12 +39,45 @@ FOCAL_SEAT = 0  # We evaluate focal engine on seat 0 (split 'a')
 SPLIT_NAME = "a"
 DISCARD_ACTION_LIMIT = 34
 
+# Discard action to base tile mapping (0..33)
+ACTION_TO_TILE: list[str] = [
+    "1m", "2m", "3m", "4m", "5m", "6m", "7m", "8m", "9m",
+    "1p", "2p", "3p", "4p", "5p", "6p", "7p", "8p", "9p",
+    "1s", "2s", "3s", "4s", "5s", "6s", "7s", "8s", "9s",
+    "E", "S", "W", "N", "P", "F", "C",
+]
+
 # Standard Tenhou rank points
 TENHOU_RANK_POINTS = np.array([90.0, 45.0, 0.0, -135.0], dtype=np.float64)
 
 BOOTSTRAP_REPS = 5000
 BOOTSTRAP_SEED = 20260904
 BOOTSTRAP_CI = 95.0
+
+# Exact hard gates expected in panel manifest
+EXPECTED_PANEL_HARD_GATES: frozenset[str] = frozenset({
+    "k0_parent_verified",
+    "exact_128_pairs_generated",
+    "seeds_strictly_contiguous",
+    "focal_seat_verified",
+    "all_target_contexts_intervened_exactly_once",
+    "all_prefixes_exact_matched",
+    "all_first_divergences_verified_dahai",
+    "all_branches_completed_end_game",
+    "scores_and_ranks_valid",
+})
+
+# Exact hard gates expected in summary
+EXPECTED_SUMMARY_HARD_GATES: frozenset[str] = frozenset({
+    "manifest_verified",
+    "k0_parent_verified",
+    "exact_128_pairs_analyzed",
+    "seeds_contiguous",
+    "all_branch_logs_verified",
+    "canonical_content_hashes_verified",
+    "independent_metrics_recalculated_match",
+    "bootstrap_computed",
+})
 
 
 class ContractError(RuntimeError):
@@ -56,6 +90,43 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def normalize_event_for_canonical_hash(ev: Any) -> Any:
+    """Strip non-deterministic wall-clock timing fields from event metadata before hashing."""
+    if not isinstance(ev, dict):
+        return ev
+    ev_copy = dict(ev)
+    if "meta" in ev_copy and isinstance(ev_copy["meta"], dict):
+        m_copy = dict(ev_copy["meta"])
+        m_copy.pop("eval_time_ns", None)
+        ev_copy["meta"] = m_copy
+    return ev_copy
+
+
+def canonical_log_content_sha256(path: Path) -> str:
+    """Compute deterministic SHA256 of decompressed canonical JSONL events, excluding wall-clock nanoseconds."""
+    import json
+    with gzip.open(path, "rt", encoding="utf-8") as f:
+        events = [json.loads(line) for line in f if line.strip()]
+    normalized = [normalize_event_for_canonical_hash(e) for e in events]
+    text = "\n".join(json.dumps(e, sort_keys=True) for e in normalized)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def action_matches_pai(action_id: int, pai_str: str) -> bool:
+    """Verify that a dahai event pai string matches the corresponding discrete discard action ID."""
+    if not (0 <= action_id < len(ACTION_TO_TILE)):
+        return False
+    expected_tile = ACTION_TO_TILE[action_id]
+    if pai_str == expected_tile:
+        return True
+    # Red five equivalents
+    if expected_tile == "5m" and pai_str == "5mr":
+        return True
+    if expected_tile == "5p" and pai_str == "5pr":
+        return True
+    return bool(expected_tile == "5s" and pai_str == "5sr")
 
 
 def check_directory_boundary(target_dir: Path, allowed_root: Path) -> None:

@@ -28,6 +28,7 @@ import model
 
 from training.mortal.p2_counterfactual_target_quality_contract_2026_09 import (
     DISCARD_ACTION_LIMIT,
+    EXPECTED_PANEL_HARD_GATES,
     EXPERIMENT_ID,
     FOCAL_SEAT,
     P2_PANEL_DIR,
@@ -39,6 +40,8 @@ from training.mortal.p2_counterfactual_target_quality_contract_2026_09 import (
     SPLIT_NAME,
     TENHOU_RANK_POINTS,
     ContractError,
+    action_matches_pai,
+    canonical_log_content_sha256,
     check_directory_boundary,
     compute_final_ranks,
     ensure_clean_staging_dir,
@@ -50,17 +53,17 @@ logger = logging.getLogger("p2_generator")
 
 
 class CounterfactualBranchingEngine:
-    """Wrapper that records decision contexts and forces alternative actions at a target context."""
+    """Wrapper that records decision contexts and forces an explicit action ID at a target context."""
 
     def __init__(
         self,
         base_engine: Any,
         target_context: tuple[int, int, int, int, int] | None = None,
-        forced_choice: str | None = None,
+        forced_action: int | None = None,
     ) -> None:
         self.base_engine = base_engine
         self.target_context = target_context
-        self.forced_choice = forced_choice
+        self.forced_action = forced_action
         self.recorded_contexts: list[dict[str, Any]] = []
         self.intervened = False
         self.intervention_count = 0
@@ -104,10 +107,12 @@ class CounterfactualBranchingEngine:
                 })
 
             if self.target_context is not None and c_tuple == self.target_context:
-                if self.forced_choice == "top1":
-                    out_actions[i] = ranked[0]
-                elif self.forced_choice == "top2":
-                    out_actions[i] = ranked[1]
+                if self.forced_action is not None:
+                    if self.forced_action not in legal:
+                        raise ContractError(
+                            f"Forced action {self.forced_action} is illegal in context {c_tuple} (legal: {legal})"
+                        )
+                    out_actions[i] = self.forced_action
                 self.intervened = True
                 self.intervention_count += 1
 
@@ -165,16 +170,18 @@ def generate_single_counterfactual_pair(
         # Deterministic selection: first eligible context
         target = focal_contexts[0]
         target_ctx = target["ctx"]
+        top1_action = target["top1"]
+        top2_action = target["top2"]
 
-    # 2. Branch A: forced top1
-    eng_a = CounterfactualBranchingEngine(_create_k0_engine("E0", device=device), target_context=target_ctx, forced_choice="top1")
+    # 2. Branch A: forced frozen top1 action ID
+    eng_a = CounterfactualBranchingEngine(_create_k0_engine("E0", device=device), target_context=target_ctx, forced_action=top1_action)
     arena_a = libriichi.arena.FourPlayer(disable_progress_bar=True, log_dir=str(dir_a))
     arena_a.py_vs_py(eng_a, _create_k0_engine("E1", device=device), _create_k0_engine("E2", device=device), _create_k0_engine("E3", device=device), (seed, seed_key), 1)
     if eng_a.intervention_count != 1:
         raise ContractError(f"Branch A for seed {seed} intervened {eng_a.intervention_count} times, expected exactly 1")
 
-    # 3. Branch B: forced top2
-    eng_b = CounterfactualBranchingEngine(_create_k0_engine("E0", device=device), target_context=target_ctx, forced_choice="top2")
+    # 3. Branch B: forced frozen top2 action ID
+    eng_b = CounterfactualBranchingEngine(_create_k0_engine("E0", device=device), target_context=target_ctx, forced_action=top2_action)
     arena_b = libriichi.arena.FourPlayer(disable_progress_bar=True, log_dir=str(dir_b))
     arena_b.py_vs_py(eng_b, _create_k0_engine("E1", device=device), _create_k0_engine("E2", device=device), _create_k0_engine("E3", device=device), (seed, seed_key), 1)
     if eng_b.intervention_count != 1:
@@ -220,6 +227,18 @@ def generate_single_counterfactual_pair(
     if ev_a_div.get("pai") == ev_b_div.get("pai"):
         raise ContractError(f"Divergence dahai pai identical at event {div_idx}: {ev_a_div.get('pai')}")
 
+    # Explicit check: Branch A dahai pai matches top1_action, Branch B dahai pai matches top2_action
+    pai_a = ev_a_div.get("pai", "")
+    pai_b = ev_b_div.get("pai", "")
+    if not action_matches_pai(top1_action, pai_a):
+        raise ContractError(f"Branch A dahai pai '{pai_a}' does not match frozen top1_action {top1_action}")
+    if not action_matches_pai(top2_action, pai_b):
+        raise ContractError(f"Branch B dahai pai '{pai_b}' does not match frozen top2_action {top2_action}")
+
+    # Canonical content SHA256 hashes
+    log_a_content_sha = canonical_log_content_sha256(log_a_path)
+    log_b_content_sha = canonical_log_content_sha256(log_b_path)
+
     # 6. Score and rank computation
     scores_a = final_scores_with_reach_accepted(events_a)
     scores_b = final_scores_with_reach_accepted(events_b)
@@ -245,18 +264,20 @@ def generate_single_counterfactual_pair(
         "seed_key": seed_key,
         "focal_seat": FOCAL_SEAT,
         "target_context": target_ctx,
-        "top1_action": target["top1"],
-        "top2_action": target["top2"],
+        "top1_action": top1_action,
+        "top2_action": top2_action,
         "top1_q": target["top1_q"],
         "top2_q": target["top2_q"],
         "margin": target["margin"],
         "divergence_event_index": div_idx,
-        "branch_a_dahai_pai": ev_a_div.get("pai"),
-        "branch_b_dahai_pai": ev_b_div.get("pai"),
+        "branch_a_dahai_pai": pai_a,
+        "branch_b_dahai_pai": pai_b,
         "branch_a_total_events": len(events_a),
         "branch_b_total_events": len(events_b),
         "branch_a_log_path": str(log_a_path),
         "branch_b_log_path": str(log_b_path),
+        "branch_a_canonical_content_sha256": log_a_content_sha,
+        "branch_b_canonical_content_sha256": log_b_content_sha,
         "rank_top1": rank_top1,
         "rank_top2": rank_top2,
         "score_top1": score_top1,
@@ -319,7 +340,10 @@ def generate_p2_counterfactual_panel(
     hard_gates["all_target_contexts_intervened_exactly_once"] = True
     hard_gates["all_prefixes_exact_matched"] = all(p["divergence_event_index"] > 0 for p in pairs)
     hard_gates["all_first_divergences_verified_dahai"] = all(
-        p["branch_a_dahai_pai"] != p["branch_b_dahai_pai"] for p in pairs
+        p["branch_a_dahai_pai"] != p["branch_b_dahai_pai"]
+        and action_matches_pai(p["top1_action"], p["branch_a_dahai_pai"])
+        and action_matches_pai(p["top2_action"], p["branch_b_dahai_pai"])
+        for p in pairs
     )
     hard_gates["all_branches_completed_end_game"] = all(
         p["branch_a_total_events"] > 0 and p["branch_b_total_events"] > 0 for p in pairs
@@ -327,6 +351,11 @@ def generate_p2_counterfactual_panel(
     hard_gates["scores_and_ranks_valid"] = all(
         0 <= p["rank_top1"] <= 3 and 0 <= p["rank_top2"] <= 3 for p in pairs
     )
+
+    if set(hard_gates.keys()) != set(EXPECTED_PANEL_HARD_GATES):
+        raise ContractError(
+            f"Panel hard gates key mismatch: {set(hard_gates.keys())} vs {set(EXPECTED_PANEL_HARD_GATES)}"
+        )
 
     manifest = {
         "schema": PANEL_MANIFEST_SCHEMA,
