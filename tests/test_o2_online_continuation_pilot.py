@@ -9,21 +9,22 @@ from pathlib import Path
 
 # Import libriichi before adding third_party/Mortal/mortal to sys.path
 import libriichi.arena  # noqa: F401
+import pytest
 import torch
-from torch import optim
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-
-import pytest
 
 from training.mortal.eval_o2_online_continuation_pilot_2026_08 import build_shard_spec
 from training.mortal.four_player_native import _load_engine
 from training.mortal.o2_online_continuation_contract_2026_08 import (
     BATCH_SIZE,
     EVALUATION_GAMES_PER_SHARD,
+    EVALUATION_LINEUP,
+    EVALUATION_MANIFEST_SCHEMA,
     EVALUATION_SEED_START,
+    EXPECTED_TRAINING_HARD_GATES,
     EXPERIMENT_ID,
     GENERATION_BASE_SEED,
     INITIAL_SEED_GROUPS_PER_CYCLE,
@@ -39,6 +40,7 @@ from training.mortal.o2_online_continuation_contract_2026_08 import (
     TARGET_STEP,
     TOTAL_CONSUMED_ROWS,
     TOTAL_OPTIMIZER_STEPS,
+    TRAINING_COMPLETION_SCHEMA,
     ContractError,
     adjudicate_o2_verdict,
     compute_effective_cql_weight,
@@ -62,6 +64,7 @@ if str(REPO_ROOT / "third_party" / "Mortal" / "mortal") not in sys.path:
 
 import engine
 import model
+from lr_scheduler import LinearWarmUpCosineAnnealingLR
 
 
 def test_1_16_x_25_step_and_row_schedule() -> None:
@@ -149,6 +152,15 @@ def test_3_real_k0_two_param_groups_adamw_preservation() -> None:
         assert "exp_avg" in s_entry
         assert "exp_avg_sq" in s_entry
 
+    # Verify that during 400 optimizer steps and LinearWarmUpCosineAnnealingLR steps, LR is exactly 1e-4 throughout
+    sched_cfg = {"peak": LEARNING_RATE, "final": LEARNING_RATE, "warm_up_steps": 0, "max_steps": 0}
+    scheduler = LinearWarmUpCosineAnnealingLR(optimizer, **sched_cfg)
+    for _ in range(400):
+        optimizer.step()
+        scheduler.step()
+        assert optimizer.param_groups[0]["lr"] == 1e-4
+        assert optimizer.param_groups[1]["lr"] == 1e-4
+
 
 def test_4_online_cql_branch_calculation() -> None:
     """Test 4: Online CQL branch calculation respects online vs force_online."""
@@ -173,8 +185,9 @@ def test_5_recovery_rng_and_cycle_identity_consistency(tmp_path: Path) -> None:
     mortal_net = model.Brain(version=4, conv_channels=32, num_blocks=2)
     dqn_net = model.DQN(version=4)
     aux_net = model.AuxNet((4,))
-    optimizer = optim.AdamW(_optimizer_param_groups((mortal_net, dqn_net, aux_net), weight_decay=0.1), lr=1e-4)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: 1.0)
+    optimizer = torch.optim.AdamW(_optimizer_param_groups((mortal_net, dqn_net, aux_net), weight_decay=0.1), lr=1e-4)
+    sched_cfg = {"peak": 1e-4, "final": 1e-4, "warm_up_steps": 0, "max_steps": 0}
+    scheduler = LinearWarmUpCosineAnnealingLR(optimizer, **sched_cfg)
     scaler = torch.amp.GradScaler("cpu", enabled=False)
 
     rng_before = get_rng_states()
@@ -334,7 +347,7 @@ def test_9_real_json_gz_log_parsing_and_regex_match(tmp_path: Path) -> None:
     assert parsed["label_to_pt"]["O2_70400"] == 90.0
 
 
-def test_10_four_state_verdict_mapping_and_shard_logs_summary(tmp_path: Path) -> None:
+def test_10_four_state_verdict_mapping() -> None:
     """Test 10: Verdict adjudicator produces exact four states and keeps promotions False."""
     # 1. strong_signal: both means > 0 and both CI lowers > 0
     v1 = adjudicate_o2_verdict(
@@ -376,8 +389,9 @@ def test_10_four_state_verdict_mapping_and_shard_logs_summary(tmp_path: Path) ->
     )
     assert v4 == "invalid"
 
-def test_11_eval_and_summary_checkpoint_sha_binding(tmp_path: Path) -> None:
-    """Test 11: Summarizer and evaluator strictly fail closed if checkpoint SHA does not match."""
+
+def test_11_eval_and_summary_checkpoint_sha_and_gate_binding(tmp_path: Path) -> None:
+    """Test 11: Summarizer and evaluator strictly fail closed if gates are not exact 14 or SHA mismatch."""
     k0_path, _k0_sha = resolve_k0_checkpoint()
     k0_state = torch.load(k0_path, map_location="cpu")
 
@@ -390,27 +404,67 @@ def test_11_eval_and_summary_checkpoint_sha_binding(tmp_path: Path) -> None:
     torch.save({"dummy": 1, "config": k0_state["config"]}, o2_ckpt_path)
     real_sha = sha256_file(o2_ckpt_path)
 
-    # Valid completion JSON
+    # Valid completion JSON with exact 14 hard gates
+    valid_gates = {g: True for g in EXPECTED_TRAINING_HARD_GATES}
     comp_json = train_dir / "training_completion.json"
     comp_json.write_text(json.dumps({
-        "schema": "keqing.mortal.o2_training_completion.v1",
+        "schema": TRAINING_COMPLETION_SCHEMA,
         "experiment_id": EXPERIMENT_ID,
-        "hard_gates": {"all": True},
-        "final_checkpoint": {"path": str(o2_ckpt_path), "sha256": real_sha},
+        "hard_gates": valid_gates,
+        "final_checkpoint": {"path": str(o2_ckpt_path), "sha256": real_sha, "step": 70400},
         "verdict": "training_completed",
     }))
+    real_comp_sha = sha256_file(comp_json)
 
-    # Fake evaluation manifest with mismatching SHA
-    eval_manifest = eval_dir / "evaluation_manifest.json"
-    eval_manifest.write_text(json.dumps({
-        "schema": "keqing.mortal.o2_evaluation_manifest.v1",
+    # 1. Manifest with mismatching checkpoint SHA
+    eval_manifest_bad_ckpt = eval_dir / "evaluation_manifest.json"
+    eval_manifest_bad_ckpt.write_text(json.dumps({
+        "schema": EVALUATION_MANIFEST_SCHEMA,
         "experiment_id": EXPERIMENT_ID,
-        "lineup": ["K0_70k", "ext_mortal", "M0_CURRENT_20260807", "O2_70400"],
+        "lineup": EVALUATION_LINEUP,
         "total_games": 1000,
-        "shards": [],
+        "shards": [{"shard_id": i} for i in range(4)],
         "o2_checkpoint": {"path": str(o2_ckpt_path), "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+        "training_completion": {"path": str(comp_json), "sha256": real_comp_sha},
         "verdict": "evaluation_completed",
     }))
-
     with pytest.raises(ContractError, match="Evaluation manifest checkpoint SHA mismatch"):
+        adjudicate_o2_evaluation(evaluation_dir=eval_dir, training_dir=train_dir, allowed_root=tmp_path)
+
+    # 2. Manifest with mismatching training completion SHA
+    eval_manifest_bad_comp = eval_dir / "evaluation_manifest.json"
+    eval_manifest_bad_comp.write_text(json.dumps({
+        "schema": EVALUATION_MANIFEST_SCHEMA,
+        "experiment_id": EXPERIMENT_ID,
+        "lineup": EVALUATION_LINEUP,
+        "total_games": 1000,
+        "shards": [{"shard_id": i} for i in range(4)],
+        "o2_checkpoint": {"path": str(o2_ckpt_path), "sha256": real_sha},
+        "training_completion": {"path": str(comp_json), "sha256": "1111111111111111111111111111111111111111111111111111111111111111"},
+        "verdict": "evaluation_completed",
+    }))
+    with pytest.raises(ContractError, match="Evaluation manifest training completion SHA mismatch"):
+        adjudicate_o2_evaluation(evaluation_dir=eval_dir, training_dir=train_dir, allowed_root=tmp_path)
+
+    # 3. Incomplete gate dictionary in training completion (e.g. {"all": True})
+    comp_json.write_text(json.dumps({
+        "schema": TRAINING_COMPLETION_SCHEMA,
+        "experiment_id": EXPERIMENT_ID,
+        "hard_gates": {"all": True},
+        "final_checkpoint": {"path": str(o2_ckpt_path), "sha256": real_sha, "step": 70400},
+        "verdict": "training_completed",
+    }))
+    new_comp_sha = sha256_file(comp_json)
+    eval_manifest_valid = eval_dir / "evaluation_manifest.json"
+    eval_manifest_valid.write_text(json.dumps({
+        "schema": EVALUATION_MANIFEST_SCHEMA,
+        "experiment_id": EXPERIMENT_ID,
+        "lineup": EVALUATION_LINEUP,
+        "total_games": 1000,
+        "shards": [{"shard_id": i} for i in range(4)],
+        "o2_checkpoint": {"path": str(o2_ckpt_path), "sha256": real_sha},
+        "training_completion": {"path": str(comp_json), "sha256": new_comp_sha},
+        "verdict": "evaluation_completed",
+    }))
+    with pytest.raises(ContractError, match="Training hard gates key set mismatch"):
         adjudicate_o2_evaluation(evaluation_dir=eval_dir, training_dir=train_dir, allowed_root=tmp_path)

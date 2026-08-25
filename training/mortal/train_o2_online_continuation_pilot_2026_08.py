@@ -312,8 +312,10 @@ def run_o2_training(
         lr=LEARNING_RATE,
     )
 
-    # Fresh scheduler & scaler
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: 1.0)
+    # Fresh scheduler & scaler (constant LR=1e-4 via production LinearWarmUpCosineAnnealingLR)
+    from lr_scheduler import LinearWarmUpCosineAnnealingLR
+    sched_cfg = {"peak": LEARNING_RATE, "final": LEARNING_RATE, "warm_up_steps": 0, "max_steps": 0}
+    scheduler = LinearWarmUpCosineAnnealingLR(optimizer, **sched_cfg)
     scaler = torch.amp.GradScaler("cuda" if device.type == "cuda" else "cpu", enabled=False)
 
     config_dir = output_dir / "config"

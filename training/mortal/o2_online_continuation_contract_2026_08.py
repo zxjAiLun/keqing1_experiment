@@ -38,6 +38,34 @@ M0_20260807_PATH = (
 )
 M0_20260807_EXPECTED_SHA256 = "de7f6da7c0c07b89d658554050f2112f09fd9c021247104d5db44228db04823d"
 
+# Provenance artifact hashes
+O2_TRAINING_RUNNER_SHA256 = "5d0fa4ef0c60d6d20a8fcfe51f2b3bba0b9379b1a866523f2e37e7eeb7479671"
+O2_CHECKPOINT_70400_SHA256 = "c1acfdc66d73d7ebb9050b31cc7d69d1250f2ca1699f82161e2b0468206489ad"
+O2_TRAINING_COMPLETION_SHA256 = "794eb7b27b4d9513847b4715b9de6c622148186b6ac25a8221d2a0ba73c6640a"
+
+# Schemas
+TRAINING_COMPLETION_SCHEMA = "keqing.mortal.o2_training_completion.v1"
+EVALUATION_MANIFEST_SCHEMA = "keqing.mortal.o2_evaluation_manifest.v1"
+SUMMARY_SCHEMA = "keqing.mortal.o2_summary.v1"
+
+# Exact 14 training hard gates expected
+EXPECTED_TRAINING_HARD_GATES: frozenset[str] = frozenset({
+    "parent_verified",
+    "production_loader_used",
+    "exact_16_cycles",
+    "exact_400_optimizer_steps",
+    "exact_204800_rows_consumed",
+    "no_replay_identity_reuse",
+    "online_cql_disabled",
+    "final_rank_mc_verified",
+    "gradients_finite",
+    "parameters_finite",
+    "parameters_changed_from_k0",
+    "bn_frozen",
+    "final_checkpoint_70400_created",
+    "resume_state_consistent",
+})
+
 # Training schedule & hyperparameters
 TRAINING_SEED = 20260831
 START_STEP = 70000

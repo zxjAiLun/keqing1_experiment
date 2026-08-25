@@ -25,15 +25,22 @@ from training.mortal.o2_online_continuation_contract_2026_08 import (
     EVALUATION_GAMES,
     EVALUATION_GAMES_PER_SHARD,
     EVALUATION_LINEUP,
+    EVALUATION_MANIFEST_SCHEMA,
     EVALUATION_SEED_END_EXCLUSIVE,
     EVALUATION_SEED_START,
     EVALUATION_SHARDS,
+    EXPECTED_TRAINING_HARD_GATES,
     EXPERIMENT_ID,
+    O2_CHECKPOINT_70400_SHA256,
     O2_EVALUATION_DIR,
     O2_ROOT,
+    O2_TRAINING_COMPLETION_SHA256,
     O2_TRAINING_DIR,
+    O2_TRAINING_RUNNER_SHA256,
     SEED_KEY,
+    SUMMARY_SCHEMA,
     TENHOU_RANK_POINTS,
+    TRAINING_COMPLETION_SCHEMA,
     ContractError,
     adjudicate_o2_verdict,
     check_directory_boundary,
@@ -105,11 +112,21 @@ def adjudicate_o2_evaluation(
         raise FileNotFoundError(f"Checkpoint not found at {o2_checkpoint}")
     actual_o2_sha = sha256_file(o2_checkpoint)
 
-    # 1. Read and validate evaluation manifest
+    # 1. Read and validate evaluation manifest (schema, experiment ID, lineup, total games, shards count)
     eval_manifest_path = evaluation_dir / "evaluation_manifest.json"
     if not eval_manifest_path.exists():
         raise ContractError(f"evaluation_manifest.json not found in {evaluation_dir}")
     eval_manifest = json.loads(eval_manifest_path.read_text(encoding="utf-8"))
+    if eval_manifest.get("schema") != EVALUATION_MANIFEST_SCHEMA:
+        raise ContractError(f"Evaluation manifest schema mismatch: got {eval_manifest.get('schema')}, expected {EVALUATION_MANIFEST_SCHEMA}")
+    if eval_manifest.get("experiment_id") != EXPERIMENT_ID:
+        raise ContractError(f"Evaluation manifest experiment_id mismatch: got {eval_manifest.get('experiment_id')}, expected {EXPERIMENT_ID}")
+    if eval_manifest.get("lineup") != EVALUATION_LINEUP:
+        raise ContractError(f"Evaluation manifest lineup mismatch: got {eval_manifest.get('lineup')}, expected {EVALUATION_LINEUP}")
+    if eval_manifest.get("total_games") != EVALUATION_GAMES:
+        raise ContractError(f"Evaluation manifest total_games mismatch: got {eval_manifest.get('total_games')}, expected {EVALUATION_GAMES}")
+    if len(eval_manifest.get("shards", [])) != EVALUATION_SHARDS:
+        raise ContractError(f"Evaluation manifest shards count mismatch: got {len(eval_manifest.get('shards', []))}, expected {EVALUATION_SHARDS}")
     if eval_manifest.get("verdict") != "evaluation_completed":
         raise ContractError(f"Evaluation manifest verdict is not 'evaluation_completed': {eval_manifest.get('verdict')}")
 
@@ -123,11 +140,27 @@ def adjudicate_o2_evaluation(
     train_comp_file = training_dir / "training_completion.json"
     if not train_comp_file.exists():
         raise ContractError(f"training_completion.json not found in {training_dir}")
+    actual_comp_sha = sha256_file(train_comp_file)
+
+    manifest_train_comp = eval_manifest.get("training_completion", {})
+    if manifest_train_comp.get("sha256") != actual_comp_sha:
+        raise ContractError(
+            f"Evaluation manifest training completion SHA mismatch: disk={actual_comp_sha} vs manifest={manifest_train_comp.get('sha256')}"
+        )
+
     train_summary = json.loads(train_comp_file.read_text(encoding="utf-8"))
+    if train_summary.get("schema") != TRAINING_COMPLETION_SCHEMA:
+        raise ContractError(f"Training completion schema mismatch: got {train_summary.get('schema')}, expected {TRAINING_COMPLETION_SCHEMA}")
+    if train_summary.get("experiment_id") != EXPERIMENT_ID:
+        raise ContractError(f"Training completion experiment_id mismatch: got {train_summary.get('experiment_id')}, expected {EXPERIMENT_ID}")
     if train_summary.get("verdict") != "training_completed":
         raise ContractError(f"Training summary verdict is not 'training_completed': {train_summary.get('verdict')}")
-    if not all(train_summary.get("hard_gates", {}).values()):
-        raise ContractError("Training hard gates failed in training completion record")
+
+    hard_gates_dict = train_summary.get("hard_gates", {})
+    if set(hard_gates_dict.keys()) != set(EXPECTED_TRAINING_HARD_GATES):
+        raise ContractError(f"Training hard gates key set mismatch: got {set(hard_gates_dict.keys())}, expected {set(EXPECTED_TRAINING_HARD_GATES)}")
+    if not all(hard_gates_dict.values()):
+        raise ContractError("Training hard gates contains False in completion record")
 
     logged_train_ckpt = train_summary.get("final_checkpoint", {})
     if logged_train_ckpt.get("sha256") != actual_o2_sha:
@@ -189,7 +222,7 @@ def adjudicate_o2_evaluation(
     )
 
     summary = {
-        "schema": "keqing.mortal.o2_summary.v1",
+        "schema": SUMMARY_SCHEMA,
         "experiment_id": EXPERIMENT_ID,
         "evaluation_protocol": {
             "total_games": len(all_games),
@@ -204,6 +237,11 @@ def adjudicate_o2_evaluation(
         "o2_checkpoint": {
             "path": str(o2_checkpoint),
             "sha256": actual_o2_sha,
+        },
+        "provenance": {
+            "training_runner_sha256": O2_TRAINING_RUNNER_SHA256,
+            "expected_checkpoint_sha256": O2_CHECKPOINT_70400_SHA256,
+            "expected_completion_sha256": O2_TRAINING_COMPLETION_SHA256,
         },
         "results": {
             "x_vs_k0": {

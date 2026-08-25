@@ -20,13 +20,19 @@ from training.mortal.o2_online_continuation_contract_2026_08 import (
     EVALUATION_GAMES,
     EVALUATION_GAMES_PER_SHARD,
     EVALUATION_LINEUP,
+    EVALUATION_MANIFEST_SCHEMA,
     EVALUATION_SEED_START,
     EVALUATION_SHARDS,
+    EXPECTED_TRAINING_HARD_GATES,
     EXPERIMENT_ID,
+    O2_CHECKPOINT_70400_SHA256,
     O2_EVALUATION_DIR,
     O2_ROOT,
+    O2_TRAINING_COMPLETION_SHA256,
     O2_TRAINING_DIR,
+    O2_TRAINING_RUNNER_SHA256,
     SEED_KEY,
+    TRAINING_COMPLETION_SCHEMA,
     ContractError,
     check_directory_boundary,
     ensure_clean_staging_dir,
@@ -112,21 +118,31 @@ def run_o2_evaluation(
         raise FileNotFoundError(f"O2 checkpoint mortal_70400.pth not found in {training_dir}")
     actual_o2_sha = sha256_file(o2_checkpoint)
 
-    # Check training completion and gates
+    # 1. Verify training completion existence, schema, experiment ID and SHA
     train_comp_file = training_dir / "training_completion.json"
     if not train_comp_file.exists():
         raise ContractError(f"training_completion.json not found in {training_dir}")
+    actual_comp_sha = sha256_file(train_comp_file)
+
     train_summary = json.loads(train_comp_file.read_text(encoding="utf-8"))
+    if train_summary.get("schema") != TRAINING_COMPLETION_SCHEMA:
+        raise ContractError(f"Training completion schema mismatch: got {train_summary.get('schema')}, expected {TRAINING_COMPLETION_SCHEMA}")
+    if train_summary.get("experiment_id") != EXPERIMENT_ID:
+        raise ContractError(f"Training completion experiment_id mismatch: got {train_summary.get('experiment_id')}, expected {EXPERIMENT_ID}")
     if train_summary.get("verdict") != "training_completed":
         raise ContractError(f"Training verdict is not 'training_completed': {train_summary.get('verdict')}")
 
-    # Validate all 14 hard gates in training completion
+    # 2. Validate exact 14 hard gates in training completion
     hard_gates = train_summary.get("hard_gates", {})
-    if not hard_gates or not all(hard_gates.values()):
-        raise ContractError(f"Training hard gates incomplete or failed: {hard_gates}")
+    if set(hard_gates.keys()) != set(EXPECTED_TRAINING_HARD_GATES):
+        raise ContractError(f"Training hard gates key set mismatch: got {set(hard_gates.keys())}, expected {set(EXPECTED_TRAINING_HARD_GATES)}")
+    if not all(hard_gates.values()):
+        raise ContractError(f"Training hard gates contains False: {hard_gates}")
 
-    # Validate checkpoint SHA against training completion
+    # 3. Validate checkpoint step and SHA against training completion and canonical SHA
     logged_ckpt = train_summary.get("final_checkpoint", {})
+    if logged_ckpt.get("step") != 70400:
+        raise ContractError(f"Training checkpoint step mismatch: got {logged_ckpt.get('step')}, expected 70400")
     if logged_ckpt.get("sha256") != actual_o2_sha:
         raise ContractError(
             f"Checkpoint SHA mismatch: disk={actual_o2_sha} vs training_completion={logged_ckpt.get('sha256')}"
@@ -152,7 +168,7 @@ def run_o2_evaluation(
         })
 
     eval_manifest = {
-        "schema": "keqing.mortal.o2_evaluation_manifest.v1",
+        "schema": EVALUATION_MANIFEST_SCHEMA,
         "experiment_id": EXPERIMENT_ID,
         "lineup": EVALUATION_LINEUP,
         "total_games": EVALUATION_GAMES,
@@ -163,7 +179,12 @@ def run_o2_evaluation(
         },
         "training_completion": {
             "path": str(train_comp_file),
-            "sha256": sha256_file(train_comp_file),
+            "sha256": actual_comp_sha,
+        },
+        "provenance": {
+            "training_runner_sha256": O2_TRAINING_RUNNER_SHA256,
+            "expected_checkpoint_sha256": O2_CHECKPOINT_70400_SHA256,
+            "expected_completion_sha256": O2_TRAINING_COMPLETION_SHA256,
         },
         "verdict": "evaluation_completed",
     }
