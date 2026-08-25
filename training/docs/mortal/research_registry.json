@@ -12,9 +12,9 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "O1 在线自对弈训练堆栈可行性审计已闭环（verdict=keqing_online_adapter_feasible）；O2 小规模在线 continuation 方向筛选实验已完成代码实现（implemented_not_started），K1 保持为 null。",
-    "next_experiment": "O2_keqing_online_continuation_pilot_2026_08",
-    "next_experiment_status": "implemented_not_started",
+    "current_stage": "O2 在线自对弈 continuation 方向筛选实验已闭环（verdict=not_promising，CI 跨零且均值为负，不启动 O3 复验）；P1 项目自研 Policy Improvement Target 模拟器可行性审计已完成并闭环（verdict=counterfactual_rollout_blocked，现有 Python 绑定缺乏单步分支与状态回滚 API），K1 保持为 null。",
+    "next_experiment": null,
+    "next_experiment_status": "not_selected",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
@@ -1145,20 +1145,59 @@
         "bootstrap_reps": 5000,
         "bootstrap_seed": 20260903
       },
-      "status": "implemented_not_started",
-      "primary_result": "O2 小规模在线 continuation 实验已完成代码实现与契约测试；训练与评测尚未启动。该实验用于筛选在线 continuation 是否存在值得三 seed 复验的信号，无论结果如何均不直接晋级 K1。",
+      "status": "closed",
+      "primary_result": "O2 在线自对弈 continuation 筛选实验已通过全部 14 项训练 Hard Gates 与 8 项评测 Hard Gates，最终裁决为 not_promising（x_vs_k0 均值 -6.615 pt，95% CI [-15.435, +2.206]；y_vs_m0 均值 -8.460 pt，95% CI [-17.145, +0.181]）。未观测到正向收益信号，按预注册规则不启动 O3 三 seed 复验，recipe 与 checkpoint 均不晋级，K1 保持为 null。",
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
       "checkpoint_promotion": false,
-      "closure_reason": null,
+      "closure_reason": "400-step 在线 continuation 未产生正向收益信号（x 与 y 均值为负），判定为 not_promising；不启动 O3 确认实验，K1 保持为 null。",
       "predecessor": "O1_online_selfplay_feasibility_2026_08",
-      "next_experiment": null,
-      "commits": [],
+      "next_experiment": "P1_project_owned_policy_improvement_target_feasibility_2026_09",
+      "commits": [
+        "2c30e2c20a07c138c97f7ddb48cf37148dbcff0c",
+        "ea0c2da8a4dfe77950660061f90cf66a80ae3d63",
+        "cb9368426d6d068c62a8abc00866944bddbeafc9"
+      ],
       "artifact_paths": [
+        "artifacts/experiments/O2_keqing_online_continuation_pilot_2026_08/training/training_completion.json",
         "artifacts/experiments/O2_keqing_online_continuation_pilot_2026_08/training/mortal_70400.pth",
+        "artifacts/experiments/O2_keqing_online_continuation_pilot_2026_08/evaluation/evaluation_manifest.json",
         "artifacts/experiments/O2_keqing_online_continuation_pilot_2026_08/evaluation/o2_summary.json"
       ],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-08_O2_在线自对弈Continuation方向筛选实验_最终结果报告.md",
+        "training/docs/mortal/研发总览_当前.md"
+      ]
+    },
+    {
+      "experiment_id": "P1_project_owned_policy_improvement_target_feasibility_2026_09",
+      "name_zh": "P1 项目自研 Policy Improvement Target 可行性审计",
+      "category": "feasibility_audit",
+      "parent_model": "K0_70k",
+      "control": "K0_70k",
+      "variant": "Read-only audit for simulator state restoration and counterfactual action rollout",
+      "changed_variable": "只读可行性审计：验证现有 libriichi 模拟器是否支持从固定状态执行 alternative action 并产生配对分支目标",
+      "fixed_variables": [
+        "K0_70k parent model",
+        "read-only feasibility audit",
+        "zero optimizer steps (parameters unchanged)",
+        "no training, no checkpoint creation",
+        "no reviewer/NAGA/4.1b hard labels"
+      ],
+      "training_seeds": [],
+      "evaluation_protocol": null,
+      "status": "closed",
+      "primary_result": "P1 模拟器能力只读审计完成，verdict 为 counterfactual_rollout_blocked。现有 libriichi Python 绑定缺少 Board struct 注册、缺少 single-step action execution API、缺少 checkpointed BoardState 状态快照与回滚机制，且 PlayerState 仅为单视角被动事件监听器。在扩展 Rust-Python 绑定前无法直接进行 counterfactual rollout。",
+      "promoted_data_route": null,
+      "promoted_checkpoint": null,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": "模拟器 Python API 能力审计完成并明确技术阻断项（缺少状态恢复与单步执行绑定）；未进行模型训练，K1 保持为 null。",
+      "predecessor": "O2_keqing_online_continuation_pilot_2026_08",
+      "next_experiment": null,
+      "commits": [],
+      "artifact_paths": [],
       "report_paths": [
         "training/docs/mortal/研发总览_当前.md"
       ]
