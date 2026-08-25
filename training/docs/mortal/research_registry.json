@@ -12,8 +12,8 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "P1 项目自研 Policy Improvement Target 可行性审计已完成并闭环（综合 verdict=seed_replay_counterfactual_feasible）；P2 128 局 counterfactual panel 目标质量评测实验已完成代码实现与契约测试（status=implemented_not_started），K1 保持为 null。",
-    "next_experiment": "P2_seed_replay_counterfactual_target_quality_2026_09",
+    "current_stage": "P2 确定性 Counterfactual 目标质量评测实验已完成闭环（verdict=counterfactual_target_quality_evaluated，信号稀疏：顺位差 16.41% 非零，素点差 27.34% 非零，未达到统计确定性）；P3 局末决策点 Counterfactual 信号密度筛选实验已完成代码实现与契约测试（status=implemented_not_started），K1 保持为 null。",
+    "next_experiment": "P3_late_decision_counterfactual_signal_density_2026_09",
     "next_experiment_status": "implemented_not_started",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
@@ -1237,19 +1237,97 @@
         "bootstrap_reps": 5000,
         "bootstrap_seed": 20260904
       },
+      "status": "closed",
+      "primary_result": "P2 确定性 seed-replay counterfactual panel（128对/256局）已完成全部 9 项生成 hard gates 与 8 项汇总 hard gates。顺位差均值为 -6.328 pt（95% CI [-14.414, +1.406]），非零率 16.41%（平局 83.59%）；素点差均值为 -857.03 点（95% CI [-2372.68, +548.55]），非零率 27.34%（平局 72.66%）。工程机制可行但首个决策点标签稀疏且未达统计确定性，verdict 判定为 counterfactual_target_quality_evaluated；数据路线与 checkpoint 均不晋级，K1 保持为 null。",
+      "promoted_data_route": null,
+      "promoted_checkpoint": null,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": "128 对 counterfactual 目标质量评测已完成并闭环。证实确定性 seed-replay 机制工程可行，但首个决策点终局标签过于稀疏且方向差异未达统计显著性；recipe 与 checkpoint 均不晋级，K1 保持为 null。",
+      "predecessor": "P1_project_owned_policy_improvement_target_feasibility_2026_09",
+      "next_experiment": "P3_late_decision_counterfactual_signal_density_2026_09",
+      "commits": [],
+      "artifact_paths": [
+        "artifacts/experiments/P2_seed_replay_counterfactual_target_quality_2026_09/counterfactual_panel/counterfactual_panel_manifest.json",
+        "artifacts/experiments/P2_seed_replay_counterfactual_target_quality_2026_09/summary/p2_summary.json"
+      ],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-09_P2_确定性Counterfactual目标质量评测_最终结果报告.md",
+        "training/docs/mortal/研发总览_当前.md"
+      ],
+      "formal_adjudication": {
+        "schema": "keqing.mortal.p2_counterfactual_summary.v1",
+        "verdict": "counterfactual_target_quality_evaluated",
+        "manifest_sha256": "103d98bf0c500a9b1d894e2c7b1a945a8269aefbdbac1d9ae37dc775c7026823",
+        "summary_sha256": "014726b14a3dd1e9f40fc0db8cc98becb00cf2788febc9e9677adc5bbdbb3f4a",
+        "total_pairs": 128,
+        "delta_rank_point": {
+          "nonzero_rate": 0.1640625,
+          "mean_diff": -6.328125,
+          "ci95": [
+            -14.4140625,
+            1.40625
+          ]
+        },
+        "delta_final_score": {
+          "nonzero_rate": 0.2734375,
+          "mean_diff": -857.03125,
+          "ci95": [
+            -2372.67578125,
+            548.5546874999983
+          ]
+        },
+        "recipe_promotion": false,
+        "checkpoint_promotion": false,
+        "k1": null
+      }
+    },
+    {
+      "experiment_id": "P3_late_decision_counterfactual_signal_density_2026_09",
+      "name_zh": "P3 局末决策点 Counterfactual 信号密度筛选实验",
+      "category": "target_density_screening",
+      "parent_model": "K0_70k",
+      "control": "K0_70k (top1 greedy choice) & P2 baseline distribution",
+      "variant": "128 hanchans deterministic top1 vs top2 rollouts at the LAST eligible non-riichi decision context",
+      "changed_variable": "将干预点从每局首个合法非立直两选舍牌 context 改为最后一个合法非立直两选舍牌 context，测量终局回报信号密度跃升",
+      "fixed_variables": [
+        "K0_70k parent model",
+        "128 hanchans, seeds 3100000..3100127, seed_key 8192",
+        "focal engine on seat 0 (split 'a')",
+        "opponents: fixed K0_70k with agari guard",
+        "deterministic target context selection (LAST eligible non-riichi 2-discard context)",
+        "exact bit-for-bit event prefix match before intervention",
+        "first divergence strictly verified as focal actor top1 vs top2 dahai",
+        "target context intervened exactly once per branch",
+        "both branches complete full hanchan ending in end_game",
+        "no training, no checkpoint creation, no K1 promotion",
+        "paired bootstrap analysis (5000 reps, seed 20260905)",
+        "two-sample bootstrap comparison against P2 baseline distribution"
+      ],
+      "training_seeds": [],
+      "evaluation_protocol": {
+        "total_pairs": 128,
+        "seed_start": 3100000,
+        "seed_end_exclusive": 3100128,
+        "seed_key": 8192,
+        "focal_seat": 0,
+        "split_name": "a",
+        "bootstrap_reps": 5000,
+        "bootstrap_seed": 20260905
+      },
       "status": "implemented_not_started",
-      "primary_result": "P2 确定性 seed-replay counterfactual panel 生成器与统计汇总器已实现并通过 5 项定向测试（覆盖契约不可变量、前缀逐字一致与首次 dahai 差异硬门禁、固定子集重跑 bit-exact 重现性、Bootstrap 统计与 mock 汇总闭环）。128 局正式生成就绪，等待 review。",
+      "primary_result": "P3 局末决策点 counterfactual panel 生成器与比较统计汇总器已实现并通过 4 项定向测试（覆盖契约不可变量、末位决策点生成与硬门禁、两样本 Bootstrap 差值与裁决逻辑、mock 汇总与失效闭环）。128 局正式生成就绪，等待授权。",
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
       "checkpoint_promotion": false,
       "closure_reason": null,
-      "predecessor": "P1_project_owned_policy_improvement_target_feasibility_2026_09",
+      "predecessor": "P2_seed_replay_counterfactual_target_quality_2026_09",
       "next_experiment": null,
       "commits": [],
       "artifact_paths": [
-        "artifacts/experiments/P2_seed_replay_counterfactual_target_quality_2026_09/counterfactual_panel/counterfactual_panel_manifest.json",
-        "artifacts/experiments/P2_seed_replay_counterfactual_target_quality_2026_09/summary/p2_summary.json"
+        "artifacts/experiments/P3_late_decision_counterfactual_signal_density_2026_09/counterfactual_panel/counterfactual_panel_manifest.json",
+        "artifacts/experiments/P3_late_decision_counterfactual_signal_density_2026_09/summary/p3_summary.json"
       ],
       "report_paths": [
         "training/docs/mortal/研发总览_当前.md"

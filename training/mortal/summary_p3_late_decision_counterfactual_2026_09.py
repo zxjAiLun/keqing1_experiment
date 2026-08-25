@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Statistical summary and quality analysis for P2 counterfactual targets with strict raw log verification."""
+"""Statistical summary and comparative signal density analysis for P3 late-decision targets."""
 
 from __future__ import annotations
 
@@ -18,6 +18,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from training.mortal.p2_counterfactual_target_quality_contract_2026_09 import (
+    EXPECTED_SUMMARY_HARD_GATES as EXPECTED_P2_SUMMARY_HARD_GATES,
+)
+from training.mortal.p3_late_decision_counterfactual_contract_2026_09 import (
     BOOTSTRAP_CI,
     BOOTSTRAP_REPS,
     BOOTSTRAP_SEED,
@@ -25,9 +28,13 @@ from training.mortal.p2_counterfactual_target_quality_contract_2026_09 import (
     EXPECTED_SUMMARY_HARD_GATES,
     EXPERIMENT_ID,
     FOCAL_SEAT,
-    P2_PANEL_DIR,
-    P2_ROOT,
-    P2_SUMMARY_DIR,
+    P2_EXPERIMENT_ID,
+    P2_SUMMARY_EXPECTED_SHA256,
+    P2_SUMMARY_PATH,
+    P2_SUMMARY_SCHEMA,
+    P3_PANEL_DIR,
+    P3_ROOT,
+    P3_SUMMARY_DIR,
     PANEL_GAMES,
     PANEL_MANIFEST_SCHEMA,
     SEED_END_EXCLUSIVE,
@@ -38,6 +45,7 @@ from training.mortal.p2_counterfactual_target_quality_contract_2026_09 import (
     TENHOU_RANK_POINTS,
     ContractError,
     action_matches_pai,
+    adjudicate_p3_verdict,
     canonical_log_content_sha256,
     check_directory_boundary,
     compute_final_ranks,
@@ -46,9 +54,10 @@ from training.mortal.p2_counterfactual_target_quality_contract_2026_09 import (
     paired_bootstrap_ci,
     resolve_k0_checkpoint,
     sha256_file,
+    two_sample_rate_diff_bootstrap_ci,
 )
 
-logger = logging.getLogger("p2_summary")
+logger = logging.getLogger("p3_summary")
 
 
 def summarize_diff_series(diffs: np.ndarray, reps: int = BOOTSTRAP_REPS, seed: int = BOOTSTRAP_SEED) -> dict[str, Any]:
@@ -115,7 +124,6 @@ def verify_and_recalculate_pair(pair: dict[str, Any], allowed_root: Path) -> dic
     if not events_b or events_b[0].get("type") != "start_game" or events_b[-1].get("type") != "end_game":
         raise ContractError(f"Branch B log {log_b_path.name} is incomplete")
 
-    # Check seed tuple in logs
     if events_a[0].get("seed") != [seed, seed_key] or events_b[0].get("seed") != [seed, seed_key]:
         raise ContractError(f"Seed tuple in log header mismatch for seed {seed}")
 
@@ -142,7 +150,6 @@ def verify_and_recalculate_pair(pair: dict[str, Any], allowed_root: Path) -> dic
     if not action_matches_pai(top2_action, ev_b_div.get("pai", "")):
         raise ContractError(f"Branch B dahai '{ev_b_div.get('pai')}' does not match top2 action {top2_action}")
 
-    # Recalculate scores and ranks independently
     scores_a = final_scores_with_reach_accepted(events_a)
     scores_b = final_scores_with_reach_accepted(events_b)
     if scores_a is None or scores_b is None:
@@ -162,7 +169,6 @@ def verify_and_recalculate_pair(pair: dict[str, Any], allowed_root: Path) -> dic
     delta_rank_point = pt_top2 - pt_top1
     delta_final_score = score_top2 - score_top1
 
-    # Verify parity with manifest numbers
     if (
         score_top1 != pair["score_top1"]
         or score_top2 != pair["score_top2"]
@@ -183,12 +189,14 @@ def verify_and_recalculate_pair(pair: dict[str, Any], allowed_root: Path) -> dic
     }
 
 
-def adjudicate_p2_counterfactual_panel(
-    panel_dir: Path = P2_PANEL_DIR,
-    summary_dir: Path = P2_SUMMARY_DIR,
-    allowed_root: Path = P2_ROOT,
+def adjudicate_p3_counterfactual_panel(
+    panel_dir: Path = P3_PANEL_DIR,
+    summary_dir: Path = P3_SUMMARY_DIR,
+    p2_summary_path: Path = P2_SUMMARY_PATH,
+    expected_p2_sha: str | None = P2_SUMMARY_EXPECTED_SHA256,
+    allowed_root: Path = P3_ROOT,
 ) -> dict[str, Any]:
-    """Load counterfactual_panel_manifest.json, strictly verify all raw branch logs, and produce summary."""
+    """Load P3 manifest, verify raw logs, load P2 baseline summary, compute comparison CI, and produce summary."""
     check_directory_boundary(summary_dir, allowed_root)
     check_directory_boundary(panel_dir, allowed_root)
     summary_dir.mkdir(parents=True, exist_ok=True)
@@ -207,20 +215,17 @@ def adjudicate_p2_counterfactual_panel(
     if manifest.get("verdict") != "panel_generation_completed":
         raise ContractError(f"Manifest verdict is not panel_generation_completed: {manifest.get('verdict')}")
 
-    # Validate exact hard gates in manifest
     panel_hard_gates = manifest.get("hard_gates", {})
     if set(panel_hard_gates.keys()) != set(EXPECTED_PANEL_HARD_GATES):
         raise ContractError(f"Manifest hard gates mismatch: {set(panel_hard_gates.keys())} vs {set(EXPECTED_PANEL_HARD_GATES)}")
     if not all(panel_hard_gates.values()):
         raise ContractError(f"Manifest contains failing hard gate: {panel_hard_gates}")
 
-    # Validate parent K0 SHA
     _, k0_sha = resolve_k0_checkpoint()
     logged_k0 = manifest.get("parent_model", {})
     if logged_k0.get("sha256") != k0_sha:
         raise ContractError(f"Manifest parent K0 SHA mismatch: got {logged_k0.get('sha256')}, expected {k0_sha}")
 
-    # Validate config
     cfg = manifest.get("panel_config", {})
     if cfg.get("total_pairs") != PANEL_GAMES:
         raise ContractError(f"Config total_pairs mismatch: got {cfg.get('total_pairs')}, expected {PANEL_GAMES}")
@@ -237,6 +242,45 @@ def adjudicate_p2_counterfactual_panel(
     if seeds != list(range(SEED_START, SEED_END_EXCLUSIVE)):
         raise ContractError(f"Seeds range mismatch: got {seeds[0]}..{seeds[-1]}, expected {SEED_START}..{SEED_END_EXCLUSIVE-1}")
 
+    # Load and verify P2 summary for comparative density
+    if not p2_summary_path.exists():
+        raise FileNotFoundError(f"P2 summary not found at {p2_summary_path}")
+    
+    actual_p2_sha = sha256_file(p2_summary_path)
+    if expected_p2_sha is not None and actual_p2_sha != expected_p2_sha:
+        raise ContractError(
+            f"P2 summary SHA256 mismatch: expected {expected_p2_sha}, got {actual_p2_sha}"
+        )
+
+    p2_summary_data = json.loads(p2_summary_path.read_text(encoding="utf-8"))
+    if p2_summary_data.get("schema") != P2_SUMMARY_SCHEMA:
+        raise ContractError(
+            f"P2 summary schema mismatch: got {p2_summary_data.get('schema')}, expected {P2_SUMMARY_SCHEMA}"
+        )
+    if p2_summary_data.get("experiment_id") != P2_EXPERIMENT_ID:
+        raise ContractError(
+            f"P2 summary experiment_id mismatch: got {p2_summary_data.get('experiment_id')}, expected {P2_EXPERIMENT_ID}"
+        )
+
+    p2_gates = p2_summary_data.get("hard_gates", {})
+    if set(p2_gates.keys()) != set(EXPECTED_P2_SUMMARY_HARD_GATES):
+        raise ContractError(
+            f"P2 summary hard gates key mismatch: {set(p2_gates.keys())} vs {set(EXPECTED_P2_SUMMARY_HARD_GATES)}"
+        )
+    if not all(p2_gates.values()):
+        raise ContractError(f"P2 summary contains failing hard gate: {p2_gates}")
+
+    p2_rank_nonzero_rate = float(p2_summary_data["metrics"]["delta_rank_point"]["nonzero_rate"])
+    p2_score_nonzero_rate = float(p2_summary_data["metrics"]["delta_final_score"]["nonzero_rate"])
+    p2_total_pairs = int(p2_summary_data["metrics"]["delta_rank_point"]["total_pairs"])
+    p2_rank_nonzero_count = int(p2_summary_data["metrics"]["delta_rank_point"]["nonzero_count"])
+    p2_score_nonzero_count = int(p2_summary_data["metrics"]["delta_final_score"]["nonzero_count"])
+
+    if p2_total_pairs != PANEL_GAMES:
+        raise ContractError(
+            f"P2 summary total pairs mismatch: got {p2_total_pairs}, expected {PANEL_GAMES}"
+        )
+
     # Strictly verify each raw log file and recalculate metrics independently
     recalculated_pairs = []
     for pair in pairs:
@@ -245,14 +289,31 @@ def adjudicate_p2_counterfactual_panel(
 
     delta_rank_pts = np.array([p["delta_rank_point"] for p in recalculated_pairs], dtype=np.float64)
     delta_scores = np.array([p["delta_final_score"] for p in recalculated_pairs], dtype=np.float64)
-    margins = np.array([p["margin"] for p in recalculated_pairs], dtype=np.float64)
+    np.array([p["margin"] for p in recalculated_pairs], dtype=np.float64)
 
     rank_summary = summarize_diff_series(delta_rank_pts, reps=BOOTSTRAP_REPS, seed=BOOTSTRAP_SEED)
     score_summary = summarize_diff_series(delta_scores, reps=BOOTSTRAP_REPS, seed=BOOTSTRAP_SEED)
 
-    tight_mask = (margins <= 0.5)
-    tight_rank_summary = summarize_diff_series(delta_rank_pts[tight_mask]) if np.any(tight_mask) else None
-    wide_rank_summary = summarize_diff_series(delta_rank_pts[~tight_mask]) if np.any(~tight_mask) else None
+    # Reconstruct binary nonzero arrays for two-sample bootstrap
+    p3_rank_binary = (delta_rank_pts != 0.0).astype(np.float64)
+    p3_score_binary = (delta_scores != 0.0).astype(np.float64)
+
+    p2_rank_binary = np.zeros(p2_total_pairs, dtype=np.float64)
+    p2_rank_binary[:p2_rank_nonzero_count] = 1.0
+    p2_score_binary = np.zeros(p2_total_pairs, dtype=np.float64)
+    p2_score_binary[:p2_score_nonzero_count] = 1.0
+
+    diff_rank_rate, diff_rank_rate_ci = two_sample_rate_diff_bootstrap_ci(
+        p3_rank_binary, p2_rank_binary, reps=BOOTSTRAP_REPS, seed=BOOTSTRAP_SEED
+    )
+    diff_score_rate, diff_score_rate_ci = two_sample_rate_diff_bootstrap_ci(
+        p3_score_binary, p2_score_binary, reps=BOOTSTRAP_REPS, seed=BOOTSTRAP_SEED
+    )
+
+    verdict = adjudicate_p3_verdict(
+        p3_score_nonzero_rate=score_summary["nonzero_rate"],
+        diff_score_nonzero_rate_ci=diff_score_rate_ci,
+    )
 
     hard_gates: dict[str, bool] = {
         "manifest_verified": True,
@@ -262,6 +323,7 @@ def adjudicate_p2_counterfactual_panel(
         "all_branch_logs_verified": True,
         "canonical_content_hashes_verified": True,
         "independent_metrics_recalculated_match": True,
+        "p2_comparison_verified": True,
         "bootstrap_computed": True,
     }
 
@@ -283,18 +345,20 @@ def adjudicate_p2_counterfactual_panel(
         "metrics": {
             "delta_rank_point": rank_summary,
             "delta_final_score": score_summary,
-            "margin_subgroups": {
-                "tight_margin_le_0_5": {
-                    "count": int(np.sum(tight_mask)),
-                    "stats": tight_rank_summary,
-                },
-                "wide_margin_gt_0_5": {
-                    "count": int(np.sum(~tight_mask)),
-                    "stats": wide_rank_summary,
-                },
+            "comparative_signal_density_vs_p2": {
+                "p2_summary_path": str(p2_summary_path),
+                "p2_summary_sha256": actual_p2_sha,
+                "p2_rank_nonzero_rate": p2_rank_nonzero_rate,
+                "p3_rank_nonzero_rate": rank_summary["nonzero_rate"],
+                "delta_rank_nonzero_rate": diff_rank_rate,
+                "delta_rank_nonzero_rate_ci95": diff_rank_rate_ci,
+                "p2_score_nonzero_rate": p2_score_nonzero_rate,
+                "p3_score_nonzero_rate": score_summary["nonzero_rate"],
+                "delta_score_nonzero_rate": diff_score_rate,
+                "delta_score_nonzero_rate_ci95": diff_score_rate_ci,
             },
         },
-        "verdict": "counterfactual_target_quality_evaluated",
+        "verdict": verdict,
         "promotion": {
             "recipe_promotion": False,
             "checkpoint_promotion": False,
@@ -302,7 +366,7 @@ def adjudicate_p2_counterfactual_panel(
         },
     }
 
-    summary_path = summary_dir / "p2_summary.json"
+    summary_path = summary_dir / "p3_summary.json"
     with open(summary_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
         f.write("\n")
@@ -312,14 +376,16 @@ def adjudicate_p2_counterfactual_panel(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--panel-dir", type=Path, default=P2_PANEL_DIR, help="Directory containing panel manifest")
-    parser.add_argument("--summary-dir", type=Path, default=P2_SUMMARY_DIR, help="Output directory for summary")
+    parser.add_argument("--panel-dir", type=Path, default=P3_PANEL_DIR, help="Directory containing panel manifest")
+    parser.add_argument("--summary-dir", type=Path, default=P3_SUMMARY_DIR, help="Output directory for summary")
+    parser.add_argument("--p2-summary", type=Path, default=P2_SUMMARY_PATH, help="Path to P2 summary JSON")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    res = adjudicate_p2_counterfactual_panel(
+    res = adjudicate_p3_counterfactual_panel(
         panel_dir=args.panel_dir,
         summary_dir=args.summary_dir,
+        p2_summary_path=args.p2_summary,
     )
     print(json.dumps(res, indent=2, ensure_ascii=False))
 

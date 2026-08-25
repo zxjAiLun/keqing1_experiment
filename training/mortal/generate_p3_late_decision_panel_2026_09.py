@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic counterfactual panel generator for P2 target quality evaluation."""
+"""Deterministic late-decision counterfactual panel generator for P3 signal density evaluation."""
 
 from __future__ import annotations
 
@@ -26,13 +26,13 @@ if str(REPO_ROOT / "third_party" / "Mortal" / "mortal") not in sys.path:
 import engine
 import model
 
-from training.mortal.p2_counterfactual_target_quality_contract_2026_09 import (
+from training.mortal.p3_late_decision_counterfactual_contract_2026_09 import (
     DISCARD_ACTION_LIMIT,
     EXPECTED_PANEL_HARD_GATES,
     EXPERIMENT_ID,
     FOCAL_SEAT,
-    P2_PANEL_DIR,
-    P2_ROOT,
+    P3_PANEL_DIR,
+    P3_ROOT,
     PANEL_GAMES,
     PANEL_MANIFEST_SCHEMA,
     SEED_KEY,
@@ -50,7 +50,7 @@ from training.mortal.p2_counterfactual_target_quality_contract_2026_09 import (
     resolve_k0_checkpoint,
 )
 
-logger = logging.getLogger("p2_generator")
+logger = logging.getLogger("p3_generator")
 
 
 class CounterfactualBranchingEngine:
@@ -144,7 +144,7 @@ def generate_single_counterfactual_pair(
     raw_logs_dir: Path,
     device: str = "cuda",
 ) -> dict[str, Any]:
-    """Generate and strictly validate one paired counterfactual rollout for a single seed."""
+    """Generate and strictly validate one paired counterfactual rollout for a single seed at the LAST eligible decision context."""
     pair_dir = raw_logs_dir / f"seed_{seed}"
     dir_a = pair_dir / "branch_a"
     dir_b = pair_dir / "branch_b"
@@ -168,8 +168,8 @@ def generate_single_counterfactual_pair(
         if not focal_contexts:
             raise ContractError(f"No eligible non-riichi discard decision found for focal seat in seed {seed}")
 
-        # Deterministic selection: first eligible context
-        target = focal_contexts[0]
+        # Deterministic selection: LAST eligible context
+        target = focal_contexts[-1]
         target_ctx = target["ctx"]
         top1_action = target["top1"]
         top2_action = target["top2"]
@@ -231,7 +231,6 @@ def generate_single_counterfactual_pair(
     if ev_a_div.get("pai") == ev_b_div.get("pai"):
         raise ContractError(f"Divergence dahai pai identical at event {div_idx}: {ev_a_div.get('pai')}")
 
-    # Explicit check: Branch A dahai pai matches top1_action, Branch B dahai pai matches top2_action
     pai_a = ev_a_div.get("pai", "")
     pai_b = ev_b_div.get("pai", "")
     if not action_matches_pai(top1_action, pai_a):
@@ -239,7 +238,6 @@ def generate_single_counterfactual_pair(
     if not action_matches_pai(top2_action, pai_b):
         raise ContractError(f"Branch B dahai pai '{pai_b}' does not match frozen top2_action {top2_action}")
 
-    # Canonical content SHA256 hashes
     log_a_content_sha = canonical_log_content_sha256(log_a_path)
     log_b_content_sha = canonical_log_content_sha256(log_b_path)
 
@@ -293,15 +291,15 @@ def generate_single_counterfactual_pair(
     }
 
 
-def generate_p2_counterfactual_panel(
+def generate_p3_late_decision_panel(
     panel_games: int = PANEL_GAMES,
     seed_start: int = SEED_START,
     seed_key: int = SEED_KEY,
-    output_dir: Path = P2_PANEL_DIR,
+    output_dir: Path = P3_PANEL_DIR,
     device: str = "cuda",
 ) -> dict[str, Any]:
-    """Execute complete generation of 128 counterfactual pairs and write panel manifest."""
-    check_directory_boundary(output_dir, P2_ROOT)
+    """Execute complete generation of 128 late-decision counterfactual pairs and write panel manifest."""
+    check_directory_boundary(output_dir, P3_ROOT)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     raw_logs_dir = output_dir / "raw_logs"
@@ -324,7 +322,7 @@ def generate_p2_counterfactual_panel(
     pairs: list[dict[str, Any]] = []
     t0 = time.time()
     for idx, seed in enumerate(range(seed_start, seed_start + panel_games)):
-        logger.info("Generating pair %d/%d (seed %d)...", idx + 1, panel_games, seed)
+        logger.info("Generating late-decision pair %d/%d (seed %d)...", idx + 1, panel_games, seed)
         pair_res = generate_single_counterfactual_pair(
             seed=seed,
             seed_key=seed_key,
@@ -334,7 +332,7 @@ def generate_p2_counterfactual_panel(
         pairs.append(pair_res)
 
     elapsed = time.time() - t0
-    logger.info("Generated %d pairs in %.2f seconds", len(pairs), elapsed)
+    logger.info("Generated %d late-decision pairs in %.2f seconds", len(pairs), elapsed)
 
     hard_gates["exact_128_pairs_generated"] = (len(pairs) == panel_games)
     hard_gates["seeds_strictly_contiguous"] = (
@@ -394,12 +392,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--games", type=int, default=PANEL_GAMES, help="Number of paired games to generate")
     parser.add_argument("--seed-start", type=int, default=SEED_START, help="Start seed")
-    parser.add_argument("--output-dir", type=Path, default=P2_PANEL_DIR, help="Output directory")
+    parser.add_argument("--output-dir", type=Path, default=P3_PANEL_DIR, help="Output directory")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    res = generate_p2_counterfactual_panel(
+    res = generate_p3_late_decision_panel(
         panel_games=args.games,
         seed_start=args.seed_start,
         output_dir=args.output_dir,
