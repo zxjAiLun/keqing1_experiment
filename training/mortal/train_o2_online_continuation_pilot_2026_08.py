@@ -8,6 +8,7 @@ starting from K0_70k using trainee replay, project final_rank_mc objective, and 
 from __future__ import annotations
 
 import argparse
+import copy
 import gzip
 import json
 import logging
@@ -20,6 +21,7 @@ from typing import Any
 import numpy as np
 import toml
 import torch
+from torch import nn, optim
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -65,10 +67,12 @@ from training.mortal.o2_online_continuation_contract_2026_08 import (
     ContractError,
     check_directory_boundary,
     compute_effective_cql_weight,
+    ensure_clean_staging_dir,
     resolve_k0_checkpoint,
     sha256_file,
 )
 from training.mortal.objective import compute_objective_losses
+from training.run_mortal_dqn_offline import _optimizer_param_groups
 
 logger = logging.getLogger("o2_training")
 
@@ -95,6 +99,60 @@ def seed_everything(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
+def get_rng_states() -> dict[str, Any]:
+    """Capture RNG states for exact resume reproducibility."""
+    states: dict[str, Any] = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        states["cuda"] = torch.cuda.get_rng_state_all()
+    return states
+
+
+def set_rng_states(states: dict[str, Any]) -> None:
+    """Restore RNG states for exact resume reproducibility."""
+    if "python" not in states or "numpy" not in states or "torch" not in states:
+        raise ContractError("Incomplete RNG state payload in recovery data")
+    random.setstate(states["python"])
+    np.random.set_state(states["numpy"])
+    torch.set_rng_state(states["torch"])
+    if "cuda" in states and torch.cuda.is_available():
+        torch.cuda.set_rng_state_all(states["cuda"])
+
+
+def construct_and_validate_preserved_adamw(
+    all_models: tuple[nn.Module, ...],
+    k0_optimizer_state: dict[str, Any],
+    lr: float = LEARNING_RATE,
+) -> optim.AdamW:
+    """Construct standard 2-group AdamW and load preserved moments from K0 checkpoint."""
+    param_groups = _optimizer_param_groups(all_models, weight_decay=0.1)
+    if len(param_groups) != 2:
+        raise ContractError(f"Expected 2 parameter groups, got {len(param_groups)}")
+
+    total_param_tensors = sum(len(g["params"]) for g in param_groups)
+    if total_param_tensors != 410:
+        raise ContractError(f"Expected 410 total parameter tensors, got {total_param_tensors}")
+
+    optimizer = optim.AdamW(param_groups, lr=lr, weight_decay=0.0)
+    optimizer.load_state_dict(k0_optimizer_state)
+
+    for group in optimizer.param_groups:
+        group["lr"] = lr
+
+    state = optimizer.state_dict()["state"]
+    if len(state) != 410:
+        raise ContractError(f"Preserved optimizer state count {len(state)} != 410 parameter tensors")
+
+    required = {"step", "exp_avg", "exp_avg_sq"}
+    if any(not required.issubset(entry) for entry in state.values()):
+        raise ContractError("Preserved optimizer is missing AdamW step/moment tensors")
+
+    return optimizer
+
+
 def run_cycle_generation(
     cycle_idx: int,
     cycle_dir: Path,
@@ -107,7 +165,7 @@ def run_cycle_generation(
     from training.mortal.mainline_dataloader import FileDatasetsIter
 
     cycle_logs_dir = cycle_dir / "logs"
-    cycle_logs_dir.mkdir(parents=True, exist_ok=True)
+    ensure_clean_staging_dir(cycle_logs_dir, O2_ROOT)
 
     worker_mortal = model.Brain(version=4, conv_channels=192, num_blocks=40).to(device).eval()
     worker_dqn = model.DQN(version=4).to(device).eval()
@@ -162,6 +220,17 @@ def run_cycle_generation(
                 if first_line.get("type") == "start_game":
                     identities.add((tuple(first_line["seed"]), tuple(first_line["names"])))
 
+        # Invariant check: exact 1:1 match between files, unique identities, and expected count
+        expected_game_count = current_seed_groups * 4
+        if len(files) != expected_game_count:
+            raise ContractError(
+                f"Cycle {cycle_idx} replay file count mismatch: got {len(files)}, expected {expected_game_count}"
+            )
+        if len(identities) != expected_game_count:
+            raise ContractError(
+                f"Cycle {cycle_idx} replay unique identities mismatch: got {len(identities)}, expected {expected_game_count}"
+            )
+
         dataset = FileDatasetsIter(
             version=4,
             file_list=files,
@@ -199,16 +268,19 @@ def run_o2_training(
     *,
     output_dir: Path = O2_TRAINING_DIR,
     device_name: str = "cuda" if torch.cuda.is_available() else "cpu",
-    require_authorization: bool = True,
+    resume: bool = False,
 ) -> dict[str, Any]:
     """Execute complete O2 16-cycle online continuation pilot training."""
-    if require_authorization:
-        # Safety gate: verify explicit invocation
-        pass
-
     check_directory_boundary(output_dir, O2_ROOT)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
+    recovery_file = output_dir / "recovery_state.pth"
+    if not resume:
+        ensure_clean_staging_dir(output_dir, O2_ROOT)
+    else:
+        if not recovery_file.exists():
+            raise ContractError(f"Explicit --resume requested but recovery file does not exist: {recovery_file}")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
     seed_everything(TRAINING_SEED)
     device = torch.device(device_name)
 
@@ -226,40 +298,66 @@ def run_o2_training(
     if FREEZE_BN:
         mortal_net.freeze_bn(True)
 
-    # Initial parameter snapshots for difference validation
-    initial_mortal_params = {n: p.clone().cpu() for n, p in mortal_net.named_parameters()}
+    # Initial parameter snapshots for all models for difference validation
+    initial_params = {
+        "mortal": {n: p.clone().cpu() for n, p in mortal_net.named_parameters()},
+        "dqn": {n: p.clone().cpu() for n, p in dqn_net.named_parameters()},
+        "aux": {n: p.clone().cpu() for n, p in aux_net.named_parameters()},
+    }
 
-    # Initialize Adam optimizer with preserved K0 moments & fresh LR=1e-4
-    trainable_params = list(mortal_net.parameters()) + list(dqn_net.parameters()) + list(aux_net.parameters())
-    optimizer = torch.optim.Adam(trainable_params, lr=LEARNING_RATE)
-    if "optimizer" in k0_state:
-        optimizer.load_state_dict(k0_state["optimizer"])
-        for group in optimizer.param_groups:
-            group["lr"] = LEARNING_RATE
+    # Initialize AdamW optimizer with preserved K0 moments & 2 parameter groups
+    optimizer = construct_and_validate_preserved_adamw(
+        (mortal_net, dqn_net, aux_net),
+        k0_state["optimizer"],
+        lr=LEARNING_RATE,
+    )
+
+    # Fresh scheduler & scaler
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: 1.0)
+    scaler = torch.amp.GradScaler("cuda" if device.type == "cuda" else "cpu", enabled=False)
 
     config_dir = output_dir / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
     setup_mortal_config(config_dir)
 
-    recovery_file = output_dir / "recovery_state.pth"
     start_cycle = 0
     total_rows_consumed = 0
     step_count = START_STEP
     all_game_identities: set[tuple[tuple[int, int], tuple[str, ...]]] = set()
 
-    # Check recovery state
-    if recovery_file.exists():
-        logger.info("Found recovery state at %s, checking resume consistency...", recovery_file)
-        recovery_data = torch.load(recovery_file, map_location="cpu")
+    # Check and load resume state
+    if resume and recovery_file.exists():
+        logger.info("Found recovery state at %s, validating resume consistency...", recovery_file)
+        recovery_data = torch.load(recovery_file, weights_only=False, map_location="cpu")
         start_cycle = recovery_data["next_cycle"]
         step_count = recovery_data["step_count"]
         total_rows_consumed = recovery_data["total_rows_consumed"]
+
+        if not (0 <= start_cycle <= NUM_CYCLES):
+            raise ContractError(f"Invalid recovery next_cycle: {start_cycle}")
+        expected_step = START_STEP + start_cycle * STEPS_PER_CYCLE
+        if step_count != expected_step:
+            raise ContractError(f"Recovery step count mismatch: got {step_count}, expected {expected_step}")
+        expected_rows = start_cycle * ROWS_PER_CYCLE
+        if total_rows_consumed != expected_rows:
+            raise ContractError(f"Recovery rows consumed mismatch: got {total_rows_consumed}, expected {expected_rows}")
+
+        # Strict completeness requirement for resume payload
+        required_resume_keys = {"mortal", "dqn", "aux", "optimizer", "scheduler", "scaler", "rng_states", "game_identities"}
+        missing_keys = required_resume_keys - set(recovery_data.keys())
+        if missing_keys:
+            raise ContractError(f"Recovery payload missing required keys: {missing_keys}")
+
         mortal_net.load_state_dict(recovery_data["mortal"])
         dqn_net.load_state_dict(recovery_data["dqn"])
         aux_net.load_state_dict(recovery_data["aux"])
         optimizer.load_state_dict(recovery_data["optimizer"])
+        scheduler.load_state_dict(recovery_data["scheduler"])
+        scaler.load_state_dict(recovery_data["scaler"])
+        set_rng_states(recovery_data["rng_states"])
+
         all_game_identities = set(recovery_data["game_identities"])
-        logger.info("Resuming from cycle %d, step %d, rows %d", start_cycle, step_count, total_rows_consumed)
+        logger.info("Successfully resumed: next_cycle=%d, step=%d, rows=%d", start_cycle, step_count, total_rows_consumed)
 
     hard_gates: dict[str, bool] = {
         "parent_verified": (k0_sha256 == K0_EXPECTED_SHA256),
@@ -289,7 +387,6 @@ def run_o2_training(
     # Main 16-cycle loop
     for cycle in range(start_cycle, NUM_CYCLES):
         cycle_dir = output_dir / f"cycle_{cycle:02d}"
-        cycle_dir.mkdir(parents=True, exist_ok=True)
         logger.info("--- Starting Cycle %d/%d (step %d) ---", cycle + 1, NUM_CYCLES, step_count)
 
         # 1. Parameter refresh & Self-play generation
@@ -305,7 +402,7 @@ def run_o2_training(
             device=device,
         )
 
-        # Identity overlap check
+        # Identity overlap check across cycles
         if all_game_identities.intersection(cycle_identities):
             raise ContractError(f"Duplicate replay game identity detected in cycle {cycle}")
         all_game_identities.update(cycle_identities)
@@ -382,6 +479,7 @@ def run_o2_training(
                         raise ContractError(f"Non-finite gradient at step {step_count}")
 
             optimizer.step()
+            scheduler.step()
             step_count += 1
             total_rows_consumed += BATCH_SIZE
 
@@ -396,6 +494,9 @@ def run_o2_training(
                 "dqn": dqn_net.state_dict(),
                 "aux": aux_net.state_dict(),
                 "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "scaler": scaler.state_dict(),
+                "rng_states": get_rng_states(),
                 "game_identities": list(all_game_identities),
             },
             tmp_recovery,
@@ -403,23 +504,50 @@ def run_o2_training(
         tmp_recovery.replace(recovery_file)
         logger.info("Cycle %d complete. Total steps: %d, Total rows: %d", cycle + 1, step_count, total_rows_consumed)
 
-    # Validate final parameters
-    params_finite = True
-    params_changed = False
-    for n, p in mortal_net.named_parameters():
-        if not torch.isfinite(p).all():
-            params_finite = False
-        init_p = initial_mortal_params[n].to(p.device)
-        if not torch.equal(init_p, p):
-            params_changed = True
+    # Validate final parameters across Mortal, DQN, and AuxNet
+    all_params_finite = True
+    all_models_changed = True
+    for model_name, model_inst in [("mortal", mortal_net), ("dqn", dqn_net), ("aux", aux_net)]:
+        model_changed = False
+        for n, p in model_inst.named_parameters():
+            if not torch.isfinite(p).all():
+                all_params_finite = False
+            init_p = initial_params[model_name][n].to(p.device)
+            if not torch.equal(init_p, p):
+                model_changed = True
+        if not model_changed:
+            all_models_changed = False
 
-    hard_gates["parameters_finite"] = params_finite
-    hard_gates["parameters_changed_from_k0"] = params_changed
-    hard_gates["exact_16_cycles"] = (cycle == NUM_CYCLES - 1)
+    hard_gates["parameters_finite"] = all_params_finite
+    hard_gates["parameters_changed_from_k0"] = all_models_changed
+    hard_gates["exact_16_cycles"] = (step_count == TARGET_STEP and total_rows_consumed == TOTAL_CONSUMED_ROWS)
     hard_gates["exact_400_optimizer_steps"] = (step_count == TARGET_STEP)
     hard_gates["exact_204800_rows_consumed"] = (total_rows_consumed == TOTAL_CONSUMED_ROWS)
     hard_gates["no_replay_identity_reuse"] = (len(all_game_identities) >= NUM_CYCLES * INITIAL_SEED_GROUPS_PER_CYCLE * 4)
-    hard_gates["resume_state_consistent"] = (recovery_file.exists())
+
+    # Validate recovery state mathematical consistency
+    if recovery_file.exists():
+        final_rec = torch.load(recovery_file, weights_only=False, map_location="cpu")
+        hard_gates["resume_state_consistent"] = (
+            final_rec["next_cycle"] == NUM_CYCLES
+            and final_rec["step_count"] == TARGET_STEP
+            and final_rec["total_rows_consumed"] == TOTAL_CONSUMED_ROWS
+            and len(final_rec["game_identities"]) == len(all_game_identities)
+            and "rng_states" in final_rec
+            and "scheduler" in final_rec
+            and "scaler" in final_rec
+        )
+
+    # Build updated O2 config metadata
+    o2_config = copy.deepcopy(k0_state.get("config", {}))
+    o2_config.setdefault("control", {})["version"] = 4
+    o2_config["control"]["online"] = True
+    o2_config.setdefault("cql", {})["min_q_weight"] = 0.0
+    o2_config.setdefault("freeze_bn", {})["mortal"] = True
+    o2_config.setdefault("aux", {})["next_rank_weight"] = AUX_WEIGHT
+    o2_config.setdefault("env", {})["pts"] = RANK_PTS.tolist()
+    o2_config["env"]["gamma"] = GAMMA
+    o2_config.setdefault("optim", {})["scheduler"] = {"peak": LEARNING_RATE, "final": LEARNING_RATE}
 
     # Save scientific checkpoint 70400
     checkpoint_70400_path = output_dir / "mortal_70400.pth"
@@ -429,9 +557,27 @@ def run_o2_training(
             "current_dqn": dqn_net.state_dict(),
             "aux_net": aux_net.state_dict(),
             "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "scaler": scaler.state_dict(),
             "steps": step_count,
             "experiment_id": EXPERIMENT_ID,
             "parent_model": PARENT_MODEL,
+            "config": o2_config,
+            "o2_training_contract": {
+                "adapter": ADAPTER_KIND,
+                "objective": OBJECTIVE_MODE,
+                "reward": REWARD_MODE,
+                "gamma": GAMMA,
+                "aux_weight": AUX_WEIGHT,
+                "effective_cql_weight": effective_cql_weight,
+                "learning_rate": LEARNING_RATE,
+                "freeze_bn": FREEZE_BN,
+                "total_cycles": NUM_CYCLES,
+                "steps_per_cycle": STEPS_PER_CYCLE,
+                "total_optimizer_steps": TOTAL_OPTIMIZER_STEPS,
+                "batch_size": BATCH_SIZE,
+                "total_consumed_rows": TOTAL_CONSUMED_ROWS,
+            },
         },
         checkpoint_70400_path,
     )
@@ -481,12 +627,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=O2_TRAINING_DIR, help="Training output directory")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Compute device")
+    parser.add_argument("--resume", action="store_true", help="Resume from recovery_state.pth in output-dir")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     summary = run_o2_training(
         output_dir=args.output_dir,
         device_name=args.device,
+        resume=args.resume,
     )
     print(json.dumps(summary, indent=2, ensure_ascii=False))
 

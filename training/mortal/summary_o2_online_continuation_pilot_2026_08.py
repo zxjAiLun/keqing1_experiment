@@ -40,10 +40,11 @@ from training.mortal.o2_online_continuation_contract_2026_08 import (
     compute_final_ranks,
     final_scores_with_reach_accepted,
     paired_bootstrap_ci,
+    sha256_file,
 )
 
 logger = logging.getLogger("o2_summary")
-LOG_NAME_RE = re.compile(r"^(?P<seed>d+)(?:_[^/]*)?.json.gz$")
+LOG_NAME_RE = re.compile(r"^(?P<seed>\d+)(?:_[^/]*)?\.json\.gz$")
 
 
 def parse_evaluation_log(path: Path) -> dict[str, Any]:
@@ -94,15 +95,49 @@ def parse_evaluation_log(path: Path) -> dict[str, Any]:
 def adjudicate_o2_evaluation(
     evaluation_dir: Path = O2_EVALUATION_DIR,
     training_dir: Path = O2_TRAINING_DIR,
+    allowed_root: Path = O2_ROOT,
 ) -> dict[str, Any]:
-    """Load all 1000 logs, compute paired differences and bootstrap CIs, and produce formal adjudication summary."""
-    check_directory_boundary(evaluation_dir, O2_ROOT)
+    """Load all 1000 logs from shard_xx/logs, compute paired differences and bootstrap CIs, and produce formal adjudication summary."""
+    check_directory_boundary(evaluation_dir, allowed_root)
 
     o2_checkpoint = training_dir / "mortal_70400.pth"
     if not o2_checkpoint.exists():
         raise FileNotFoundError(f"Checkpoint not found at {o2_checkpoint}")
+    actual_o2_sha = sha256_file(o2_checkpoint)
+
+    # 1. Read and validate evaluation manifest
+    eval_manifest_path = evaluation_dir / "evaluation_manifest.json"
+    if not eval_manifest_path.exists():
+        raise ContractError(f"evaluation_manifest.json not found in {evaluation_dir}")
+    eval_manifest = json.loads(eval_manifest_path.read_text(encoding="utf-8"))
+    if eval_manifest.get("verdict") != "evaluation_completed":
+        raise ContractError(f"Evaluation manifest verdict is not 'evaluation_completed': {eval_manifest.get('verdict')}")
+
+    manifest_ckpt = eval_manifest.get("o2_checkpoint", {})
+    if manifest_ckpt.get("sha256") != actual_o2_sha:
+        raise ContractError(
+            f"Evaluation manifest checkpoint SHA mismatch: disk={actual_o2_sha} vs manifest={manifest_ckpt.get('sha256')}"
+        )
+
+    # 2. Read and validate training completion record
+    train_comp_file = training_dir / "training_completion.json"
+    if not train_comp_file.exists():
+        raise ContractError(f"training_completion.json not found in {training_dir}")
+    train_summary = json.loads(train_comp_file.read_text(encoding="utf-8"))
+    if train_summary.get("verdict") != "training_completed":
+        raise ContractError(f"Training summary verdict is not 'training_completed': {train_summary.get('verdict')}")
+    if not all(train_summary.get("hard_gates", {}).values()):
+        raise ContractError("Training hard gates failed in training completion record")
+
+    logged_train_ckpt = train_summary.get("final_checkpoint", {})
+    if logged_train_ckpt.get("sha256") != actual_o2_sha:
+        raise ContractError(
+            f"Training completion checkpoint SHA mismatch: disk={actual_o2_sha} vs training_completion={logged_train_ckpt.get('sha256')}"
+        )
 
     hard_gates: dict[str, bool] = {
+        "evaluation_manifest_verified": True,
+        "checkpoint_sha_consistent": True,
         "all_shards_present": False,
         "exact_1000_games_parsed": False,
         "game_ids_contiguous": False,
@@ -113,10 +148,10 @@ def adjudicate_o2_evaluation(
 
     all_games: list[dict[str, Any]] = []
     for shard_id in range(EVALUATION_SHARDS):
-        shard_raw_dir = evaluation_dir / f"shard_{shard_id:02d}" / "raw_eval"
-        if not shard_raw_dir.exists():
-            raise FileNotFoundError(f"Shard raw eval dir not found: {shard_raw_dir}")
-        shard_logs = sorted(shard_raw_dir.glob("*.json.gz"))
+        shard_logs_dir = evaluation_dir / f"shard_{shard_id:02d}" / "logs"
+        if not shard_logs_dir.exists():
+            raise FileNotFoundError(f"Shard logs dir not found: {shard_logs_dir}")
+        shard_logs = sorted(shard_logs_dir.glob("*.json.gz"))
         if len(shard_logs) != EVALUATION_GAMES_PER_SHARD:
             raise ContractError(f"Shard {shard_id} has {len(shard_logs)} logs, expected {EVALUATION_GAMES_PER_SHARD}")
         for log_p in shard_logs:
@@ -166,6 +201,10 @@ def adjudicate_o2_evaluation(
             "bootstrap_ci": BOOTSTRAP_CI,
         },
         "hard_gates": hard_gates,
+        "o2_checkpoint": {
+            "path": str(o2_checkpoint),
+            "sha256": actual_o2_sha,
+        },
         "results": {
             "x_vs_k0": {
                 "mean_diff_pt": mean_x,

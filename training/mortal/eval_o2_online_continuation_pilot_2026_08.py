@@ -27,7 +27,6 @@ from training.mortal.o2_online_continuation_contract_2026_08 import (
     O2_ROOT,
     O2_TRAINING_DIR,
     SEED_KEY,
-    TENHOU_RANK_POINTS,
     ContractError,
     check_directory_boundary,
     ensure_clean_staging_dir,
@@ -47,7 +46,7 @@ def build_shard_spec(
     o2_checkpoint_path: Path,
     device: str = "cuda",
 ) -> dict[str, Any]:
-    """Construct shard configuration and command."""
+    """Construct shard configuration and command using exact four_player_native.py CLI."""
     k0_path, _ = resolve_k0_checkpoint()
     ext_path, _ = resolve_ext_mortal_checkpoint()
     m0_path, _ = resolve_m0_20260807_checkpoint()
@@ -65,15 +64,11 @@ def build_shard_spec(
     cmd = [
         sys.executable,
         str(EVALUATOR_PATH),
-        "--log-dir",
-        str(shard_dir / "raw_eval"),
-        "--output",
-        str(shard_dir / "metrics.json"),
-        "--stat-output",
-        str(shard_dir / "stat_report.json"),
+        "--output-dir",
+        str(shard_dir),
         "--seed-start",
         str(start_hanchan),
-        "--seed-count",
+        "--games",
         str(EVALUATION_GAMES_PER_SHARD),
         "--seed-key",
         str(SEED_KEY),
@@ -81,11 +76,15 @@ def build_shard_spec(
         "random",
         "--device",
         device,
-        "--rank-points",
-        f"points={TENHOU_RANK_POINTS[0]},{TENHOU_RANK_POINTS[1]},{TENHOU_RANK_POINTS[2]},{TENHOU_RANK_POINTS[3]}",
+        "--rank-points-profile",
+        "tenhou_reference",
+        "--native-batch-games",
+        str(EVALUATION_GAMES_PER_SHARD),
     ]
-    if not AMP:
-        cmd.append("--no-amp")
+    if device.startswith("cuda"):
+        cmd.append("--require-cuda")
+    if AMP:
+        cmd.append("--enable-amp")
     for m in model_specs:
         cmd.extend(["--model", m])
 
@@ -111,20 +110,34 @@ def run_o2_evaluation(
     o2_checkpoint = training_dir / "mortal_70400.pth"
     if not o2_checkpoint.exists():
         raise FileNotFoundError(f"O2 checkpoint mortal_70400.pth not found in {training_dir}")
+    actual_o2_sha = sha256_file(o2_checkpoint)
 
-    # Check training completion
+    # Check training completion and gates
     train_comp_file = training_dir / "training_completion.json"
     if not train_comp_file.exists():
         raise ContractError(f"training_completion.json not found in {training_dir}")
     train_summary = json.loads(train_comp_file.read_text(encoding="utf-8"))
     if train_summary.get("verdict") != "training_completed":
-        raise ContractError(f"Training gates not all passed in {train_comp_file}")
+        raise ContractError(f"Training verdict is not 'training_completed': {train_summary.get('verdict')}")
+
+    # Validate all 14 hard gates in training completion
+    hard_gates = train_summary.get("hard_gates", {})
+    if not hard_gates or not all(hard_gates.values()):
+        raise ContractError(f"Training hard gates incomplete or failed: {hard_gates}")
+
+    # Validate checkpoint SHA against training completion
+    logged_ckpt = train_summary.get("final_checkpoint", {})
+    if logged_ckpt.get("sha256") != actual_o2_sha:
+        raise ContractError(
+            f"Checkpoint SHA mismatch: disk={actual_o2_sha} vs training_completion={logged_ckpt.get('sha256')}"
+        )
 
     shards_meta = []
     for shard_id in range(EVALUATION_SHARDS):
         spec = build_shard_spec(shard_id, output_dir, o2_checkpoint, device)
         shard_dir = spec["shard_dir"]
-        ensure_clean_staging_dir(shard_dir / "raw_eval", output_dir)
+        # Entire shard directory must be clean before running
+        ensure_clean_staging_dir(shard_dir, output_dir)
 
         logger.info("Executing evaluation shard %d (%d games)...", shard_id, EVALUATION_GAMES_PER_SHARD)
         res = subprocess.run(spec["command"], check=False, capture_output=True, text=True)
@@ -146,7 +159,11 @@ def run_o2_evaluation(
         "shards": shards_meta,
         "o2_checkpoint": {
             "path": str(o2_checkpoint),
-            "sha256": sha256_file(o2_checkpoint),
+            "sha256": actual_o2_sha,
+        },
+        "training_completion": {
+            "path": str(train_comp_file),
+            "sha256": sha256_file(train_comp_file),
         },
         "verdict": "evaluation_completed",
     }

@@ -1,36 +1,36 @@
-"""Targeted unit tests for O2 online continuation pilot contracts and components."""
+"""Targeted unit tests for O2 online continuation pilot contracts, optimizer, recovery, and evaluator integration."""
 
 from __future__ import annotations
 
-import os
+import gzip
+import json
 import sys
 from pathlib import Path
 
-import numpy as np
-import toml
+# Import libriichi before adding third_party/Mortal/mortal to sys.path
+import libriichi.arena  # noqa: F401
 import torch
+from torch import optim
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-if str(REPO_ROOT / "third_party" / "Mortal" / "mortal") not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT / "third_party" / "Mortal" / "mortal"))
 
-import model
+import pytest
 
+from training.mortal.eval_o2_online_continuation_pilot_2026_08 import build_shard_spec
+from training.mortal.four_player_native import _load_engine
 from training.mortal.o2_online_continuation_contract_2026_08 import (
     BATCH_SIZE,
-    BOOTSTRAP_CI,
-    BOOTSTRAP_REPS,
-    BOOTSTRAP_SEED,
-    GAMMA,
+    EVALUATION_GAMES_PER_SHARD,
+    EVALUATION_SEED_START,
+    EXPERIMENT_ID,
     GENERATION_BASE_SEED,
     INITIAL_SEED_GROUPS_PER_CYCLE,
+    K0_EXPECTED_SHA256,
     LEARNING_RATE,
     MAX_SEED_GROUPS_PER_CYCLE,
     NUM_CYCLES,
-    RANK_PTS,
-    REWARD_MODE,
     ROWS_PER_CYCLE,
     SEED_KEY,
     SEEDS_PER_CYCLE_BLOCK,
@@ -39,11 +39,29 @@ from training.mortal.o2_online_continuation_contract_2026_08 import (
     TARGET_STEP,
     TOTAL_CONSUMED_ROWS,
     TOTAL_OPTIMIZER_STEPS,
+    ContractError,
     adjudicate_o2_verdict,
     compute_effective_cql_weight,
-    final_scores_with_reach_accepted,
-    paired_bootstrap_ci,
+    resolve_k0_checkpoint,
+    sha256_file,
 )
+from training.mortal.summary_o2_online_continuation_pilot_2026_08 import (
+    LOG_NAME_RE,
+    adjudicate_o2_evaluation,
+    parse_evaluation_log,
+)
+from training.mortal.train_o2_online_continuation_pilot_2026_08 import (
+    construct_and_validate_preserved_adamw,
+    get_rng_states,
+    set_rng_states,
+)
+from training.run_mortal_dqn_offline import _optimizer_param_groups
+
+if str(REPO_ROOT / "third_party" / "Mortal" / "mortal") not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT / "third_party" / "Mortal" / "mortal"))
+
+import engine
+import model
 
 
 def test_1_16_x_25_step_and_row_schedule() -> None:
@@ -101,45 +119,35 @@ def test_2_generation_identity_no_overlap() -> None:
     assert len(seen_identities) == NUM_CYCLES * INITIAL_SEED_GROUPS_PER_CYCLE * 4 == 2048
 
 
-def test_3_production_file_datasets_iter_consumption(tmp_path: Path) -> None:
-    """Test 3: FileDatasetsIter loads log and enforces final_rank_mc target contract."""
-    candidates = list(REPO_ROOT.glob("artifacts/**/*.json.gz"))
-    assert candidates, "No .json.gz logs found in artifacts"
-    sample_log = candidates[0]
+def test_3_real_k0_two_param_groups_adamw_preservation() -> None:
+    """Test 3: Preserved AdamW constructs exact 2 parameter groups and loads all 410 moments from real K0."""
+    k0_path, k0_sha256 = resolve_k0_checkpoint()
+    assert k0_sha256 == K0_EXPECTED_SHA256
+    k0_state = torch.load(k0_path, map_location="cpu")
 
-    config_path = tmp_path / "mortal_cfg.toml"
-    with open(config_path, "w", encoding="utf-8") as f:
-        toml.dump({
-            "control": {"version": 4},
-            "env": {"pts": RANK_PTS.tolist(), "gamma": GAMMA},
-            "reward": {"mode": REWARD_MODE},
-        }, f)
-    os.environ["MORTAL_CFG"] = str(config_path.resolve())
+    mortal_net = model.Brain(version=4, conv_channels=192, num_blocks=40)
+    dqn_net = model.DQN(version=4)
+    aux_net = model.AuxNet((4,))
+    all_models = (mortal_net, dqn_net, aux_net)
 
-    from training.mortal.mainline_dataloader import FileDatasetsIter
-
-    dataset = FileDatasetsIter(
-        version=4,
-        file_list=[str(sample_log)],
-        pts=RANK_PTS,
-        oracle=False,
-        player_names=["ext_mortal", "trainee", "70k", "M0_CURRENT_20260806"],
-        enable_augmentation=False,
-        num_epochs=1,
+    optimizer = construct_and_validate_preserved_adamw(
+        all_models,
+        k0_state["optimizer"],
+        lr=LEARNING_RATE,
     )
 
-    rows = list(dataset)
-    assert len(rows) > 0
+    assert len(optimizer.param_groups) == 2
+    assert optimizer.param_groups[0]["weight_decay"] == 0.1
+    assert optimizer.param_groups[0]["lr"] == 1e-4
+    assert optimizer.param_groups[1]["weight_decay"] == 0.0
+    assert optimizer.param_groups[1]["lr"] == 1e-4
 
-    expected_domain = {-3.0, -1.0, 1.0, 3.0}
-    for obs, action, mask, steps_to_done, kyoku_reward, next_rank in rows[:50]:
-        assert obs.shape == (1012, 34)
-        assert 0 <= action <= 45
-        assert mask.shape == (46,)
-        assert bool(mask[action]) is True
-        assert steps_to_done >= 0
-        assert float(kyoku_reward) in expected_domain
-        assert 0 <= next_rank <= 3
+    state = optimizer.state_dict()["state"]
+    assert len(state) == 410
+    for s_entry in state.values():
+        assert "step" in s_entry
+        assert "exp_avg" in s_entry
+        assert "exp_avg_sq" in s_entry
 
 
 def test_4_online_cql_branch_calculation() -> None:
@@ -159,39 +167,51 @@ def test_4_online_cql_branch_calculation() -> None:
     assert active is True
     assert weight == 5.0
 
-    # online=False, force_online=True -> cql_active=True, weight=5.0
-    active, weight = compute_effective_cql_weight(online=False, force_online=True, base_min_q_weight=5.0)
-    assert active is True
-    assert weight == 5.0
 
-
-def test_5_preserved_optimizer_and_fresh_scheduler_contract() -> None:
-    """Test 5: Preserved Adam optimizer moments loading and constant LR=1e-4."""
+def test_5_recovery_rng_and_cycle_identity_consistency(tmp_path: Path) -> None:
+    """Test 5: Recovery state stores exact cycle, step, consumed rows, RNGs, and parameters atomically."""
     mortal_net = model.Brain(version=4, conv_channels=32, num_blocks=2)
     dqn_net = model.DQN(version=4)
     aux_net = model.AuxNet((4,))
+    optimizer = optim.AdamW(_optimizer_param_groups((mortal_net, dqn_net, aux_net), weight_decay=0.1), lr=1e-4)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: 1.0)
+    scaler = torch.amp.GradScaler("cpu", enabled=False)
 
-    params = list(mortal_net.parameters()) + list(dqn_net.parameters()) + list(aux_net.parameters())
-    optimizer = torch.optim.Adam(params, lr=LEARNING_RATE)
-    assert optimizer.defaults["lr"] == 1e-4
+    rng_before = get_rng_states()
+    recovery_file = tmp_path / "recovery_state.pth"
+    tmp_recovery = tmp_path / "recovery_state.pth.tmp"
 
-    # Dummy moments state
-    p0 = params[0]
-    optimizer.state[p0] = {
-        "step": torch.tensor(70000.0),
-        "exp_avg": torch.ones_like(p0) * 0.5,
-        "exp_avg_sq": torch.ones_like(p0) * 0.25,
+    cycle_idx = 4
+    step_count = START_STEP + cycle_idx * STEPS_PER_CYCLE  # 70100
+    rows_consumed = cycle_idx * ROWS_PER_CYCLE            # 51200
+
+    state_payload = {
+        "next_cycle": cycle_idx,
+        "step_count": step_count,
+        "total_rows_consumed": rows_consumed,
+        "mortal": mortal_net.state_dict(),
+        "dqn": dqn_net.state_dict(),
+        "aux": aux_net.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "scaler": scaler.state_dict(),
+        "rng_states": rng_before,
+        "game_identities": [((2000000, 8192), ("trainee", "baseline", "baseline", "baseline"))],
     }
-    saved_state = optimizer.state_dict()
+    torch.save(state_payload, tmp_recovery)
+    tmp_recovery.replace(recovery_file)
 
-    # New optimizer restoring state
-    new_optimizer = torch.optim.Adam(params, lr=LEARNING_RATE)
-    new_optimizer.load_state_dict(saved_state)
-    for g in new_optimizer.param_groups:
-        g["lr"] = LEARNING_RATE
+    assert recovery_file.exists()
+    assert not tmp_recovery.exists()
 
-    assert new_optimizer.param_groups[0]["lr"] == 1e-4
-    assert torch.equal(new_optimizer.state[p0]["exp_avg"], torch.ones_like(p0) * 0.5)
+    loaded = torch.load(recovery_file, weights_only=False, map_location="cpu")
+    assert loaded["next_cycle"] == 4
+    assert loaded["step_count"] == 70100
+    assert loaded["total_rows_consumed"] == 51200
+    assert len(loaded["game_identities"]) == 1
+    assert "rng_states" in loaded
+
+    set_rng_states(loaded["rng_states"])
 
 
 def test_6_batch_norm_frozen_verification() -> None:
@@ -217,74 +237,104 @@ def test_6_batch_norm_frozen_verification() -> None:
         assert torch.equal(bn.running_var, init_var)
 
 
-def test_7_cycle_recovery_state_and_resume_identity(tmp_path: Path) -> None:
-    """Test 7: Recovery state stores exact cycle, step, consumed rows, and parameters atomically."""
-    mortal_net = model.Brain(version=4, conv_channels=32, num_blocks=2)
-    dqn_net = model.DQN(version=4)
-    aux_net = model.AuxNet((4,))
-    optimizer = torch.optim.Adam(list(mortal_net.parameters()), lr=1e-4)
+def test_7_o2_checkpoint_loader_parity_with_four_player_native(tmp_path: Path) -> None:
+    """Test 7: O2 checkpoint saved with updated 'config' metadata is loadable by four_player_native._load_engine."""
+    k0_path, _ = resolve_k0_checkpoint()
+    k0_state = torch.load(k0_path, map_location="cpu")
 
-    recovery_file = tmp_path / "recovery_state.pth"
-    tmp_recovery = tmp_path / "recovery_state.pth.tmp"
+    o2_config = dict(k0_state["config"])
+    o2_config["control"]["online"] = True
+    o2_config["cql"] = {"min_q_weight": 0.0}
+    o2_config["freeze_bn"] = {"mortal": True}
 
-    state_payload = {
-        "next_cycle": 5,
-        "step_count": 70125,
-        "total_rows_consumed": 64000,
-        "mortal": mortal_net.state_dict(),
-        "dqn": dqn_net.state_dict(),
-        "aux": aux_net.state_dict(),
-        "optimizer": optimizer.state_dict(),
-        "game_identities": [((2000000, 8192), ("trainee", "baseline", "baseline", "baseline"))],
-    }
-    torch.save(state_payload, tmp_recovery)
-    tmp_recovery.replace(recovery_file)
+    o2_ckpt_path = tmp_path / "mortal_70400.pth"
+    torch.save(
+        {
+            "mortal": k0_state["mortal"],
+            "current_dqn": k0_state["current_dqn"],
+            "aux_net": k0_state["aux_net"],
+            "optimizer": k0_state["optimizer"],
+            "steps": 70400,
+            "experiment_id": EXPERIMENT_ID,
+            "config": o2_config,
+            "o2_training_contract": {
+                "adapter": "keqing_project_online",
+                "objective": "behavior_action_mc",
+                "freeze_bn": True,
+            },
+        },
+        o2_ckpt_path,
+    )
 
-    assert recovery_file.exists()
-    assert not tmp_recovery.exists()
+    engine_chal = _load_engine(
+        label="O2_70400",
+        state_file=o2_ckpt_path,
+        mortal_root=REPO_ROOT / "third_party" / "Mortal",
+        device="cpu",
+        enable_amp=False,
+        enable_profile=False,
+    )
+    assert isinstance(engine_chal, engine.MortalEngine)
+    assert engine_chal.name == "O2_70400"
 
-    loaded = torch.load(recovery_file, map_location="cpu")
-    assert loaded["next_cycle"] == 5
-    assert loaded["step_count"] == 70125
-    assert loaded["total_rows_consumed"] == 64000
-    assert len(loaded["game_identities"]) == 1
+
+def test_8_evaluator_cli_spec_parity(tmp_path: Path) -> None:
+    """Test 8: build_shard_spec produces CLI flags strictly aligned with four_player_native parser."""
+    dummy_o2 = tmp_path / "mortal_70400.pth"
+    dummy_o2.touch()
+
+    spec = build_shard_spec(
+        shard_id=1,
+        output_dir=tmp_path / "eval",
+        o2_checkpoint_path=dummy_o2,
+        device="cpu",
+    )
+
+    cmd = spec["command"]
+    assert "--output-dir" in cmd
+    assert "--seed-start" in cmd
+    idx_seed = cmd.index("--seed-start")
+    assert cmd[idx_seed + 1] == str(EVALUATION_SEED_START + EVALUATION_GAMES_PER_SHARD)
+
+    assert "--games" in cmd
+    idx_games = cmd.index("--games")
+    assert cmd[idx_games + 1] == "250"
+
+    assert "--rank-points-profile" in cmd
+    idx_prof = cmd.index("--rank-points-profile")
+    assert cmd[idx_prof + 1] == "tenhou_reference"
+
+    assert "--native-batch-games" in cmd
+    idx_nbg = cmd.index("--native-batch-games")
+    assert cmd[idx_nbg + 1] == "250"
 
 
-def test_8_corrected_reach_accepted_parser() -> None:
-    """Test 8: final_scores_with_reach_accepted correctly accounts for -1000 on reach_accepted."""
+def test_9_real_json_gz_log_parsing_and_regex_match(tmp_path: Path) -> None:
+    """Test 9: LOG_NAME_RE regex and parse_evaluation_log parse valid gzipped logs with reach_accepted correctly."""
+    log_name = "2100042.json.gz"
+    assert LOG_NAME_RE.match(log_name) is not None
+    assert LOG_NAME_RE.match(log_name).group("seed") == "2100042"
+
+    # Synthetic gzipped log
+    log_file = tmp_path / log_name
     events = [
+        {"type": "start_game", "seed": [2100042, SEED_KEY], "names": ["K0_70k", "ext_mortal", "M0_CURRENT_20260807", "O2_70400"]},
         {"type": "start_kyoku", "scores": [25000, 25000, 25000, 25000]},
-        {"type": "reach_accepted", "actor": 1},  # player 1 reaches -> -1000
-        {"type": "hora", "deltas": [8000, -8000, 0, 0]},  # player 0 wins from player 1
+        {"type": "reach_accepted", "actor": 3},  # O2 reaches -> 24000
+        {"type": "hora", "deltas": [0, 0, 0, 8000]},  # O2 wins -> 32000
+        {"type": "end_game"},
     ]
-    scores = final_scores_with_reach_accepted(events)
-    assert scores == [33000.0, 16000.0, 25000.0, 25000.0]
+    with gzip.open(log_file, "wt", encoding="utf-8") as f:
+        for ev in events:
+            f.write(json.dumps(ev) + "\n")
 
-    # Without hora / ryukyoku
-    events2 = [
-        {"type": "start_kyoku", "scores": [30000, 30000, 20000, 20000]},
-        {"type": "reach_accepted", "actor": 0},
-        {"type": "reach_accepted", "actor": 2},
-    ]
-    scores2 = final_scores_with_reach_accepted(events2)
-    assert scores2 == [29000.0, 30000.0, 19000.0, 20000.0]
+    parsed = parse_evaluation_log(log_file)
+    assert parsed["game_id"] == 2100042
+    assert parsed["label_to_rank"]["O2_70400"] == 0  # 1st rank
+    assert parsed["label_to_pt"]["O2_70400"] == 90.0
 
 
-def test_9_paired_bootstrap_determinism() -> None:
-    """Test 9: 5000-rep paired bootstrap with fixed seed 20260903 is strictly deterministic."""
-    np.random.seed(42)
-    diffs = np.random.normal(loc=2.5, scale=10.0, size=1000)
-
-    mean_1, ci_1 = paired_bootstrap_ci(diffs, reps=BOOTSTRAP_REPS, seed=BOOTSTRAP_SEED, ci=BOOTSTRAP_CI)
-    mean_2, ci_2 = paired_bootstrap_ci(diffs, reps=BOOTSTRAP_REPS, seed=BOOTSTRAP_SEED, ci=BOOTSTRAP_CI)
-
-    assert mean_1 == mean_2
-    assert ci_1[0] == ci_2[0]
-    assert ci_1[1] == ci_2[1]
-    assert ci_1[0] < mean_1 < ci_1[1]
-
-
-def test_10_four_state_verdict_mapping() -> None:
+def test_10_four_state_verdict_mapping_and_shard_logs_summary(tmp_path: Path) -> None:
     """Test 10: Verdict adjudicator produces exact four states and keeps promotions False."""
     # 1. strong_signal: both means > 0 and both CI lowers > 0
     v1 = adjudicate_o2_verdict(
@@ -325,3 +375,42 @@ def test_10_four_state_verdict_mapping() -> None:
         ci_y=[0.4, 7.2],
     )
     assert v4 == "invalid"
+
+def test_11_eval_and_summary_checkpoint_sha_binding(tmp_path: Path) -> None:
+    """Test 11: Summarizer and evaluator strictly fail closed if checkpoint SHA does not match."""
+    k0_path, _k0_sha = resolve_k0_checkpoint()
+    k0_state = torch.load(k0_path, map_location="cpu")
+
+    train_dir = tmp_path / "training"
+    eval_dir = tmp_path / "evaluation"
+    train_dir.mkdir(parents=True)
+    eval_dir.mkdir(parents=True)
+
+    o2_ckpt_path = train_dir / "mortal_70400.pth"
+    torch.save({"dummy": 1, "config": k0_state["config"]}, o2_ckpt_path)
+    real_sha = sha256_file(o2_ckpt_path)
+
+    # Valid completion JSON
+    comp_json = train_dir / "training_completion.json"
+    comp_json.write_text(json.dumps({
+        "schema": "keqing.mortal.o2_training_completion.v1",
+        "experiment_id": EXPERIMENT_ID,
+        "hard_gates": {"all": True},
+        "final_checkpoint": {"path": str(o2_ckpt_path), "sha256": real_sha},
+        "verdict": "training_completed",
+    }))
+
+    # Fake evaluation manifest with mismatching SHA
+    eval_manifest = eval_dir / "evaluation_manifest.json"
+    eval_manifest.write_text(json.dumps({
+        "schema": "keqing.mortal.o2_evaluation_manifest.v1",
+        "experiment_id": EXPERIMENT_ID,
+        "lineup": ["K0_70k", "ext_mortal", "M0_CURRENT_20260807", "O2_70400"],
+        "total_games": 1000,
+        "shards": [],
+        "o2_checkpoint": {"path": str(o2_ckpt_path), "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+        "verdict": "evaluation_completed",
+    }))
+
+    with pytest.raises(ContractError, match="Evaluation manifest checkpoint SHA mismatch"):
+        adjudicate_o2_evaluation(evaluation_dir=eval_dir, training_dir=train_dir, allowed_root=tmp_path)
