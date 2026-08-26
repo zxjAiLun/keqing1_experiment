@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import re
 from pathlib import Path
 
 import numpy as np
-import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -23,13 +24,21 @@ SUMMARY_SCHEMA = "keqing.mortal.r1_summary.v1"
 
 # Parent & models
 PARENT_MODEL = "K0_70k"
-DATA_ROOT = REPO_ROOT.parents[1] / "keqing-data"
+DATA_ROOT = Path("/media/bailan/DISK/AUbuntuProject/keqing-data")
 K0_CANONICAL_PATH = (
     DATA_ROOT
     / "mortal/authoritative/D3_top2_discard_v1_2026_08/models/K0_70k/mortal_default_70k_promoted_candidate.pth"
 )
 K0_FALLBACK_PATH = REPO_ROOT / "artifacts" / "mortal_training" / "checkpoints" / "mortal_default_70k_promoted_candidate.pth"
 K0_EXPECTED_SHA256 = "6c0e70058644e02671440ddf7dd2b41c637ae7c2132c9154595593ab690d49e0"
+
+# External mortal model for evaluation
+EXT_MORTAL_CANONICAL_PATH = (
+    DATA_ROOT
+    / "mortal/authoritative/D3_top2_discard_v1_2026_08/models/ext_mortal/external_mortal_20240308_best_min.pth"
+)
+EXT_MORTAL_FALLBACK_PATH = REPO_ROOT.parent / "keqing1/artifacts/external_mortal_20240308_best_min.pth"
+EXT_MORTAL_EXPECTED_SHA256 = "0a88ddad649804d085491b5397d895f596b0e55f30632c549ea145bb44786563"
 
 # M0 mixed replay corpus index
 M0_DATA_INDEX_PATH = (
@@ -45,12 +54,16 @@ STEPS_TARGET = 70400
 OPTIMIZER_STEPS = 400
 BATCH_SIZE = 512
 LEARNING_RATE = 1e-4
+WEIGHT_DECAY = 0.1
+ADAM_BETAS = (0.9, 0.999)
+ADAM_EPS = 1e-8
 CQL_MIN_Q_WEIGHT = 5.0
 AUX_WEIGHT = 0.2
 GAMMA = 1.0
+FILE_BATCH_SIZE = 15
 
 # Reward parameters for R1: rank_target + 0.25 * score_to_go
-RANK_TARGETS_RAW = np.array([3.0, 1.0, -1.0, -3.0], dtype=np.float32)  # [1st, 2nd, 3rd, 4th]
+RANK_PTS = [6.0, 4.0, 2.0, 0.0]
 SCORE_TO_GO_WEIGHT = 0.25
 SCORE_TO_GO_SCALE = 10000.0
 SCORE_TO_GO_CLIP_MIN = -3.0
@@ -75,6 +88,7 @@ EXPECTED_TRAINING_HARD_GATES: frozenset[str] = frozenset({
     "m0_dataset_verified",
     "control_400_steps_completed",
     "variant_400_steps_completed",
+    "identical_row_identity_verified",
     "control_checkpoint_saved",
     "variant_checkpoint_saved",
     "exact_step_counts_verified",
@@ -82,10 +96,11 @@ EXPECTED_TRAINING_HARD_GATES: frozenset[str] = frozenset({
 })
 
 EXPECTED_EVAL_HARD_GATES: frozenset[str] = frozenset({
+    "training_manifest_verified",
     "checkpoints_verified",
+    "ext_mortal_verified",
     "all_4_shards_completed",
     "exact_1000_games_evaluated",
-    "seat_distribution_balanced",
     "reach_accepted_semantics_enforced",
     "zero_missing_games",
 })
@@ -105,12 +120,36 @@ class ContractError(RuntimeError):
     """Raised when any R1 contract invariant is breached."""
 
 
+def native_path(raw: str | Path) -> Path:
+    """Resolve frozen Windows paths from repo artifacts on the current OS."""
+    text = str(raw)
+    if os.name != "nt" and (re.match(r"^[A-Za-z]:", text) or "\\" in text or "AUbuntuProject" in text):
+        norm = text.replace("\\", "/")
+        parts = norm.split("/")
+        repo_parts = REPO_ROOT.parts
+        if "AUbuntuProject" in parts and "AUbuntuProject" in repo_parts:
+            root_idx = repo_parts.index("AUbuntuProject")
+            path_idx = parts.index("AUbuntuProject")
+            return Path(*repo_parts[: root_idx + 1], *parts[path_idx + 1 :]).resolve()
+    return Path(text).resolve()
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def check_directory_empty_or_nonexistent(target_dir: Path) -> None:
+    if target_dir.exists():
+        entries = list(target_dir.iterdir())
+        if len(entries) > 0:
+            raise ContractError(
+                f"Directory {target_dir} is not empty (contains {len(entries)} items). "
+                "Overwriting non-empty directory is forbidden."
+            )
 
 
 def resolve_k0_checkpoint() -> tuple[Path, str]:
@@ -120,6 +159,16 @@ def resolve_k0_checkpoint() -> tuple[Path, str]:
     actual_sha = sha256_file(target)
     if actual_sha != K0_EXPECTED_SHA256:
         raise ContractError(f"K0 SHA256 mismatch: expected {K0_EXPECTED_SHA256}, got {actual_sha}")
+    return target, actual_sha
+
+
+def resolve_ext_mortal_checkpoint() -> tuple[Path, str]:
+    target = EXT_MORTAL_CANONICAL_PATH if EXT_MORTAL_CANONICAL_PATH.exists() else EXT_MORTAL_FALLBACK_PATH
+    if not target.exists():
+        raise FileNotFoundError(f"External Mortal checkpoint not found at: {target}")
+    actual_sha = sha256_file(target)
+    if actual_sha != EXT_MORTAL_EXPECTED_SHA256:
+        raise ContractError(f"External Mortal SHA256 mismatch: expected {EXT_MORTAL_EXPECTED_SHA256}, got {actual_sha}")
     return target, actual_sha
 
 
@@ -137,27 +186,23 @@ def compute_r1_target(
     final_score: float,
     score_at_current_kyoku_start: float,
 ) -> float:
-    """Compute R1 target = rank_target + 0.25 * clip((final_score - start_score)/10000, -3, +3)."""
+    """Compute R1 target = base_rank_target + 0.25 * clip((final_score - start_score)/10000, -3, +3)."""
     if not (0 <= final_rank < 4):
         raise ValueError(f"Invalid final_rank: {final_rank}")
-    rank_target = float(RANK_TARGETS_RAW[final_rank])
+    pts_arr = np.asarray(RANK_PTS, dtype=np.float64)
+    base_rank_target = float(pts_arr[final_rank] - pts_arr.mean())
     score_diff = final_score - score_at_current_kyoku_start
     score_to_go = float(np.clip(score_diff / SCORE_TO_GO_SCALE, SCORE_TO_GO_CLIP_MIN, SCORE_TO_GO_CLIP_MAX))
-    return rank_target + SCORE_TO_GO_WEIGHT * score_to_go
+    return base_rank_target + SCORE_TO_GO_WEIGHT * score_to_go
 
 
-def compute_r1_target_batch(
-    final_ranks: torch.Tensor,
-    final_scores: torch.Tensor,
-    kyoku_start_scores: torch.Tensor,
-) -> torch.Tensor:
-    """Vectorized torch tensor computation of R1 targets."""
-    # final_ranks in 0..3
-    rank_targets = torch.tensor(RANK_TARGETS_RAW, dtype=torch.float32, device=final_ranks.device)
-    base_ranks = rank_targets[final_ranks.long()]
-    score_diff = final_scores.float() - kyoku_start_scores.float()
-    score_to_go = torch.clamp(score_diff / SCORE_TO_GO_SCALE, min=SCORE_TO_GO_CLIP_MIN, max=SCORE_TO_GO_CLIP_MAX)
-    return base_ranks + SCORE_TO_GO_WEIGHT * score_to_go
+def adjudicate_r1_verdict(primary_mean: float, primary_ci_lower: float) -> str:
+    """Adjudicate frozen pilot verdict according to contract."""
+    if primary_mean > 0.0:
+        if primary_ci_lower > 0.0:
+            return "strong_positive"
+        return "weak_positive"
+    return "not_promising"
 
 
 def paired_bootstrap_ci(

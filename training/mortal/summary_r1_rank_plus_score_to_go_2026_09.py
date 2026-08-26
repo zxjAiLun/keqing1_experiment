@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Statistical summary and adjudication for R1 pilot experiment."""
 
 from __future__ import annotations
@@ -22,8 +21,6 @@ from training.mortal.r1_rank_plus_score_to_go_contract_2026_09 import (
     BOOTSTRAP_REPS,
     BOOTSTRAP_SEED,
     EVAL_MANIFEST_SCHEMA,
-    EVAL_SEED_KEY,
-    EVAL_SEED_START,
     EVAL_SHARDS,
     EVAL_TOTAL_GAMES,
     EXPECTED_SUMMARY_HARD_GATES,
@@ -35,6 +32,8 @@ from training.mortal.r1_rank_plus_score_to_go_contract_2026_09 import (
     TENHOU_RANK_POINTS,
     TRAINING_MANIFEST_SCHEMA,
     ContractError,
+    adjudicate_r1_verdict,
+    check_directory_empty_or_nonexistent,
     paired_bootstrap_ci,
     resolve_k0_checkpoint,
     sha256_file,
@@ -44,6 +43,7 @@ logger = logging.getLogger("r1_summary")
 
 
 def _parse_game_log(log_path: Path) -> dict[str, Any]:
+    """Parse one raw game log and extract final ranks and scores with exact reach_accepted semantics."""
     with gzip.open(log_path, "rt", encoding="utf-8") as f:
         events = [json.loads(line) for line in f if line.strip()]
 
@@ -97,6 +97,7 @@ def adjudicate_r1_pilot(
     summary_dir: Path = R1_SUMMARY_DIR,
 ) -> dict[str, Any]:
     """Load manifests, verify logs, compute primary and secondary contrasts, and generate summary."""
+    check_directory_empty_or_nonexistent(summary_dir)
     summary_dir.mkdir(parents=True, exist_ok=True)
 
     tr_man_path = training_dir / "r1_training_manifest.json"
@@ -120,45 +121,39 @@ def adjudicate_r1_pilot(
 
     _, k0_sha = resolve_k0_checkpoint()
 
-    # Collect per-hanchan game logs
-    raw_logs_dir = eval_dir / "raw_logs"
+    # Collect per-hanchan game logs from all 4 shards
     diff_var_minus_ctrl: list[float] = []
     diff_var_minus_k0: list[float] = []
     diff_ctrl_minus_k0: list[float] = []
 
     total_logs_verified = 0
     for shard_idx in range(EVAL_SHARDS):
-        shard_dir = raw_logs_dir / f"shard_{shard_idx:03d}"
-        s_start = EVAL_SEED_START + shard_idx * (EVAL_TOTAL_GAMES // EVAL_SHARDS)
-        s_end = s_start + (EVAL_TOTAL_GAMES // EVAL_SHARDS)
+        shard_dir = eval_dir / f"shard_{shard_idx:03d}"
+        logs_dir = shard_dir / "logs"
+        if not logs_dir.exists():
+            raise FileNotFoundError(f"Missing logs directory in {shard_dir}")
 
-        for s in range(s_start, s_end):
-            for split in ["a", "b", "c", "d"]:
-                log_path = shard_dir / f"{s}_{EVAL_SEED_KEY}_{split}.json.gz"
-                if not log_path.exists():
-                    raise FileNotFoundError(f"Missing log: {log_path}")
+        log_files = sorted(logs_dir.glob("*.json.gz"))
+        for log_path in log_files:
+            res = _parse_game_log(log_path)
+            n2s = res["name_to_seat"]
+            ranks = res["ranks"]
 
-                res = _parse_game_log(log_path)
-                n2s = res["name_to_seat"]
-                ranks = res["ranks"]
+            seat_k0 = n2s["K0_70k"]
+            seat_ctrl = n2s["Control_70400"]
+            seat_var = n2s["Variant_70400"]
 
-                # Lineup names: "K0_70k", "Control_70400", "Variant_70400"
-                seat_k0 = n2s["K0_70k"]
-                seat_ctrl = n2s["Control_70400"]
-                seat_var = n2s["Variant_70400"]
+            pt_k0 = TENHOU_RANK_POINTS[ranks[seat_k0]]
+            pt_ctrl = TENHOU_RANK_POINTS[ranks[seat_ctrl]]
+            pt_var = TENHOU_RANK_POINTS[ranks[seat_var]]
 
-                pt_k0 = TENHOU_RANK_POINTS[ranks[seat_k0]]
-                pt_ctrl = TENHOU_RANK_POINTS[ranks[seat_ctrl]]
-                pt_var = TENHOU_RANK_POINTS[ranks[seat_var]]
+            diff_var_minus_ctrl.append(float(pt_var - pt_ctrl))
+            diff_var_minus_k0.append(float(pt_var - pt_k0))
+            diff_ctrl_minus_k0.append(float(pt_ctrl - pt_k0))
+            total_logs_verified += 1
 
-                diff_var_minus_ctrl.append(float(pt_var - pt_ctrl))
-                diff_var_minus_k0.append(float(pt_var - pt_k0))
-                diff_ctrl_minus_k0.append(float(pt_ctrl - pt_k0))
-                total_logs_verified += 1
-
-    expected_total_logs = EVAL_TOTAL_GAMES * 4
-    if total_logs_verified != expected_total_logs:
-        raise ContractError(f"Total verified logs mismatch: {total_logs_verified} vs {expected_total_logs}")
+    if total_logs_verified != EVAL_TOTAL_GAMES:
+        raise ContractError(f"Total verified logs mismatch: {total_logs_verified} vs {EVAL_TOTAL_GAMES}")
 
     arr_var_ctrl = np.array(diff_var_minus_ctrl, dtype=np.float64)
     arr_var_k0 = np.array(diff_var_minus_k0, dtype=np.float64)
@@ -168,9 +163,8 @@ def adjudicate_r1_pilot(
     mean_vk0, ci_vk0 = paired_bootstrap_ci(arr_var_k0, reps=BOOTSTRAP_REPS, seed=BOOTSTRAP_SEED + 1, ci=BOOTSTRAP_CI)
     mean_ck0, ci_ck0 = paired_bootstrap_ci(arr_ctrl_k0, reps=BOOTSTRAP_REPS, seed=BOOTSTRAP_SEED + 2, ci=BOOTSTRAP_CI)
 
-    # Pilot promising condition: mean(var - ctrl) > 0 and CI lower > -5.0
-    is_promising = (mean_vc > 0.0)
-    verdict = "r1_pilot_promising" if is_promising else "r1_pilot_not_promising"
+    # Pilot verdict adjudication: strong_positive / weak_positive / not_promising
+    verdict = adjudicate_r1_verdict(primary_mean=mean_vc, primary_ci_lower=ci_vc[0])
 
     hard_gates: dict[str, bool] = {
         "training_manifest_verified": True,
@@ -184,6 +178,8 @@ def adjudicate_r1_pilot(
 
     if set(hard_gates.keys()) != set(EXPECTED_SUMMARY_HARD_GATES):
         raise ContractError(f"Summary hard gates mismatch: {set(hard_gates.keys())} vs {set(EXPECTED_SUMMARY_HARD_GATES)}")
+    if not all(hard_gates.values()):
+        raise ContractError(f"Summary hard gate failed: {hard_gates}")
 
     summary = {
         "schema": SUMMARY_SCHEMA,

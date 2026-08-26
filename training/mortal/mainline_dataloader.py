@@ -3,22 +3,24 @@
 
 from __future__ import annotations
 
-import random
 import hashlib
-import json
 import pickle
+import random
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 import torch
 from torch.utils.data import IterableDataset
 
-from config import config
+try:
+    from config import config
+except (ImportError, FileNotFoundError, KeyError, RuntimeError):
+    config = {}
 from libriichi.dataset import GameplayLoader
 
-
-SUPPORTED_REWARD_MODES = {"final_rank_mc", "terminal_rank", "mortal_grp_delta_pt"}
+SUPPORTED_REWARD_MODES = {"final_rank_mc", "rank_plus_score_to_go_mc", "terminal_rank", "mortal_grp_delta_pt"}
 
 
 def _sha256_file(path: Path) -> str:
@@ -29,18 +31,19 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def reward_contract_from_config(config_data: Mapping[str, Any]) -> dict[str, Any]:
+def reward_contract_from_config(config_data: Mapping[str, Any], explicit_reward_mode: str | None = None, pts: np.ndarray | None = None) -> dict[str, Any]:
     """Return a reproducible description of the configured reward source."""
 
-    reward_mode = str(config_data.get("reward", {}).get("mode", "final_rank_mc"))
+    reward_mode = explicit_reward_mode or str(config_data.get("reward", {}).get("mode", "final_rank_mc"))
     if reward_mode == "grp":
         reward_mode = "mortal_grp_delta_pt"
     if reward_mode not in SUPPORTED_REWARD_MODES:
         raise ValueError(f"unsupported project reward mode: {reward_mode}")
 
+    pts_values = pts if pts is not None else config_data.get("env", {}).get("pts", [6.0, 4.0, 2.0, 0.0])
     contract: dict[str, Any] = {
         "mode": reward_mode,
-        "rank_pts": [float(value) for value in config_data["env"]["pts"]],
+        "rank_pts": [float(value) for value in pts_values],
     }
     if reward_mode == "mortal_grp_delta_pt":
         grp_config = config_data.get("grp")
@@ -68,8 +71,8 @@ def _build_reward_adapter(reward_mode: str, pts: np.ndarray, config_data: Mappin
     # These imports must stay inside build_iter: on Windows, DataLoader worker
     # initialization happens in a fresh process and Mortal's config module must
     # already be on sys.path before GRP is imported.
-    from model import GRP  # noqa: PLC0415
-    from reward_calculator import RewardCalculator  # noqa: PLC0415
+    from model import GRP
+    from reward_calculator import RewardCalculator
 
     grp_config = config_data["grp"]
     grp = GRP(**grp_config["network"])
@@ -105,6 +108,7 @@ class FileDatasetsIter(IterableDataset):
         enable_augmentation=False,
         augmented_first=False,
         player_names_by_file=None,
+        reward_mode=None,
     ):
         super().__init__()
         self.version = version
@@ -119,6 +123,7 @@ class FileDatasetsIter(IterableDataset):
         self.enable_augmentation = enable_augmentation
         self.augmented_first = augmented_first
         self.player_names_by_file = self._normalize_player_names_by_file(player_names_by_file)
+        self.explicit_reward_mode = reward_mode
         self.iterator = None
 
     @staticmethod
@@ -135,12 +140,12 @@ class FileDatasetsIter(IterableDataset):
         return normalized
 
     def build_iter(self):
-        reward_mode = str(config.get("reward", {}).get("mode", "final_rank_mc"))
+        reward_mode = self.explicit_reward_mode or str(config.get("reward", {}).get("mode", "final_rank_mc"))
         if reward_mode == "grp":
             reward_mode = "mortal_grp_delta_pt"
         if reward_mode not in SUPPORTED_REWARD_MODES:
             raise ValueError(f"unsupported project reward mode: {reward_mode}")
-        self.reward_contract = reward_contract_from_config(config)
+        self.reward_contract = reward_contract_from_config(config, explicit_reward_mode=reward_mode, pts=self.pts)
         self.reward_calc = _build_reward_adapter(reward_mode, self.pts, config)
 
         for _ in range(self.num_epochs):
@@ -227,6 +232,16 @@ class FileDatasetsIter(IterableDataset):
                         # matching the expected initial uniform rank value of 3.
                         terminal_return = float(self.pts[final_rank] - self.pts.mean())
                         kyoku_rewards = np.full(len(grp_feature), terminal_return, dtype=np.float64)
+                    elif reward_mode == "rank_plus_score_to_go_mc":
+                        # R1 pilot: rank_target + 0.25 * clip((final_score - kyoku_start_score)/10000, -3, +3)
+                        base_rank_target = float(self.pts[final_rank] - self.pts.mean())
+                        final_scores = grp.take_final_scores()
+                        player_final_score = float(final_scores[player_id])
+                        player_kyoku_start_scores = grp_feature[:, 3 + player_id] * 1e4
+                        score_diff = player_final_score - player_kyoku_start_scores
+                        score_to_go = score_diff / 10000.0
+                        score_to_go_clipped = np.clip(score_to_go, -3.0, 3.0)
+                        kyoku_rewards = base_rank_target + 0.25 * score_to_go_clipped
                     else:
                         # Kept only to make old checkpoints diagnosable; new runs must
                         # use final_rank_mc because terminal_rank was too sparse.

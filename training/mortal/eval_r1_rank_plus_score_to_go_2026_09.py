@@ -1,27 +1,21 @@
-#!/usr/bin/env python3
-"""Evaluation runner for R1 pilot experiment: 1000 hanchans 4-player head-to-head."""
+"""Evaluation runner for R1 pilot experiment: exact 1000 hanchans using four_player_native."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
-import libriichi.arena
 import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-if str(REPO_ROOT / "third_party" / "Mortal" / "mortal") not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT / "third_party" / "Mortal" / "mortal"))
-
-import engine
-import model
 
 from training.mortal.r1_rank_plus_score_to_go_contract_2026_09 import (
     EVAL_GAMES_PER_SHARD,
@@ -35,72 +29,64 @@ from training.mortal.r1_rank_plus_score_to_go_contract_2026_09 import (
     EXPERIMENT_ID,
     R1_EVAL_DIR,
     R1_TRAINING_DIR,
+    TRAINING_MANIFEST_SCHEMA,
     ContractError,
+    check_directory_empty_or_nonexistent,
+    resolve_ext_mortal_checkpoint,
     resolve_k0_checkpoint,
     sha256_file,
 )
 
 logger = logging.getLogger("r1_eval")
+EVALUATOR_PATH = REPO_ROOT / "training/mortal/four_player_native.py"
 
 
-def _load_engine(checkpoint_path: Path, name: str, device: str = "cuda") -> engine.MortalEngine:
-    state = torch.load(checkpoint_path, map_location=device)
-    m = model.Brain(version=4, conv_channels=192, num_blocks=40).eval()
-    d = model.DQN(version=4).eval()
-    m.load_state_dict(state["mortal"])
-    d.load_state_dict(state["current_dqn"])
-    return engine.MortalEngine(
-        m,
-        d,
-        is_oracle=False,
-        version=4,
-        device=torch.device(device),
-        name=name,
-        enable_rule_based_agari_guard=True,
-    )
-
-
-def run_shard_evaluation(
+def run_shard_native_eval(
     shard_idx: int,
     seed_start: int,
     games_count: int,
     seed_key: int,
     k0_path: Path,
+    ext_path: Path,
     ctrl_path: Path,
     var_path: Path,
-    raw_logs_dir: Path,
+    eval_dir: Path,
     device: str = "cuda",
-) -> list[dict[str, Any]]:
-    """Run one shard of 4-player games with lineup [K0_70k, ext_mortal, Control_70400, Variant_70400]."""
-    shard_dir = raw_logs_dir / f"shard_{shard_idx:03d}"
+) -> Path:
+    """Run one shard of exact games_count 4-player games with four_player_native."""
+    shard_dir = eval_dir / f"shard_{shard_idx:03d}"
+    check_directory_empty_or_nonexistent(shard_dir)
     shard_dir.mkdir(parents=True, exist_ok=True)
 
-    # Lineup: Seat 0=K0_70k, Seat 1=ext_mortal (K0 with agari guard), Seat 2=Control_70400, Seat 3=Variant_70400
-    e_k0 = _load_engine(k0_path, "K0_70k", device=device)
-    e_ext = _load_engine(k0_path, "ext_mortal", device=device)
-    e_ctrl = _load_engine(ctrl_path, "Control_70400", device=device)
-    e_var = _load_engine(var_path, "Variant_70400", device=device)
+    cmd = [
+        sys.executable,
+        str(EVALUATOR_PATH),
+        f"--model=K0_70k={k0_path}",
+        f"--model=ext_mortal={ext_path}",
+        f"--model=Control_70400={ctrl_path}",
+        f"--model=Variant_70400={var_path}",
+        f"--output-dir={shard_dir}",
+        f"--device={device}",
+        f"--seed-start={seed_start}",
+        f"--seed-key={seed_key}",
+        f"--games={games_count}",
+        "--seat-mode=random",
+        "--progress-every=50",
+    ]
+    if device == "cuda":
+        cmd.append("--require-cuda")
 
-    arena = libriichi.arena.FourPlayer(disable_progress_bar=True, log_dir=str(shard_dir))
-    arena.py_vs_py(e_k0, e_ext, e_ctrl, e_var, (seed_start, seed_key), games_count)
+    logger.info("Executing shard %d CLI: %s", shard_idx, " ".join(cmd))
+    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if res.returncode != 0:
+        logger.error("Shard %d failed with code %d:\nSTDOUT:\n%s\nSTDERR:\n%s", shard_idx, res.returncode, res.stdout, res.stderr)
+        raise RuntimeError(f"Shard {shard_idx} execution failed: exit code {res.returncode}")
 
-    games_records: list[dict[str, Any]] = []
-    for s in range(seed_start, seed_start + games_count):
-        # 4 seat splits per seed: 'a', 'b', 'c', 'd'
-        for split in ["a", "b", "c", "d"]:
-            log_name = f"{s}_{seed_key}_{split}.json.gz"
-            log_path = shard_dir / log_name
-            if not log_path.exists():
-                raise FileNotFoundError(f"Missing log {log_name} in shard {shard_idx}")
-            games_records.append({
-                "seed": s,
-                "seed_key": seed_key,
-                "split": split,
-                "log_path": str(log_path),
-                "shard_idx": shard_idx,
-            })
+    metrics_path = shard_dir / "metrics.json"
+    if not metrics_path.exists():
+        raise FileNotFoundError(f"Missing metrics.json in {shard_dir}")
 
-    return games_records
+    return shard_dir
 
 
 def run_r1_evaluation(
@@ -108,12 +94,20 @@ def run_r1_evaluation(
     eval_dir: Path = R1_EVAL_DIR,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
 ) -> dict[str, Any]:
-    """Execute complete 1000-hanchan 4-player head-to-head evaluation across 4 shards."""
+    """Execute complete exact 1000-hanchan 4-player head-to-head evaluation across 4 shards."""
+    check_directory_empty_or_nonexistent(eval_dir)
     eval_dir.mkdir(parents=True, exist_ok=True)
-    raw_logs_dir = eval_dir / "raw_logs"
-    raw_logs_dir.mkdir(parents=True, exist_ok=True)
+
+    tr_man_path = training_dir / "r1_training_manifest.json"
+    if not tr_man_path.exists():
+        raise FileNotFoundError(f"Training manifest not found at {tr_man_path}")
+    tr_man = json.loads(tr_man_path.read_text(encoding="utf-8"))
+    if tr_man.get("schema") != TRAINING_MANIFEST_SCHEMA or tr_man.get("verdict") != "training_completed":
+        raise ContractError(f"Invalid training manifest: {tr_man}")
 
     k0_path, k0_sha = resolve_k0_checkpoint()
+    ext_path, ext_sha = resolve_ext_mortal_checkpoint()
+
     ctrl_path = training_dir / "mortal_control_70400.pth"
     var_path = training_dir / "mortal_variant_70400.pth"
 
@@ -125,60 +119,80 @@ def run_r1_evaluation(
     ctrl_sha = sha256_file(ctrl_path)
     var_sha = sha256_file(var_path)
 
-    all_game_records: list[dict[str, Any]] = []
+    # Check that checkpoints match training manifest
+    if tr_man["checkpoints"]["control"]["sha256"] != ctrl_sha:
+        raise ContractError("Control checkpoint SHA mismatch with training manifest")
+    if tr_man["checkpoints"]["variant"]["sha256"] != var_sha:
+        raise ContractError("Variant checkpoint SHA mismatch with training manifest")
+
+    shard_dirs: list[str] = []
     t0 = time.time()
 
     for shard_idx in range(EVAL_SHARDS):
         s_start = EVAL_SEED_START + shard_idx * EVAL_GAMES_PER_SHARD
         logger.info("Starting Evaluation Shard %d/%d (seeds %d..%d)...", shard_idx + 1, EVAL_SHARDS, s_start, s_start + EVAL_GAMES_PER_SHARD - 1)
-        shard_records = run_shard_evaluation(
+        s_dir = run_shard_native_eval(
             shard_idx=shard_idx,
             seed_start=s_start,
             games_count=EVAL_GAMES_PER_SHARD,
             seed_key=EVAL_SEED_KEY,
             k0_path=k0_path,
+            ext_path=ext_path,
             ctrl_path=ctrl_path,
             var_path=var_path,
-            raw_logs_dir=raw_logs_dir,
+            eval_dir=eval_dir,
             device=device,
         )
-        all_game_records.extend(shard_records)
+        shard_dirs.append(str(s_dir))
 
     elapsed = time.time() - t0
-    logger.info("Evaluation completed: %d total games in %.2f seconds", len(all_game_records), elapsed)
+    logger.info("Evaluation completed: %d shards in %.2f seconds", len(shard_dirs), elapsed)
+
+    # Count total verified log files across all shards
+    total_logs = 0
+    for sd in shard_dirs:
+        logs_dir = Path(sd) / "logs"
+        if logs_dir.exists():
+            total_logs += len(list(logs_dir.glob("*.json.gz")))
 
     hard_gates: dict[str, bool] = {
+        "training_manifest_verified": True,
         "checkpoints_verified": True,
-        "all_4_shards_completed": True,
-        "exact_1000_games_evaluated": (len(all_game_records) == EVAL_TOTAL_GAMES * 4 // 1),  # 1000 seeds x 4 splits = 4000 logs
-        "seat_distribution_balanced": True,
+        "ext_mortal_verified": True,
+        "all_4_shards_completed": (len(shard_dirs) == EVAL_SHARDS),
+        "exact_1000_games_evaluated": (total_logs == EVAL_TOTAL_GAMES),
         "reach_accepted_semantics_enforced": True,
-        "zero_missing_games": True,
+        "zero_missing_games": (total_logs == EVAL_TOTAL_GAMES),
     }
 
     if set(hard_gates.keys()) != set(EXPECTED_EVAL_HARD_GATES):
         raise ContractError(f"Eval hard gates mismatch: {set(hard_gates.keys())} vs {set(EXPECTED_EVAL_HARD_GATES)}")
+    if not all(hard_gates.values()):
+        raise ContractError(f"Eval hard gate failed: {hard_gates}")
 
     manifest = {
         "schema": EVAL_MANIFEST_SCHEMA,
         "experiment_id": EXPERIMENT_ID,
+        "training_manifest": {"path": str(tr_man_path), "sha256": sha256_file(tr_man_path)},
         "parent_model": {"name": "K0_70k", "sha256": k0_sha},
         "models": {
             "k0": {"name": "K0_70k", "path": str(k0_path), "sha256": k0_sha},
+            "ext_mortal": {"name": "ext_mortal", "path": str(ext_path), "sha256": ext_sha},
             "control": {"name": "Control_70400", "path": str(ctrl_path), "sha256": ctrl_sha},
             "variant": {"name": "Variant_70400", "path": str(var_path), "sha256": var_sha},
         },
         "eval_config": {
-            "total_seeds": EVAL_TOTAL_GAMES,
+            "total_games": EVAL_TOTAL_GAMES,
             "seed_start": EVAL_SEED_START,
             "seed_end_exclusive": EVAL_SEED_END_EXCLUSIVE,
             "seed_key": EVAL_SEED_KEY,
             "shards": EVAL_SHARDS,
             "games_per_shard": EVAL_GAMES_PER_SHARD,
+            "seat_mode": "random",
             "device": device,
         },
         "hard_gates": hard_gates,
-        "games_count": len(all_game_records),
+        "games_count": total_logs,
         "verdict": "evaluation_completed" if all(hard_gates.values()) else "evaluation_failed",
     }
 
