@@ -12,8 +12,8 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "P2 确定性 Counterfactual 目标质量评测实验已完成闭环（verdict=counterfactual_target_quality_evaluated，信号稀疏：顺位差 16.41% 非零，素点差 27.34% 非零，未达到统计确定性）；P3 局末决策点 Counterfactual 信号密度筛选实验已完成代码实现与契约测试（status=implemented_not_started），K1 保持为 null。",
-    "next_experiment": "P3_late_decision_counterfactual_signal_density_2026_09",
+    "current_stage": "P3 局末决策点 Counterfactual 信号密度筛选实验已完成闭环（verdict=counterfactual_targets_insufficiently_dense，正式终止单步 counterfactual-target 终局回报路线）；R1 rank_plus_score_to_go pilot 实验已完成代码实现与契约测试（status=implemented_not_started），K1 保持为 null。",
+    "next_experiment": "R1_rank_plus_score_to_go_pilot_2026_09",
     "next_experiment_status": "implemented_not_started",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
@@ -1315,19 +1315,106 @@
         "bootstrap_reps": 5000,
         "bootstrap_seed": 20260905
       },
+      "status": "closed",
+      "primary_result": "P3 局末决策点 counterfactual panel（128对/256局）已完成全部 9 项生成 hard gates 与 9 项汇总 hard gates。素点差非零率为 38.28%（49/128，未达 >=40% 门槛），顺位差非零率为 11.72%（15/128）；相对 P2 的素点非零率提升为 +10.94%，但 95% Bootstrap CI 为 [-0.78%, +22.66%]（跨零，未达统计显著提升）。verdict 判定为 counterfactual_targets_insufficiently_dense；按预注册规则正式终止单步 counterfactual-target 路线；数据路线与 checkpoint 均不晋级，K1 保持为 null。",
+      "promoted_data_route": null,
+      "promoted_checkpoint": null,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": "即使干预点推迟至局末最后一个决策点，单次终局回报的非零信号密度依然未能达到 40%，且相比 P2 的两样本密度提升置信区间跨零；按预注册规则正式终止单步 counterfactual-target 终局回报路线，K1 保持为 null。",
+      "predecessor": "P2_seed_replay_counterfactual_target_quality_2026_09",
+      "next_experiment": "R1_rank_plus_score_to_go_pilot_2026_09",
+      "commits": [],
+      "artifact_paths": [
+        "artifacts/experiments/P3_late_decision_counterfactual_signal_density_2026_09/counterfactual_panel/counterfactual_panel_manifest.json",
+        "artifacts/experiments/P3_late_decision_counterfactual_signal_density_2026_09/summary/p3_summary.json"
+      ],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-09_P3_局末决策点Counterfactual信号密度筛选_最终结果报告.md",
+        "training/docs/mortal/研发总览_当前.md"
+      ],
+      "formal_adjudication": {
+        "schema": "keqing.mortal.p3_counterfactual_summary.v1",
+        "verdict": "counterfactual_targets_insufficiently_dense",
+        "manifest_sha256": "63046a060e8aad9bc5d4487d242cd0890d6609831998c9cf299bc03a01a59851",
+        "summary_sha256": "243cbf30ff8f9626bd7c702616d1a8270f82fcceb4844252338d9a830c4815ee",
+        "p2_summary_sha256": "014726b14a3dd1e9f40fc0db8cc98becb00cf2788febc9e9677adc5bbdbb3f4a",
+        "total_pairs": 128,
+        "delta_final_score": {
+          "nonzero_rate": 0.3828125,
+          "mean_diff": -321.875,
+          "ci95": [
+            -925.78125,
+            234.39453124999972
+          ]
+        },
+        "delta_rank_point": {
+          "nonzero_rate": 0.1171875,
+          "mean_diff": -2.8125,
+          "ci95": [
+            -8.7890625,
+            3.1640625
+          ]
+        },
+        "comparative_vs_p2": {
+          "delta_score_nonzero_rate": 0.109375,
+          "delta_score_nonzero_rate_ci95": [
+            -0.0078125,
+            0.2265625
+          ]
+        },
+        "recipe_promotion": false,
+        "checkpoint_promotion": false,
+        "k1": null
+      }
+    },
+    {
+      "experiment_id": "R1_rank_plus_score_to_go_pilot_2026_09",
+      "name_zh": "R1 rank_plus_score_to_go 稠密回报 Pilot 筛选实验",
+      "category": "pilot_continuation",
+      "parent_model": "K0_70k",
+      "control": "final_rank_mc (centered [+3,+1,-1,-3]) on M0 corpus",
+      "variant": "rank_plus_score_to_go_mc: rank_target + 0.25 * clip((final_score - kyoku_start_score)/10000, -3, +3)",
+      "changed_variable": "训练 target 形式：仅在 final_rank 基础上增加 0.25 权重的局初至终局得点变化（score_to_go）稠密奖励分量；保证顺位为主导（附加项最大 ±0.75）",
+      "fixed_variables": [
+        "K0_70k parent model (6c0e7005...)",
+        "M0 mixed replay corpus",
+        "Single training seed 20260807",
+        "Preserved K0 Adam moments (70000 -> 70400, exactly 400 steps)",
+        "Batch size 512, LR 1e-4, CQL min_q_weight 5.0, aux_weight 0.2, gamma 1.0",
+        "Identical data streaming order between control and variant",
+        "Fresh 1000-hanchan 4-player head-to-head evaluation (seeds 2200000..2200999, 4 shards x 250)",
+        "Lineup: [K0_70k, ext_mortal, Control_70400, Variant_70400]",
+        "Paired bootstrap analysis (5000 reps, seed 20260906)",
+        "No K1 promotion"
+      ],
+      "training_seeds": [
+        20260807
+      ],
+      "evaluation_protocol": {
+        "total_games": 1000,
+        "total_shards": 4,
+        "games_per_shard": 250,
+        "seed_start": 2200000,
+        "seed_end_exclusive": 2201000,
+        "seed_key": 8192,
+        "bootstrap_reps": 5000,
+        "bootstrap_seed": 20260906
+      },
       "status": "implemented_not_started",
-      "primary_result": "P3 局末决策点 counterfactual panel 生成器与比较统计汇总器已实现并通过 4 项定向测试（覆盖契约不可变量、末位决策点生成与硬门禁、两样本 Bootstrap 差值与裁决逻辑、mock 汇总与失效闭环）。128 局正式生成就绪，等待授权。",
+      "primary_result": "R1 训练 runner、评测 runner 与统计算法已完整实现并通过定向测试。400 步受控实验就绪，等待 review。",
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
       "checkpoint_promotion": false,
       "closure_reason": null,
-      "predecessor": "P2_seed_replay_counterfactual_target_quality_2026_09",
+      "predecessor": "P3_late_decision_counterfactual_signal_density_2026_09",
       "next_experiment": null,
       "commits": [],
       "artifact_paths": [
-        "artifacts/experiments/P3_late_decision_counterfactual_signal_density_2026_09/counterfactual_panel/counterfactual_panel_manifest.json",
-        "artifacts/experiments/P3_late_decision_counterfactual_signal_density_2026_09/summary/p3_summary.json"
+        "artifacts/experiments/R1_rank_plus_score_to_go_pilot_2026_09/training/r1_training_manifest.json",
+        "artifacts/experiments/R1_rank_plus_score_to_go_pilot_2026_09/evaluation/r1_eval_manifest.json",
+        "artifacts/experiments/R1_rank_plus_score_to_go_pilot_2026_09/summary/r1_summary.json"
       ],
       "report_paths": [
         "training/docs/mortal/研发总览_当前.md"
