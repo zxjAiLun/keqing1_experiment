@@ -12,20 +12,19 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "P3 局末决策点 Counterfactual 信号密度筛选实验已完成闭环（verdict=counterfactual_targets_insufficiently_dense，正式终止单步 counterfactual-target 终局回报路线）；R1 rank_plus_score_to_go pilot 实验已完成代码实现与契约测试（status=implemented_not_started），K1 保持为 null。",
-    "next_experiment": "R1_rank_plus_score_to_go_pilot_2026_09",
-    "next_experiment_status": "implemented_not_started",
+    "current_stage": "R2 rank_plus_score_to_go 多 seed 正式确认实验已完成闭环（verdict=not_supported：Primary/Absolute seed 方向不一致且 crossed-bootstrap CI95 均跨零，R1 weak_positive 未复现）；rank_plus_score_to_go 主 Q-target 路线正式终止，K1 保持为 null。",
+    "next_experiment": null,
+    "next_experiment_status": "not_selected",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
       "不重跑 D1/D2/D3 或扫描后代视角比例。",
       "不把 V2/V3 历史候选命名为 K2/K3。",
       "不以单个正向中心均值晋级 checkpoint。",
-      "D3_top2_discard_v1 数据路线已按预注册规则拒绝（0/3 方向 + hierarchical CI 下限 < 0）；不得修改 D3 参数后继续沿用同一实验身份，继续 uncertainty-guided exploration 必须建立新的 experiment ID；K1 尚未产生。",
-      "C1 formal adjudication 已完成并得到 interaction_supported；该结果是机制 finding，不自动晋级 recipe、checkpoint 或 K1。",
-      "不得重跑 C1 evaluation 或 formal adjudication、调整 seed/bootstrap/输出 artifact，或把 CQL_OFF 直接推广为 operational recipe。",
-      "若继续研究 interaction 来源，必须建立新的 preregistered experiment ID；不得在 C1 身份下扩大数据量、直接训练 K1 或修改 intervention。",
-      "禁止继续对 D1 或 CQL_OFF 进行调参、追加评测或扫描后代比例。",
+      "D3_top2_discard_v1 数据路线已按预注册规则拒绝；不得修改 D3 参数后继续沿用同一实验身份；K1 尚未产生。",
+      "C1 formal adjudication 结果 interaction_supported 是机制 finding，不自动晋级 recipe、checkpoint 或 K1；不得重跑 C1 或把 CQL_OFF 推广为 operational recipe。",
+      "R1/R2 rank_plus_score_to_go 主 Q-target 路线已按预注册停止规则正式终止：不追加评测、不做 score-to-go 权重 sweep、不挑选表现较好的 seed、不晋级 20260911（或任何 seed）checkpoint。",
+      "score-to-go 若作为独立 auxiliary representation signal 继续，必须建立新的 preregistered experiment ID，且不得再进入主 Q target。",
       "不再沿用 C1/C2/C3 机制分支，下一阶段将进行全新的 K1 路线重置（route reset）。"
     ]
   },
@@ -1401,15 +1400,15 @@
         "bootstrap_reps": 5000,
         "bootstrap_seed": 20260906
       },
-      "status": "implemented_not_started",
-      "primary_result": "R1 训练 runner、评测 runner 与统计算法已完整实现并通过定向测试。400 步受控实验就绪，等待 review。",
+      "status": "closed",
+      "primary_result": "R1 pilot 已完成闭环：训练 9/9 gates、评测 7/7 gates、汇总 7/7 gates 全部通过。Primary (Variant−Control) 均值 +6.480 pt（CI95 [-2.161, +15.075]，跨零）；Secondary (Variant−K0) 均值 +9.675 pt（CI95 [+1.125, +18.225]，CI 下界 > 0）；Reference (Control−K0) 均值 +3.195 pt（CI 跨零）。verdict = weak_positive（单 seed 20260807，方向性正向但未达统计确定）。按预注册规则不触发任何晋升，转交 R2 三 seed 正式确认。",
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
       "checkpoint_promotion": false,
-      "closure_reason": null,
+      "closure_reason": "单 seed pilot 裁决 weak_positive：Primary 均值为正但 CI 跨零，不足以支持晋升；按预注册流程进入 R2_rank_plus_score_to_go_multiseed_confirmation_2026_09 做三 fresh seed 正式确认。",
       "predecessor": "P3_late_decision_counterfactual_signal_density_2026_09",
-      "next_experiment": null,
+      "next_experiment": "R2_rank_plus_score_to_go_multiseed_confirmation_2026_09",
       "commits": [],
       "artifact_paths": [
         "artifacts/experiments/R1_rank_plus_score_to_go_pilot_2026_09/training/r1_training_manifest.json",
@@ -1419,6 +1418,94 @@
       "report_paths": [
         "training/docs/mortal/研发总览_当前.md"
       ]
+    },
+    {
+      "experiment_id": "R2_rank_plus_score_to_go_multiseed_confirmation_2026_09",
+      "name_zh": "R2 rank_plus_score_to_go 多 seed 正式确认实验",
+      "category": "multiseed_confirmation",
+      "parent_model": "K0_70k",
+      "control": "final_rank_mc (centered [+3,+1,-1,-3]) on M0 corpus, 3 fresh seeds",
+      "variant": "rank_plus_score_to_go_mc: rank_target + 0.25 * clip((final_score - kyoku_start_score)/10000, -3, +3), 3 fresh seeds",
+      "changed_variable": "训练 target 形式：在 final_rank 基础上增加 0.25 权重局初至终局得点变化稠密奖励分量（与 R1 相同），但以 3 个全新训练 seeds 与 crossed bootstrap 检验可复现性",
+      "fixed_variables": [
+        "K0_70k parent model (6c0e7005...)",
+        "M0 mixed replay corpus",
+        "Reward-only protocol: objective behavior_action_mc / behavior_action_q, trainable view 仅 ext_mortal（与 R1 最终版一致）",
+        "Training seeds 20260910/20260911/20260912（全新，与 R1 seed 20260807 无重叠）",
+        "Preserved K0 Adam moments (70000 -> 70400, exactly 400 steps per condition)",
+        "Batch size 512, LR 1e-4, CQL min_q_weight 5.0, aux_weight 0.2, gamma 1.0",
+        "Per-seed full 400-batch row-identity SHA256 (obs/actions/masks/steps_to_done/player_ranks) Control=Variant",
+        "CRN evaluation: 每 seed 1000 局四人同桌, seeds 2300000..2300999, seed key 8192, 4 shards x 250, seat-mode=random",
+        "Lineup: [K0_70k, ext_mortal, Control_70400, Variant_70400]",
+        "Crossed bootstrap (5000 reps, seed 20260910) on training-seed x game-id axes, Primary/Absolute 共享重采样索引",
+        "No K1 promotion"
+      ],
+      "training_seeds": [
+        20260910,
+        20260911,
+        20260912
+      ],
+      "evaluation_protocol": {
+        "total_games": 3000,
+        "panels": 3,
+        "games_per_panel": 1000,
+        "shards_per_panel": 4,
+        "games_per_shard": 250,
+        "seed_start": 2300000,
+        "seed_end_exclusive": 2301000,
+        "seed_key": 8192,
+        "bootstrap_reps": 5000,
+        "bootstrap_seed": 20260910
+      },
+      "status": "closed",
+      "primary_result": "R2 多 seed 正式确认实验已完成全部闭环：训练 7/7、评测 7/7、汇总 7/7 hard gates 全部 PASS，3000 局原始日志全部通过 fail-closed 校验（a/b/c/d 后缀、start_game.seed、阵容、end_game、连续唯一 game ID 2300000..2300999）。Primary (Variant−Control) seed means [+2.475, -3.600, +0.630]，grand mean -0.165 pt，crossed-bootstrap CI95 [-7.620, +7.560]（跨零，方向不一致）；Absolute (Variant−K0) seed means [+3.600, -6.840, +4.185]，grand mean +0.315 pt，CI95 [-9.121, +9.405]（跨零）。R1 的 weak_positive 未在 fresh seeds 中复现。verdict = not_supported；无 recipe/checkpoint 晋级，K1 保持 null。",
+      "promoted_data_route": null,
+      "promoted_checkpoint": null,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": "预注册双重假设均未通过：Primary 与 Absolute 的每 seed 均值非全正且 crossed-bootstrap CI95 均跨零。R1 单 seed weak_positive 未复现，判定为没有可复现收益证据（不等于证明有害）。按停止规则正式终止 rank_plus_score_to_go 主 Q-target 路线：不追加评测、不做权重 sweep、不挑选 seed、不晋级任何 checkpoint。",
+      "predecessor": "R1_rank_plus_score_to_go_pilot_2026_09",
+      "next_experiment": null,
+      "commits": [],
+      "artifact_paths": [
+        "artifacts/experiments/R2_rank_plus_score_to_go_multiseed_confirmation_2026_09/training/r2_training_manifest.json",
+        "artifacts/experiments/R2_rank_plus_score_to_go_multiseed_confirmation_2026_09/evaluation/r2_eval_manifest.json",
+        "artifacts/experiments/R2_rank_plus_score_to_go_multiseed_confirmation_2026_09/summary/r2_summary.json"
+      ],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-09_R2_rank_plus_score_to_go多seed正式确认_最终结果报告.md"
+      ],
+      "formal_adjudication": {
+        "verdict": "not_supported",
+        "summary_path": "artifacts/experiments/R2_rank_plus_score_to_go_multiseed_confirmation_2026_09/summary/r2_summary.json",
+        "summary_sha256": "7d6793960e92788320649c25b07ac90f7b96f80634406edf5b9119ebdfb69962",
+        "training_manifest_sha256": "dddc217210abd7016434cadae9015303c4ac207fec3c3eee345c183653969e92",
+        "eval_manifest_sha256": "0e92985d2dc7926fc268f249ab304f0e2b3adf105da13cc4edd368aa2063d403",
+        "primary_seed_means": [
+          2.475,
+          -3.6,
+          0.63
+        ],
+        "primary_grand_mean": -0.165,
+        "primary_ci95": [
+          -7.620375,
+          7.560374999999994
+        ],
+        "absolute_seed_means": [
+          3.6,
+          -6.84,
+          4.185
+        ],
+        "absolute_grand_mean": 0.315,
+        "absolute_ci95": [
+          -9.12075,
+          9.405374999999994
+        ],
+        "recipe_promotion": false,
+        "checkpoint_promotion": false,
+        "promoted_k1_checkpoint": null
+      },
+      "promoted_k1_checkpoint": null
     }
   ]
 }

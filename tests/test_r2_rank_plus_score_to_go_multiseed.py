@@ -307,8 +307,8 @@ def _build_strict_fixture(root: Path) -> dict:
     return {"tr_dir": tr_dir, "ev_dir": ev_dir, "sm_dir": sm_dir, "tr_path": tr_path, "ev_path": ev_path, "k0_sha": k0_sha, "ext_sha": ext_sha}
 
 
-def test_5_r2_mock_summary_pipeline(tmp_path: Path) -> None:
-    """Test 5: Full mock summary pipeline over 3 panels x 1000 logs with real a/b/c/d and seed tuple."""
+def test_5_r2_summary_pipeline(tmp_path: Path) -> None:
+    """Test 5: Full summary pipeline over 3 panels x 1000 logs with real a/b/c/d and seed tuple."""
     fx = _build_strict_fixture(tmp_path)
     summary = adjudicate_r2_multiseed(training_dir=fx["tr_dir"], eval_dir=fx["ev_dir"], summary_dir=fx["sm_dir"])
     assert summary["schema"] == "keqing.mortal.r2_summary.v1"

@@ -234,30 +234,19 @@ def adjudicate_r2_multiseed(
         if not panel_dir.exists():
             raise FileNotFoundError(f"Panel dir {panel_dir} does not exist")
 
-        # Glob all logs recursively; four_player_native --seat-mode=random generates a/b/c/d suffix, not just _0
-        # Use rglob to find any *.json.gz under panel_dir, but validate via parse_game_identity
+        # Glob all logs recursively; four_player_native --seat-mode=random generates a/b/c/d suffixes
         all_logs = sorted(panel_dir.rglob("*.json.gz"))
-        # Filter to only those under shard_*/logs to avoid stray files?
-        # Keep all that match LOG_NAME_RE via parse_game_identity – will fail-closed on bad names
         game_ids_this_panel: list[int] = []
         # Track seen game_ids to detect duplicate
         seen_ids: set[int] = set()
-        # For precise failure messages, also check per-shard count if shards exist
-        shard_counts: dict[int, int] = {i: 0 for i in range(EVAL_SHARDS_PER_PANEL)}
-        # We'll also verify that per-shard directory exists and contains expected structure
+        # Every shard directory must exist and contain exactly EVAL_GAMES_PER_SHARD logs
         for shard_idx in range(EVAL_SHARDS_PER_PANEL):
             sd = panel_dir / f"shard_{shard_idx:03d}" / "logs"
-            if sd.exists():
-                # Count files per shard via glob
-                cnt = len(list(sd.glob("*.json.gz")))
-                shard_counts[shard_idx] = cnt
-                # Enforce exactly 250 per shard if shard dir exists (fail-closed); but allow legacy where shards maybe missing?
-                # For existing mock test, shards are 4 x 250 = 1000, so enforce.
-                # For future strict, same.
-                if cnt != EVAL_GAMES_PER_SHARD:
-                    # Only raise if we have rglob total also off? To avoid false positive on missing shard dir
-                    # But if shard exists, it must have 250
-                    raise ContractError(f"Panel {panel_dir.name} shard {shard_idx} contains {cnt} logs, expected {EVAL_GAMES_PER_SHARD}")
+            if not sd.exists():
+                raise ContractError(f"Panel {panel_dir.name} missing shard logs directory: {sd}")
+            cnt = len(list(sd.glob("*.json.gz")))
+            if cnt != EVAL_GAMES_PER_SHARD:
+                raise ContractError(f"Panel {panel_dir.name} shard {shard_idx} contains {cnt} logs, expected {EVAL_GAMES_PER_SHARD}")
 
         if len(all_logs) != EVAL_GAMES_PER_PANEL:
             raise ContractError(f"Panel {panel_dir.name} total logs {len(all_logs)} != {EVAL_GAMES_PER_PANEL}")
