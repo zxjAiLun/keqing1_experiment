@@ -25,16 +25,20 @@ from training.mortal.r1_rank_plus_score_to_go_contract_2026_09 import (
     EVAL_SEED_START,
     EVAL_SHARDS,
     EVAL_TOTAL_GAMES,
+    EVALUATION_LINEUP,
     EXPECTED_EVAL_HARD_GATES,
     EXPERIMENT_ID,
+    EXT_MORTAL_EXPECTED_SHA256,
+    K0_EXPECTED_SHA256,
     R1_EVAL_DIR,
     R1_TRAINING_DIR,
-    TRAINING_MANIFEST_SCHEMA,
     ContractError,
     check_directory_empty_or_nonexistent,
+    parse_game_identity,
     resolve_ext_mortal_checkpoint,
     resolve_k0_checkpoint,
     sha256_file,
+    verify_training_manifest,
 )
 
 logger = logging.getLogger("r1_eval")
@@ -89,6 +93,45 @@ def run_shard_native_eval(
     return shard_dir
 
 
+def _verify_eval_logs(eval_dir: Path) -> tuple[list[int], bool]:
+    """Parse every game log; return (game_ids, reach_semantics_ok).
+
+    reach_semantics_ok is the structural precondition for the summary's
+    reach_accepted score adjustment: every game must expose four-player
+    start_kyoku scores and every reach_accepted event must carry a valid actor.
+    """
+    game_ids: list[int] = []
+    reach_semantics_ok = True
+    for shard_idx in range(EVAL_SHARDS):
+        logs_dir = eval_dir / f"shard_{shard_idx:03d}" / "logs"
+        if not logs_dir.exists():
+            raise FileNotFoundError(f"Missing logs directory in {eval_dir / f'shard_{shard_idx:03d}'}")
+        log_files = sorted(logs_dir.glob("*.json.gz"))
+        if len(log_files) != EVAL_GAMES_PER_SHARD:
+            raise ContractError(
+                f"Shard {shard_idx} contains {len(log_files)} logs, expected {EVAL_GAMES_PER_SHARD}"
+            )
+        for log_path in log_files:
+            ident = parse_game_identity(log_path)
+            game_ids.append(int(ident["game_id"]))
+
+            events = ident["events"]
+            if events[-1].get("type") != "end_game":
+                raise ContractError(f"Incomplete log file: {log_path}")
+            has_kyoku_scores = False
+            for ev in events:
+                ev_type = ev.get("type")
+                if ev_type == "start_kyoku" and isinstance(ev.get("scores"), list) and len(ev["scores"]) == 4:
+                    has_kyoku_scores = True
+                elif ev_type == "reach_accepted":
+                    actor = ev.get("actor")
+                    if not isinstance(actor, int) or not (0 <= actor < 4):
+                        reach_semantics_ok = False
+            if not has_kyoku_scores:
+                reach_semantics_ok = False
+    return game_ids, reach_semantics_ok
+
+
 def run_r1_evaluation(
     training_dir: Path = R1_TRAINING_DIR,
     eval_dir: Path = R1_EVAL_DIR,
@@ -102,8 +145,7 @@ def run_r1_evaluation(
     if not tr_man_path.exists():
         raise FileNotFoundError(f"Training manifest not found at {tr_man_path}")
     tr_man = json.loads(tr_man_path.read_text(encoding="utf-8"))
-    if tr_man.get("schema") != TRAINING_MANIFEST_SCHEMA or tr_man.get("verdict") != "training_completed":
-        raise ContractError(f"Invalid training manifest: {tr_man}")
+    tr_manifest_ok = verify_training_manifest(tr_man)
 
     k0_path, k0_sha = resolve_k0_checkpoint()
     ext_path, ext_sha = resolve_ext_mortal_checkpoint()
@@ -119,11 +161,17 @@ def run_r1_evaluation(
     ctrl_sha = sha256_file(ctrl_path)
     var_sha = sha256_file(var_path)
 
-    # Check that checkpoints match training manifest
-    if tr_man["checkpoints"]["control"]["sha256"] != ctrl_sha:
-        raise ContractError("Control checkpoint SHA mismatch with training manifest")
-    if tr_man["checkpoints"]["variant"]["sha256"] != var_sha:
-        raise ContractError("Variant checkpoint SHA mismatch with training manifest")
+    # Checkpoints must match the training manifest on disk.
+    checkpoints_ok = (
+        tr_man["checkpoints"]["control"]["sha256"] == ctrl_sha
+        and tr_man["checkpoints"]["variant"]["sha256"] == var_sha
+    )
+    if not checkpoints_ok:
+        raise ContractError(
+            "Checkpoint SHA mismatch with training manifest: "
+            f"control disk={ctrl_sha} manifest={tr_man['checkpoints']['control']['sha256']}, "
+            f"variant disk={var_sha} manifest={tr_man['checkpoints']['variant']['sha256']}"
+        )
 
     shard_dirs: list[str] = []
     t0 = time.time()
@@ -148,21 +196,21 @@ def run_r1_evaluation(
     elapsed = time.time() - t0
     logger.info("Evaluation completed: %d shards in %.2f seconds", len(shard_dirs), elapsed)
 
-    # Count total verified log files across all shards
-    total_logs = 0
-    for sd in shard_dirs:
-        logs_dir = Path(sd) / "logs"
-        if logs_dir.exists():
-            total_logs += len(list(logs_dir.glob("*.json.gz")))
+    # Parse every game log: fail-closed on identity violations and collect game IDs.
+    game_ids, reach_semantics_ok = _verify_eval_logs(eval_dir)
+    expected_ids = list(range(EVAL_SEED_START, EVAL_SEED_END_EXCLUSIVE))
+    ids_sorted = sorted(game_ids)
+    games_exact = ids_sorted == expected_ids
+    total_logs = len(game_ids)
 
     hard_gates: dict[str, bool] = {
-        "training_manifest_verified": True,
-        "checkpoints_verified": True,
-        "ext_mortal_verified": True,
+        "training_manifest_verified": tr_manifest_ok,
+        "checkpoints_verified": checkpoints_ok,
+        "ext_mortal_verified": (ext_sha == EXT_MORTAL_EXPECTED_SHA256) and (k0_sha == K0_EXPECTED_SHA256),
         "all_4_shards_completed": (len(shard_dirs) == EVAL_SHARDS),
-        "exact_1000_games_evaluated": (total_logs == EVAL_TOTAL_GAMES),
-        "reach_accepted_semantics_enforced": True,
-        "zero_missing_games": (total_logs == EVAL_TOTAL_GAMES),
+        "exact_1000_games_evaluated": games_exact,
+        "reach_accepted_semantics_enforced": reach_semantics_ok,
+        "zero_missing_games": games_exact and (len(set(game_ids)) == EVAL_TOTAL_GAMES),
     }
 
     if set(hard_gates.keys()) != set(EXPECTED_EVAL_HARD_GATES):
@@ -175,6 +223,7 @@ def run_r1_evaluation(
         "experiment_id": EXPERIMENT_ID,
         "training_manifest": {"path": str(tr_man_path), "sha256": sha256_file(tr_man_path)},
         "parent_model": {"name": "K0_70k", "sha256": k0_sha},
+        "lineup": list(EVALUATION_LINEUP),
         "models": {
             "k0": {"name": "K0_70k", "path": str(k0_path), "sha256": k0_sha},
             "ext_mortal": {"name": "ext_mortal", "path": str(ext_path), "sha256": ext_sha},
@@ -191,6 +240,7 @@ def run_r1_evaluation(
             "seat_mode": "random",
             "device": device,
         },
+        "game_id_range": [EVAL_SEED_START, EVAL_SEED_END_EXCLUSIVE],
         "hard_gates": hard_gates,
         "games_count": total_logs,
         "verdict": "evaluation_completed" if all(hard_gates.values()) else "evaluation_failed",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import random
@@ -37,11 +38,15 @@ from training.mortal.r1_rank_plus_score_to_go_contract_2026_09 import (
     FILE_BATCH_SIZE,
     GAMMA,
     LEARNING_RATE,
+    OBJECTIVE_MODE,
+    OBJECTIVE_VALUE_STATISTIC,
     OPTIMIZER_STEPS,
     R1_TRAINING_DIR,
     RANK_PTS,
+    ROW_IDENTITY_FIELDS,
     STEPS_START,
     STEPS_TARGET,
+    TRAINABLE_PLAYER_NAMES,
     TRAINING_MANIFEST_SCHEMA,
     TRAINING_SEED,
     WEIGHT_DECAY,
@@ -50,7 +55,9 @@ from training.mortal.r1_rank_plus_score_to_go_contract_2026_09 import (
     native_path,
     resolve_k0_checkpoint,
     resolve_m0_dataset_index,
+    reward_contract_for_condition,
     sha256_file,
+    update_row_identity_digest,
 )
 
 logger = logging.getLogger("r1_training")
@@ -136,7 +143,7 @@ def _build_dataloader(
         oracle=False,
         file_batch_size=FILE_BATCH_SIZE,
         reserve_ratio=0,
-        player_names=["K0_70k", "ext_mortal", "mortal"],
+        player_names=list(TRAINABLE_PLAYER_NAMES),
         num_epochs=1,
         enable_augmentation=False,
         augmented_first=False,
@@ -156,12 +163,13 @@ def train_r1_condition(
     device: str = "cuda",
     training_seed: int = TRAINING_SEED,
     output_dir: Path = R1_TRAINING_DIR,
-) -> tuple[Path, str, list[dict[str, Any]], list[dict[str, Any]]]:
-    """Train exactly 400 steps for either 'control' (final_rank_mc) or 'variant' (rank_plus_score_to_go_mc)."""
-    if condition not in {"control", "variant"}:
-        raise ValueError(f"Unknown condition: {condition}")
+) -> tuple[Path, str, list[dict[str, Any]], str]:
+    """Train exactly 400 steps for 'control' (final_rank_mc) or 'variant' (rank_plus_score_to_go_mc).
 
-    reward_mode = "final_rank_mc" if condition == "control" else "rank_plus_score_to_go_mc"
+    Returns (checkpoint_path, checkpoint_sha, step_logs, row_identity_digest_hexdigest).
+    """
+    reward_contract = reward_contract_for_condition(condition)
+    reward_mode = reward_contract["mode"]
     k0_path, k0_sha = resolve_k0_checkpoint()
     m0_index_path, _ = resolve_m0_dataset_index()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -171,23 +179,23 @@ def train_r1_condition(
     data_iter = iter(dataloader)
 
     step_logs: list[dict[str, Any]] = []
-    row_identity_fingerprints: list[dict[str, Any]] = []
+    row_digest = hashlib.sha256()
     t0 = time.time()
 
     for step_idx in range(1, OPTIMIZER_STEPS + 1):
         batch = next(data_iter)
         obs, actions, masks, steps_to_done, kyoku_rewards, player_ranks = batch
 
-        # Record row identity fingerprint for first 10 steps and last step
-        if step_idx <= 10 or step_idx == OPTIMIZER_STEPS:
-            row_identity_fingerprints.append({
-                "step": step_idx,
-                "obs_sum": float(obs.sum().item()),
-                "actions_sum": int(actions.sum().item()),
-                "masks_sum": int(masks.sum().item()),
-                "player_ranks_sum": int(player_ranks.sum().item()),
-                "kyoku_rewards_mean": float(kyoku_rewards.mean().item()),
-            })
+        # Rolling row-identity digest over every batch field except the reward,
+        # which is the only quantity allowed to differ between conditions.
+        update_row_identity_digest(
+            row_digest,
+            obs=obs,
+            actions=actions,
+            masks=masks,
+            steps_to_done=steps_to_done,
+            player_ranks=player_ranks,
+        )
 
         obs = obs.to(dtype=torch.float32, device=device)
         actions = actions.to(dtype=torch.int64, device=device)
@@ -210,7 +218,7 @@ def train_r1_condition(
             q_target_mc=q_target_mc,
             next_rank_logits=next_rank_logits,
             player_ranks=player_ranks,
-            mode="legal_mean_mc",
+            mode=OBJECTIVE_MODE,
             cql_weight=CQL_MIN_Q_WEIGHT,
             aux_weight=AUX_WEIGHT,
         )
@@ -259,14 +267,16 @@ def train_r1_condition(
         "config": {
             "control": {"version": 4, "online": False, "batch_size": BATCH_SIZE},
             "resnet": {"conv_channels": 192, "num_blocks": 40},
-            "reward": {"mode": reward_mode},
+            "objective": {"mode": OBJECTIVE_MODE},
+            "trainable_player_names": list(TRAINABLE_PLAYER_NAMES),
+            "reward": dict(reward_contract),
             "env": {"pts": list(RANK_PTS), "gamma": GAMMA},
         },
     }
     torch.save(save_state, checkpoint_path)
     ckpt_sha = sha256_file(checkpoint_path)
 
-    return checkpoint_path, ckpt_sha, step_logs, row_identity_fingerprints
+    return checkpoint_path, ckpt_sha, step_logs, row_digest.hexdigest()
 
 
 def run_r1_training(
@@ -280,23 +290,14 @@ def run_r1_training(
     m0_path, m0_sha = resolve_m0_dataset_index()
 
     logger.info("Starting R1 Control Training (final_rank_mc)...")
-    ctrl_path, ctrl_sha, ctrl_logs, ctrl_rows = train_r1_condition("control", device=device, output_dir=output_dir)
+    ctrl_path, ctrl_sha, ctrl_logs, ctrl_digest = train_r1_condition("control", device=device, output_dir=output_dir)
 
     logger.info("Starting R1 Variant Training (rank_plus_score_to_go_mc)...")
-    var_path, var_sha, var_logs, var_rows = train_r1_condition("variant", device=device, output_dir=output_dir)
+    var_path, var_sha, var_logs, var_digest = train_r1_condition("variant", device=device, output_dir=output_dir)
 
-    # Verify identical row identity (obs, actions, masks, player_ranks) between control and variant
-    identical_rows = True
-    for cr, vr in zip(ctrl_rows, var_rows, strict=True):
-        if (
-            cr["step"] != vr["step"]
-            or abs(cr["obs_sum"] - vr["obs_sum"]) > 1e-3
-            or cr["actions_sum"] != vr["actions_sum"]
-            or cr["masks_sum"] != vr["masks_sum"]
-            or cr["player_ranks_sum"] != vr["player_ranks_sum"]
-        ):
-            identical_rows = False
-            break
+    # Exact row identity: the full-run digests over all reward-excluded batch
+    # fields (obs, actions, masks, steps_to_done, player_ranks) must match.
+    identical_rows = ctrl_digest == var_digest
 
     hard_gates: dict[str, bool] = {
         "k0_parent_verified": True,
@@ -304,9 +305,9 @@ def run_r1_training(
         "control_400_steps_completed": (len(ctrl_logs) == OPTIMIZER_STEPS),
         "variant_400_steps_completed": (len(var_logs) == OPTIMIZER_STEPS),
         "identical_row_identity_verified": identical_rows,
-        "control_checkpoint_saved": ctrl_path.exists(),
-        "variant_checkpoint_saved": var_path.exists(),
-        "exact_step_counts_verified": True,
+        "control_checkpoint_saved": ctrl_path.exists() and ctrl_path.stat().st_size > 0,
+        "variant_checkpoint_saved": var_path.exists() and var_path.stat().st_size > 0,
+        "exact_step_counts_verified": (len(ctrl_logs) == OPTIMIZER_STEPS) and (len(var_logs) == OPTIMIZER_STEPS),
         "optimizer_preserved_adam_verified": True,
     }
 
@@ -320,6 +321,12 @@ def run_r1_training(
         "experiment_id": EXPERIMENT_ID,
         "parent_model": {"name": "K0_70k", "sha256": k0_sha},
         "dataset": {"path": str(m0_path), "sha256": m0_sha},
+        "objective": {
+            "mode": OBJECTIVE_MODE,
+            "value_statistic": OBJECTIVE_VALUE_STATISTIC,
+            "preference_loss": "existing_cql",
+        },
+        "trainable_player_names": list(TRAINABLE_PLAYER_NAMES),
         "training_config": {
             "training_seed": TRAINING_SEED,
             "steps_start": STEPS_START,
@@ -338,14 +345,21 @@ def run_r1_training(
                 "name": "mortal_control_70400.pth",
                 "path": str(ctrl_path),
                 "sha256": ctrl_sha,
-                "reward_mode": "final_rank_mc",
+                "reward": reward_contract_for_condition("control"),
             },
             "variant": {
                 "name": "mortal_variant_70400.pth",
                 "path": str(var_path),
                 "sha256": var_sha,
-                "reward_mode": "rank_plus_score_to_go_mc",
+                "reward": reward_contract_for_condition("variant"),
             },
+        },
+        "row_identity": {
+            "fields": [name for name, _ in ROW_IDENTITY_FIELDS],
+            "excluded_field": "kyoku_rewards",
+            "control_sha256": ctrl_digest,
+            "variant_sha256": var_digest,
+            "identical": identical_rows,
         },
         "hard_gates": hard_gates,
         "verdict": "training_completed" if all(hard_gates.values()) else "training_failed",

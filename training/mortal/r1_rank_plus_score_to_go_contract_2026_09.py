@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import gzip
 import hashlib
+import json
 import os
 import re
 from pathlib import Path
@@ -68,6 +70,28 @@ SCORE_TO_GO_WEIGHT = 0.25
 SCORE_TO_GO_SCALE = 10000.0
 SCORE_TO_GO_CLIP_MIN = -3.0
 SCORE_TO_GO_CLIP_MAX = 3.0
+
+# R1 is a reward-only experiment: objective and trainable view must match the
+# historical M0 protocol exactly, so only the reward differs between conditions.
+OBJECTIVE_MODE = "behavior_action_mc"
+OBJECTIVE_VALUE_STATISTIC = "behavior_action_q"
+TRAINABLE_PLAYER_NAMES: tuple[str, ...] = ("ext_mortal",)
+
+# Row identity covers every batch field except the reward, which is the only
+# quantity allowed to differ between control and variant.
+ROW_IDENTITY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("obs", "float32"),
+    ("actions", "int64"),
+    ("masks", "bool"),
+    ("steps_to_done", "int64"),
+    ("player_ranks", "int64"),
+)
+
+# Evaluation lineup (exact set of names in every game log)
+EVALUATION_LINEUP: tuple[str, ...] = ("K0_70k", "ext_mortal", "Control_70400", "Variant_70400")
+
+# four_player_native log filenames are {seed}_{seed_key}_{suffix}.json.gz
+LOG_NAME_RE = re.compile(r"^(?P<seed>\d+)_(?P<seed_key>\d+)_[^/]+\.json\.gz$")
 
 # Tenhou rank points for evaluation
 TENHOU_RANK_POINTS = np.array([90.0, 45.0, 0.0, -135.0], dtype=np.float64)
@@ -194,6 +218,153 @@ def compute_r1_target(
     score_diff = final_score - score_at_current_kyoku_start
     score_to_go = float(np.clip(score_diff / SCORE_TO_GO_SCALE, SCORE_TO_GO_CLIP_MIN, SCORE_TO_GO_CLIP_MAX))
     return base_rank_target + SCORE_TO_GO_WEIGHT * score_to_go
+
+
+def reward_contract_for_condition(condition: str) -> dict:
+    """Return the frozen reward-parameter record for one training condition."""
+    if condition == "control":
+        return {
+            "mode": "final_rank_mc",
+            "rank_pts": [float(v) for v in RANK_PTS],
+        }
+    if condition == "variant":
+        return {
+            "mode": "rank_plus_score_to_go_mc",
+            "rank_pts": [float(v) for v in RANK_PTS],
+            "score_to_go_weight": SCORE_TO_GO_WEIGHT,
+            "score_to_go_scale": SCORE_TO_GO_SCALE,
+            "score_to_go_clip_min": SCORE_TO_GO_CLIP_MIN,
+            "score_to_go_clip_max": SCORE_TO_GO_CLIP_MAX,
+        }
+    raise ValueError(f"Unknown condition: {condition}")
+
+
+def update_row_identity_digest(
+    digest: hashlib._Hash,
+    *,
+    obs,
+    actions,
+    masks,
+    steps_to_done,
+    player_ranks,
+) -> None:
+    """Feed one batch's reward-excluded fields into the rolling row-identity SHA256.
+
+    Fields are hashed in frozen order with canonical dtypes and shapes so that
+    control and variant digests are comparable byte-for-byte.
+    """
+    tensors = {
+        "obs": obs,
+        "actions": actions,
+        "masks": masks,
+        "steps_to_done": steps_to_done,
+        "player_ranks": player_ranks,
+    }
+    for name, dtype_str in ROW_IDENTITY_FIELDS:
+        arr = tensors[name].detach().cpu().numpy().astype(np.dtype(dtype_str))
+        digest.update(name.encode("utf-8"))
+        digest.update(np.asarray(arr.shape, dtype=np.int64).tobytes())
+        digest.update(np.ascontiguousarray(arr).tobytes())
+
+
+def parse_game_identity(log_path: Path) -> dict:
+    """Parse one game log and fail-closed on filename, seed, or lineup violations."""
+    m = LOG_NAME_RE.match(log_path.name)
+    if not m:
+        raise ContractError(f"Invalid game log filename: {log_path.name}")
+    file_seed = int(m.group("seed"))
+    file_seed_key = int(m.group("seed_key"))
+    if file_seed_key != EVAL_SEED_KEY:
+        raise ContractError(
+            f"Seed key mismatch in {log_path.name}: file={file_seed_key}, expected={EVAL_SEED_KEY}"
+        )
+
+    with gzip.open(log_path, "rt", encoding="utf-8") as f:
+        events = [json.loads(line) for line in f if line.strip()]
+    if not events or events[0].get("type") != "start_game":
+        raise ContractError(f"Log {log_path.name} does not start with start_game")
+
+    seed_tuple = events[0].get("seed")
+    if not isinstance(seed_tuple, (list, tuple)) or len(seed_tuple) != 2:
+        raise ContractError(f"Invalid start_game seed tuple in {log_path.name}: {seed_tuple}")
+    log_seed, log_key = int(seed_tuple[0]), int(seed_tuple[1])
+    if log_seed != file_seed:
+        raise ContractError(
+            f"Seed mismatch in {log_path.name}: filename={file_seed}, start_game={log_seed}"
+        )
+    if log_key != EVAL_SEED_KEY:
+        raise ContractError(
+            f"Seed key mismatch in {log_path.name}: start_game={log_key}, expected={EVAL_SEED_KEY}"
+        )
+
+    names = events[0].get("names")
+    if not isinstance(names, list) or len(names) != 4:
+        raise ContractError(f"Invalid names array in {log_path.name}: {names}")
+    if set(names) != set(EVALUATION_LINEUP):
+        raise ContractError(
+            f"Lineup mismatch in {log_path.name}: got {sorted(names)}, expected {sorted(EVALUATION_LINEUP)}"
+        )
+
+    return {"game_id": file_seed, "names": names, "events": events}
+
+
+def verify_training_manifest(tr_man: dict) -> bool:
+    """Fail-closed validation of a training manifest; shared by evaluator and summary."""
+    if tr_man.get("schema") != TRAINING_MANIFEST_SCHEMA:
+        raise ContractError(f"Training manifest schema mismatch: {tr_man.get('schema')}")
+    if tr_man.get("experiment_id") != EXPERIMENT_ID:
+        raise ContractError(f"Training manifest experiment_id mismatch: {tr_man.get('experiment_id')}")
+    if tr_man.get("verdict") != "training_completed":
+        raise ContractError(f"Training manifest verdict is not training_completed: {tr_man.get('verdict')}")
+
+    gates = tr_man.get("hard_gates", {})
+    if set(gates.keys()) != set(EXPECTED_TRAINING_HARD_GATES):
+        raise ContractError(f"Training manifest hard gate set mismatch: {sorted(gates.keys())}")
+    if not all(gates.values()):
+        raise ContractError(f"Training manifest hard gates not all passed: {gates}")
+
+    _, k0_sha = resolve_k0_checkpoint()
+    if tr_man.get("parent_model", {}).get("sha256") != k0_sha:
+        raise ContractError(
+            f"Training manifest parent K0 SHA mismatch: manifest={tr_man.get('parent_model', {}).get('sha256')}, canonical={k0_sha}"
+        )
+    _, m0_sha = resolve_m0_dataset_index()
+    if tr_man.get("dataset", {}).get("sha256") != m0_sha:
+        raise ContractError(
+            f"Training manifest M0 dataset SHA mismatch: manifest={tr_man.get('dataset', {}).get('sha256')}, canonical={m0_sha}"
+        )
+
+    objective = tr_man.get("objective", {})
+    if objective.get("mode") != OBJECTIVE_MODE:
+        raise ContractError(f"Training objective is not {OBJECTIVE_MODE}: {objective.get('mode')}")
+    if objective.get("value_statistic") != OBJECTIVE_VALUE_STATISTIC:
+        raise ContractError(
+            f"Training objective value_statistic is not {OBJECTIVE_VALUE_STATISTIC}: {objective.get('value_statistic')}"
+        )
+    if tr_man.get("trainable_player_names") != list(TRAINABLE_PLAYER_NAMES):
+        raise ContractError(f"Training trainable labels mismatch: {tr_man.get('trainable_player_names')}")
+
+    checkpoints = tr_man.get("checkpoints", {})
+    for condition in ("control", "variant"):
+        recorded = checkpoints.get(condition, {}).get("reward")
+        expected = reward_contract_for_condition(condition)
+        if recorded != expected:
+            raise ContractError(f"Training reward contract mismatch for {condition}: {recorded} vs {expected}")
+
+    row_identity = tr_man.get("row_identity", {})
+    if row_identity.get("fields") != [name for name, _ in ROW_IDENTITY_FIELDS]:
+        raise ContractError(f"Training row-identity fields mismatch: {row_identity.get('fields')}")
+    if row_identity.get("excluded_field") != "kyoku_rewards":
+        raise ContractError(f"Training row-identity excluded_field mismatch: {row_identity.get('excluded_field')}")
+    if (
+        not row_identity.get("control_sha256")
+        or row_identity.get("control_sha256") != row_identity.get("variant_sha256")
+    ):
+        raise ContractError(f"Training row-identity digests missing or differ: {row_identity}")
+    if row_identity.get("identical") is not True:
+        raise ContractError(f"Training row-identity identical flag is not True: {row_identity.get('identical')}")
+
+    return True
 
 
 def adjudicate_r1_verdict(primary_mean: float, primary_ci_lower: float) -> str:
