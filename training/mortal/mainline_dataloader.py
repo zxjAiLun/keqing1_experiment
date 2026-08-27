@@ -109,6 +109,7 @@ class FileDatasetsIter(IterableDataset):
         augmented_first=False,
         player_names_by_file=None,
         reward_mode=None,
+        include_score_to_go_target=False,
     ):
         super().__init__()
         self.version = version
@@ -124,6 +125,7 @@ class FileDatasetsIter(IterableDataset):
         self.augmented_first = augmented_first
         self.player_names_by_file = self._normalize_player_names_by_file(player_names_by_file)
         self.explicit_reward_mode = reward_mode
+        self.include_score_to_go_target = bool(include_score_to_go_target)
         self.iterator = None
 
     @staticmethod
@@ -250,6 +252,15 @@ class FileDatasetsIter(IterableDataset):
 
                     assert len(kyoku_rewards) >= at_kyoku[-1] + 1
                     final_scores = grp.take_final_scores()
+                    if self.include_score_to_go_target:
+                        # Canonical S1 auxiliary target via the frozen contract formula.
+                        from training.mortal.s1_score_to_go_auxiliary_contract_2026_09 import (
+                            compute_s1_auxiliary_target,
+                        )
+                        player_final_score = float(final_scores[player_id])
+                        player_kyoku_start_scores = grp_feature[:, 3 + player_id] * 1e4
+                        stg = compute_s1_auxiliary_target(player_final_score, player_kyoku_start_scores)
+                        score_to_go_targets = np.asarray(stg, dtype=np.float64)
                     scores_seq = np.concatenate((grp_feature[:, 3:] * 1e4, [final_scores]))
                     rank_by_player_seq = (-scores_seq).argsort(-1, kind="stable").argsort(-1, kind="stable")
                     player_ranks = rank_by_player_seq[:, player_id]
@@ -270,6 +281,9 @@ class FileDatasetsIter(IterableDataset):
                         ]
                         if self.oracle:
                             entry.insert(1, invisible_obs[i])
+                        if self.include_score_to_go_target:
+                            # S1 auxiliary target in [-1, +1]; main q target stays kyoku_rewards.
+                            entry.append(score_to_go_targets[at_kyoku[i]])
                         self.buffer.append(entry)
 
     def __iter__(self):

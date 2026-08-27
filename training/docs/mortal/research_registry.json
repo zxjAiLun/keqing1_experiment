@@ -12,9 +12,9 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "R2 rank_plus_score_to_go 多 seed 正式确认实验已完成闭环（verdict=not_supported：Primary/Absolute seed 方向不一致且 crossed-bootstrap CI95 均跨零，R1 weak_positive 未复现）；rank_plus_score_to_go 主 Q-target 路线正式终止，K1 保持为 null。",
-    "next_experiment": null,
-    "next_experiment_status": "not_selected",
+    "current_stage": "R2 rank_plus_score_to_go 多 seed 正式确认实验已闭环（verdict=not_supported，主 Q-target 路线终止，K1=null）。S1 score_to_go 辅助监督实验（final_rank_mc 主目标不变 + 独立 ScoreToGoHead 辅助回归）已完成代码实现与契约测试（status=implemented_not_started）。",
+    "next_experiment": "S1_score_to_go_auxiliary_multiseed_2026_09",
+    "next_experiment_status": "implemented_not_started",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
@@ -1506,6 +1506,60 @@
         "promoted_k1_checkpoint": null
       },
       "promoted_k1_checkpoint": null
+    },
+    {
+      "experiment_id": "S1_score_to_go_auxiliary_multiseed_2026_09",
+      "name_zh": "S1 score_to_go 辅助监督多 seed 实验",
+      "category": "auxiliary_supervision",
+      "parent_model": "K0_70k",
+      "control": "R2 冻结 Control checkpoints (final_rank_mc, seeds 20260910/11/12, SHA 已冻结复用，不重复训练)",
+      "variant": "final_rank_mc 主 Q target 不变 + 独立 score_to_go 辅助头（ScoreToGoHead=Linear(1024,1,bias=False)，target=clip(diff/10000,-3,3)/3 in [-1,+1]，loss=0.2*(0.5*MSE) 仅更新 Brain+Head）",
+      "changed_variable": "训练监督信号结构：主 Q target 保持 final_rank_mc，新增不进入 q_target_mc 的 score_to_go 辅助回归目标；DQN/AuxNet 梯度路径与推理结构完全不变",
+      "fixed_variables": [
+        "K0_70k parent model (6c0e7005...)，严格恢复 410 个 parent Adam moments 后追加 fresh head 参数组 (LR 1e-4, wd 0)",
+        "M0 mixed replay corpus，ext_mortal-only trainable view",
+        "Training seeds 20260910/20260911/20260912（与 R2 Control 相同 seed/stream，标准 row digest 必须逐一等于 R2 Control 冻结 digest）",
+        "70000 -> 70400, exactly 400 steps, batch 512, LR 1e-4, CQL 5.0, next-rank aux 0.2, gamma 1.0, BN active",
+        "S1 只训练 3 个 AuxVariant；R2 Control checkpoints 冻结复用不重训",
+        "CRN evaluation: 每 seed 1000 局四人同桌 [K0_70k, ext_mortal, R2_Control_seed_s, S1_AuxVariant_seed_s], game IDs 2400000..2400999, seed key 8192, 4 shards x 250, seat-mode=random",
+        "Crossed bootstrap (5000 reps, seed 20260920) seed-axis x game-axis, Primary/Absolute 共享抽样索引",
+        "No K1 promotion unless verdict == promotion_supported"
+      ],
+      "training_seeds": [
+        20260910,
+        20260911,
+        20260912
+      ],
+      "evaluation_protocol": {
+        "total_games": 3000,
+        "panels": 3,
+        "games_per_panel": 1000,
+        "shards_per_panel": 4,
+        "games_per_shard": 250,
+        "seed_start": 2400000,
+        "seed_end_exclusive": 2401000,
+        "seed_key": 8192,
+        "bootstrap_reps": 5000,
+        "bootstrap_seed": 20260920
+      },
+      "status": "implemented_not_started",
+      "primary_result": "S1 契约、variant-only trainer、evaluator、summarizer、mainline_dataloader 可选第七字段 (include_score_to_go_target) 与 10 项定向测试已完整实现并通过（22/22 含 R1/R2 回归）。主 Q target 保持 final_rank_mc，score_to_go 仅作为独立辅助监督。等待授权启动训练。",
+      "promoted_data_route": null,
+      "promoted_checkpoint": null,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": null,
+      "predecessor": "R2_rank_plus_score_to_go_multiseed_confirmation_2026_09",
+      "next_experiment": null,
+      "commits": [],
+      "artifact_paths": [
+        "artifacts/experiments/S1_score_to_go_auxiliary_multiseed_2026_09/training/s1_training_manifest.json",
+        "artifacts/experiments/S1_score_to_go_auxiliary_multiseed_2026_09/evaluation/s1_eval_manifest.json",
+        "artifacts/experiments/S1_score_to_go_auxiliary_multiseed_2026_09/summary/s1_summary.json"
+      ],
+      "report_paths": [
+        "training/docs/mortal/研发总览_当前.md"
+      ]
     }
   ]
 }
