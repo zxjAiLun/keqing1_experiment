@@ -12,9 +12,9 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "R2 rank_plus_score_to_go 多 seed 正式确认实验已闭环（verdict=not_supported，主 Q-target 路线终止，K1=null）。S1 score_to_go 辅助监督实验（final_rank_mc 主目标不变 + 独立 ScoreToGoHead 辅助回归）已完成代码实现与契约测试（status=implemented_not_started）。",
-    "next_experiment": "S1_score_to_go_auxiliary_multiseed_2026_09",
-    "next_experiment_status": "implemented_not_started",
+    "current_stage": "S1 score_to_go 辅助监督多 seed 实验已完成闭环（verdict=not_supported：Primary 3/3 正向 +1.47 pt 但 CI95 [-5.880,+8.655] 跨零，Absolute 3/3 全负 -5.655 pt 未超 K0）；score-to-go 主目标与辅助目标路线全部正式终止，K1 保持为 null。下一科研方向为 targeted high-signal decision filtering，实验规范未下达。",
+    "next_experiment": null,
+    "next_experiment_status": "not_selected",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
@@ -24,7 +24,7 @@
       "D3_top2_discard_v1 数据路线已按预注册规则拒绝；不得修改 D3 参数后继续沿用同一实验身份；K1 尚未产生。",
       "C1 formal adjudication 结果 interaction_supported 是机制 finding，不自动晋级 recipe、checkpoint 或 K1；不得重跑 C1 或把 CQL_OFF 推广为 operational recipe。",
       "R1/R2 rank_plus_score_to_go 主 Q-target 路线已按预注册停止规则正式终止：不追加评测、不做 score-to-go 权重 sweep、不挑选表现较好的 seed、不晋级 20260911（或任何 seed）checkpoint。",
-      "score-to-go 若作为独立 auxiliary representation signal 继续，必须建立新的 preregistered experiment ID，且不得再进入主 Q target。",
+      "S1 score_to_go 辅助监督路线已按停止规则正式终止：不追加对局、不调整 auxiliary weight、不更换 head 结构、不挑选 seed、不继续 score-to-go 主目标或辅助目标路线。",
       "不再沿用 C1/C2/C3 机制分支，下一阶段将进行全新的 K1 路线重置（route reset）。"
     ]
   },
@@ -1542,13 +1542,13 @@
         "bootstrap_reps": 5000,
         "bootstrap_seed": 20260920
       },
-      "status": "implemented_not_started",
-      "primary_result": "S1 契约、variant-only trainer、evaluator、summarizer、mainline_dataloader 可选第七字段 (include_score_to_go_target) 与 10 项定向测试已完整实现并通过（22/22 含 R1/R2 回归）。主 Q target 保持 final_rank_mc，score_to_go 仅作为独立辅助监督。等待授权启动训练。",
+      "status": "closed",
+      "primary_result": "S1 辅助监督多 seed 实验已完成全部闭环：训练 10/10、评测 7/7、汇总 7/7 hard gates 全部 PASS，3000 局原始日志 game ID 连续唯一覆盖 2400000..2400999，row identity 三 seed 精确匹配冻结 R2 Control digest，训练→评测→汇总 manifest 哈希链通过。Primary (AuxVariant−R2 Control) seed means [+2.025, +0.180, +2.205]（3/3 正向），grand mean +1.470 pt，crossed-bootstrap CI95 [-5.880, +8.655]（跨零）；Absolute (AuxVariant−K0) seed means [-4.545, -5.670, -6.750]（0/3 正向），grand mean -5.655 pt，CI95 [-12.706, +1.290]（跨零）。方向性信号一致但未达统计确定且未超 K0。verdict = not_supported；无 recipe/checkpoint 晋级，K1 保持 null（canonical seed 20260911 备录未晋升）。score_aux_loss 从 ~0.11 降至 ~0.05-0.10（head 在学习，但无强度收益）。",
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
       "checkpoint_promotion": false,
-      "closure_reason": null,
+      "closure_reason": "预注册判据未通过：Primary 3/3 seed 均值为正但 crossed-bootstrap CI95 跨零（ci_lower_positive=false），Absolute 0/3 正向且 CI 跨零。方向性信号（Primary 一致正向、推算 Control−K0 约 [-6.57,-5.85,-8.955] pt 为描述性诊断）不构成晋级证据。按停止规则正式终止 score-to-go 辅助目标路线：不追加对局、不调整 auxiliary weight、不更换 head 结构、不挑选 seed；score-to-go 主目标与辅助目标路线至此全部关闭。",
       "predecessor": "R2_rank_plus_score_to_go_multiseed_confirmation_2026_09",
       "next_experiment": null,
       "commits": [],
@@ -1558,8 +1558,39 @@
         "artifacts/experiments/S1_score_to_go_auxiliary_multiseed_2026_09/summary/s1_summary.json"
       ],
       "report_paths": [
-        "training/docs/mortal/研发总览_当前.md"
-      ]
+        "training/docs/mortal/experiments_zh/2026-09_S1_score_to_go辅助监督多seed实验_最终结果报告.md"
+      ],
+      "formal_adjudication": {
+        "verdict": "not_supported",
+        "summary_path": "artifacts/experiments/S1_score_to_go_auxiliary_multiseed_2026_09/summary/s1_summary.json",
+        "summary_sha256": "e6d6f3ddcc54b068d805abff417911535a9ca4591068461b724aae22249b8ce4",
+        "training_manifest_sha256": "c02414346a23f6636325338a2bad500ad1114adf30321562c360ea010d04af4a",
+        "eval_manifest_sha256": "f89bd842970178b5557b83184e05625c0d460ad864531adc9631141dfce9b65d",
+        "primary_seed_means": [
+          2.025,
+          0.18,
+          2.205
+        ],
+        "primary_grand_mean": 1.47,
+        "primary_ci95": [
+          -5.880375,
+          8.655374999999994
+        ],
+        "absolute_seed_means": [
+          -4.545,
+          -5.67,
+          -6.75
+        ],
+        "absolute_grand_mean": -5.655,
+        "absolute_ci95": [
+          -12.70575,
+          1.29
+        ],
+        "recipe_promotion": false,
+        "checkpoint_promotion": false,
+        "promoted_k1_checkpoint": null
+      },
+      "promoted_k1_checkpoint": null
     }
   ]
 }
