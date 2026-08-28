@@ -12,8 +12,8 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "S1 score_to_go 辅助监督多 seed 实验已完成闭环（verdict=not_supported：Primary 3/3 正向 +1.47 pt 但 CI95 [-5.880,+8.655] 跨零，Absolute 3/3 全负 -5.655 pt 未超 K0）；score-to-go 主目标与辅助目标路线全部正式终止，K1 保持为 null。F1 M0 行为不一致优先回放实验（targeted high-signal decision filtering 路线首个实验）已完成代码实现与契约测试（status=implemented_not_started），等待授权启动训练。",
-    "next_experiment": "F1_m0_behavior_disagreement_prioritized_replay_2026_09",
+    "current_stage": "F1 M0 行为不一致优先回放实验已完成闭环（verdict=not_supported：50% disagreement-priority 带放回重采样协议显著有害，Primary/Absolute 均 3/3 负向且 CI95 上界 < 0；不能外推为重复采样/off-policy shift 已被证明，78% duplicate rate 仅为机制假设）；K1 保持为 null。F2 无重采样 disagreement 温和加权 pilot（同一判定、同一 base stream、行权重 2.0/1.0）已完成代码实现与契约测试（status=implemented_not_started），等待授权启动训练。",
+    "next_experiment": "F2_disagreement_weighting_without_resampling_pilot_2026_09",
     "next_experiment_status": "implemented_not_started",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
@@ -25,6 +25,7 @@
       "C1 formal adjudication 结果 interaction_supported 是机制 finding，不自动晋级 recipe、checkpoint 或 K1；不得重跑 C1 或把 CQL_OFF 推广为 operational recipe。",
       "R1/R2 rank_plus_score_to_go 主 Q-target 路线已按预注册停止规则正式终止：不追加评测、不做 score-to-go 权重 sweep、不挑选表现较好的 seed、不晋级 20260911（或任何 seed）checkpoint。",
       "S1 score_to_go 辅助监督路线已按停止规则正式终止：不追加对局、不调整 auxiliary weight、不更换 head 结构、不挑选 seed、不继续 score-to-go 主目标或辅助目标路线。",
+      "F1 disagreement-priority 带放回重采样协议已按预注册规则正式终止：不重跑 F1、不做优先级比例 sweep、不得把 F1 结果外推为重复采样/off-policy shift 或 disagreement 思想整体已被证明有害；后续 disagreement 路线必须建立新的 preregistered experiment ID（F2 已按此规则建立）。",
       "不再沿用 C1/C2/C3 机制分支，下一阶段将进行全新的 K1 路线重置（route reset）。"
     ]
   },
@@ -1632,20 +1633,110 @@
         "bootstrap_reps": 5000,
         "bootstrap_seed": 20260930
       },
+      "status": "closed",
+      "primary_result": "F1 行为不一致优先回放实验已完成全部闭环：训练 12/12、评测 7/7、汇总 7/7 hard gates 全部 PASS，3000 局原始日志 game ID 连续唯一覆盖 2500000..2500999，base_row_digest 三 seed 精确匹配冻结 R2 Control digest（证明 Control 与 Variant 接触完全相同的原始候选数据），scorer 参数 bit-exact。Primary (PriorityVariant−R2 Control) seed means [-15.480, -8.010, -12.600]，grand mean -12.030 pt，crossed-bootstrap CI95 [-20.295, -4.214]（上界 < 0）；Absolute (PriorityVariant−K0) seed means [-20.205, -11.160, -14.490]，grand mean -15.285 pt，CI95 [-23.580, -7.125]（上界 < 0）。verdict = not_supported；无 recipe/checkpoint 晋级，K1 保持 null。三 seed hs 率 ~11% 与 M0 先验吻合；priority duplicate rate ~78%。",
+      "promoted_data_route": null,
+      "promoted_checkpoint": null,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": "预注册判据未通过且方向显著为负：Primary 与 Absolute 均 3/3 负向、两个 CI95 上界均低于零。本实验证明的是 50% disagreement-priority 带放回重采样这一具体协议在当前 400-step continuation 设置下显著有害；不能断言重复采样机制、off-policy 分布偏移或 disagreement 优先思想整体已被证明有害（78% duplicate rate 仅为最合理的机制假设，未做机制归因）。按停止规则正式终止：不重跑 F1、不做优先级比例 sweep、不挑选 seed；后续 disagreement 路线建立新 preregistered experiment ID（F2 无重采样温和加权 pilot 已按此规则建立）。",
+      "predecessor": "S1_score_to_go_auxiliary_multiseed_2026_09",
+      "next_experiment": "F2_disagreement_weighting_without_resampling_pilot_2026_09",
+      "commits": [
+        "c72e6ef"
+      ],
+      "artifact_paths": [
+        "artifacts/experiments/F1_m0_behavior_disagreement_prioritized_replay_2026_09/training/f1_training_manifest.json",
+        "artifacts/experiments/F1_m0_behavior_disagreement_prioritized_replay_2026_09/evaluation/f1_eval_manifest.json",
+        "artifacts/experiments/F1_m0_behavior_disagreement_prioritized_replay_2026_09/summary/f1_summary.json"
+      ],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-09_F1_M0行为不一致优先回放_最终结果报告.md"
+      ],
+      "formal_adjudication": {
+        "verdict": "not_supported",
+        "summary_path": "artifacts/experiments/F1_m0_behavior_disagreement_prioritized_replay_2026_09/summary/f1_summary.json",
+        "summary_sha256": "31cee4b4430232e5dddd7de0c7fced06cd5a72b29c3da97c5b01ae9e15918570",
+        "training_manifest_sha256": "a313ac3c53da0b980734c3675f2834ad29298bcbddf4d1eb9cf8474b9bfec5ad",
+        "eval_manifest_sha256": "948f56f65d6522bf708252e223d14a6656d75bfe5323e3fac4980f3f5c7a2bb6",
+        "primary_seed_means": [
+          -15.48,
+          -8.01,
+          -12.6
+        ],
+        "primary_grand_mean": -12.03,
+        "primary_ci95": [
+          -20.295,
+          -4.21425
+        ],
+        "absolute_seed_means": [
+          -20.205,
+          -11.16,
+          -14.49
+        ],
+        "absolute_grand_mean": -15.285,
+        "absolute_ci95": [
+          -23.580375,
+          -7.124625
+        ],
+        "recipe_promotion": false,
+        "checkpoint_promotion": false,
+        "promoted_k1_checkpoint": null
+      },
+      "promoted_k1_checkpoint": null
+    },
+    {
+      "experiment_id": "F2_disagreement_weighting_without_resampling_pilot_2026_09",
+      "name_zh": "F2 无重采样 disagreement 温和加权 Pilot",
+      "category": "targeted_high_signal_filtering",
+      "parent_model": "K0_70k",
+      "control": "R2 冻结 Control checkpoints (final_rank_mc uniform replay, seeds 20260910/11/12, SHA 已冻结复用，不重复训练)",
+      "variant": "disagreement weighting without resampling: 每批 512 行全部使用一次，disagreement 行 loss 权重 2.0、其余 1.0，按 batch 权重和归一化，同一权重应用于逐行 value/CQL/next-rank loss",
+      "changed_variable": "batch 内 loss 行权重：uniform → disagreement 行 2 倍温和加权；无重采样、无丢弃、无复制；数据、reward、objective、模型结构、优化器均不变",
+      "fixed_variables": [
+        "K0_70k parent model (6c0e7005...)，preserved 410 K0 Adam moments（两组 [165,245]，无新参数组）",
+        "M0 mixed replay corpus，ext_mortal-only trainable view，与 R2 Control 相同 base stream（base_row_digest 必须逐一等于冻结 R2 Control digest）",
+        "Training seeds 20260910/20260911/20260912",
+        "70000 -> 70400, exactly 400 steps, batch 512, LR 1e-4, CQL 5.0, next-rank aux 0.2, gamma 1.0, BN active",
+        "冻结 K0 scorer 与 F1 完全相同（eval、float32、无 AMP、参数 bit-exact、不注册 optimizer；actions != argmax legal Q，无 Q-margin 阈值）",
+        "每批 rows_used = 512（每行使用恰好一次）；权重仅 {1.0, 2.0}；weight_sum = 2*disagreement_count + (512 - disagreement_count)",
+        "weighted_mean(x) = sum(weight * x_row) / sum(weight)；total = weighted_mean(value_row) + 5.0 * weighted_mean(cql_row) + 0.2 * weighted_mean(next_rank_row)",
+        "禁止权重网格、margin threshold、任何新 target、reward shaping、CQL 修改、action label 替换、importance correction、新 auxiliary head",
+        "F2 属 adaptive pilot：无论结果如何都不直接晋升 K1",
+        "CRN evaluation: 每 seed 1000 局四人同桌 [K0_70k, ext_mortal, R2_Control_seed_s, F2_WeightedVariant_seed_s], game IDs 2600000..2600999, seed key 8192, 4 shards x 250, seat-mode=random",
+        "Crossed bootstrap (5000 reps, seed 20261001) seed-axis x game-axis, Primary/Absolute 共享抽样索引"
+      ],
+      "training_seeds": [
+        20260910,
+        20260911,
+        20260912
+      ],
+      "evaluation_protocol": {
+        "total_games": 3000,
+        "panels": 3,
+        "games_per_panel": 1000,
+        "shards_per_panel": 4,
+        "games_per_shard": 250,
+        "seed_start": 2600000,
+        "seed_end_exclusive": 2601000,
+        "seed_key": 8192,
+        "bootstrap_reps": 5000,
+        "bootstrap_seed": 20261001
+      },
       "status": "implemented_not_started",
-      "primary_result": "F1 契约、variant-only trainer（冻结 K0 scorer disagreement 判定 + canonical SHA-256 256/256 采样器 + fail-closed 门禁）、evaluator、summarizer 与 13 项定向测试已完整实现并通过（30/30 含 R1/R2/S1/renderer 回归）。reward/objective/模型结构/mainline_dataloader 均未修改。等待授权启动训练。",
+      "primary_result": "F2 契约、variant-only trainer（compute_weighted_f2_losses 逐行加权目标、冻结 K0 scorer 判定与 F1 parity、无重采样语义验证）、evaluator、summarizer 与 13 项定向测试已完整实现并通过（含 objective 默认路径回归与 uniform 权重 = legacy 无权重目标的逐位等价验证）。adaptive pilot：三态裁决 reweighting_promising / control_recovery_only / not_supported，均不直接晋升 K1。等待授权启动训练。",
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
       "checkpoint_promotion": false,
       "closure_reason": null,
-      "predecessor": "S1_score_to_go_auxiliary_multiseed_2026_09",
+      "predecessor": "F1_m0_behavior_disagreement_prioritized_replay_2026_09",
       "next_experiment": null,
       "commits": [],
       "artifact_paths": [
-        "artifacts/experiments/F1_m0_behavior_disagreement_prioritized_replay_2026_09/training/f1_training_manifest.json",
-        "artifacts/experiments/F1_m0_behavior_disagreement_prioritized_replay_2026_09/evaluation/f1_eval_manifest.json",
-        "artifacts/experiments/F1_m0_behavior_disagreement_prioritized_replay_2026_09/summary/f1_summary.json"
+        "artifacts/experiments/F2_disagreement_weighting_without_resampling_pilot_2026_09/training/f2_training_manifest.json",
+        "artifacts/experiments/F2_disagreement_weighting_without_resampling_pilot_2026_09/evaluation/f2_eval_manifest.json",
+        "artifacts/experiments/F2_disagreement_weighting_without_resampling_pilot_2026_09/summary/f2_summary.json"
       ],
       "report_paths": [
         "training/docs/mortal/研发总览_当前.md"
