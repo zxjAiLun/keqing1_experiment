@@ -12,9 +12,9 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "S1 score_to_go 辅助监督多 seed 实验已完成闭环（verdict=not_supported：Primary 3/3 正向 +1.47 pt 但 CI95 [-5.880,+8.655] 跨零，Absolute 3/3 全负 -5.655 pt 未超 K0）；score-to-go 主目标与辅助目标路线全部正式终止，K1 保持为 null。下一科研方向为 targeted high-signal decision filtering，实验规范未下达。",
-    "next_experiment": null,
-    "next_experiment_status": "not_selected",
+    "current_stage": "S1 score_to_go 辅助监督多 seed 实验已完成闭环（verdict=not_supported：Primary 3/3 正向 +1.47 pt 但 CI95 [-5.880,+8.655] 跨零，Absolute 3/3 全负 -5.655 pt 未超 K0）；score-to-go 主目标与辅助目标路线全部正式终止，K1 保持为 null。F1 M0 行为不一致优先回放实验（targeted high-signal decision filtering 路线首个实验）已完成代码实现与契约测试（status=implemented_not_started），等待授权启动训练。",
+    "next_experiment": "F1_m0_behavior_disagreement_prioritized_replay_2026_09",
+    "next_experiment_status": "implemented_not_started",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
@@ -1591,6 +1591,65 @@
         "promoted_k1_checkpoint": null
       },
       "promoted_k1_checkpoint": null
+    },
+    {
+      "experiment_id": "F1_m0_behavior_disagreement_prioritized_replay_2026_09",
+      "name_zh": "F1 M0 行为不一致优先回放实验",
+      "category": "targeted_high_signal_filtering",
+      "parent_model": "K0_70k",
+      "control": "R2 冻结 Control checkpoints (final_rank_mc uniform replay, seeds 20260910/11/12, SHA 已冻结复用，不重复训练)",
+      "variant": "prioritized replay: 每个原始 512-row batch 用冻结 K0 scorer 判定 disagreement（actions != legal argmax Q），256 uniform 无放回 + 256 disagreement 有放回抽样并随机排列",
+      "changed_variable": "batch 内采样权重：uniform replay → 50% disagreement-priority 采样；数据、reward、objective、模型结构、优化器均不变",
+      "fixed_variables": [
+        "K0_70k parent model (6c0e7005...)，preserved 410 K0 Adam moments（两组 [165,245]，无新参数组）",
+        "M0 mixed replay corpus，ext_mortal-only trainable view，与 R2 Control 相同 base stream",
+        "Training seeds 20260910/20260911/20260912（base_row_digest 必须逐一等于冻结 R2 Control digest）",
+        "70000 -> 70400, exactly 400 steps, batch 512, LR 1e-4, CQL 5.0, next-rank aux 0.2, gamma 1.0, BN active",
+        "冻结 K0 scorer 始终 eval()、float32、无 AMP、参数 bit-exact 不变、不注册进 optimizer",
+        "high_signal 定义：actions != argmax(legal Q)，行为动作必须合法，无 Q-margin 阈值，不使用 final rank/reward/评测结果",
+        "抽样由 SHA-256 canonical identity (experiment ID, training seed, optimizer step) 派生局部 RNG 确定，不改变 dataloader/global RNG",
+        "每批 fail-closed：base 512 行、high_signal >= 16、uniform 256 无放回、priority 256 有放回、最终 512 行随机排列；少于 16 行不允许临时降阈值",
+        "主 Q target 始终属于 {+3,+1,-1,-3}（final_rank_mc）",
+        "禁止 reward shaping、score-to-go、CQL 修改、action label 替换、top2 生成、gradient weighting、importance correction、新 auxiliary head",
+        "CRN evaluation: 每 seed 1000 局四人同桌 [K0_70k, ext_mortal, R2_Control_seed_s, F1_PriorityVariant_seed_s], game IDs 2500000..2500999, seed key 8192, 4 shards x 250, seat-mode=random",
+        "Crossed bootstrap (5000 reps, seed 20260930) seed-axis x game-axis, Primary/Absolute 共享抽样索引",
+        "No K1 promotion unless verdict == promotion_supported"
+      ],
+      "training_seeds": [
+        20260910,
+        20260911,
+        20260912
+      ],
+      "evaluation_protocol": {
+        "total_games": 3000,
+        "panels": 3,
+        "games_per_panel": 1000,
+        "shards_per_panel": 4,
+        "games_per_shard": 250,
+        "seed_start": 2500000,
+        "seed_end_exclusive": 2501000,
+        "seed_key": 8192,
+        "bootstrap_reps": 5000,
+        "bootstrap_seed": 20260930
+      },
+      "status": "implemented_not_started",
+      "primary_result": "F1 契约、variant-only trainer（冻结 K0 scorer disagreement 判定 + canonical SHA-256 256/256 采样器 + fail-closed 门禁）、evaluator、summarizer 与 13 项定向测试已完整实现并通过（30/30 含 R1/R2/S1/renderer 回归）。reward/objective/模型结构/mainline_dataloader 均未修改。等待授权启动训练。",
+      "promoted_data_route": null,
+      "promoted_checkpoint": null,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": null,
+      "predecessor": "S1_score_to_go_auxiliary_multiseed_2026_09",
+      "next_experiment": null,
+      "commits": [],
+      "artifact_paths": [
+        "artifacts/experiments/F1_m0_behavior_disagreement_prioritized_replay_2026_09/training/f1_training_manifest.json",
+        "artifacts/experiments/F1_m0_behavior_disagreement_prioritized_replay_2026_09/evaluation/f1_eval_manifest.json",
+        "artifacts/experiments/F1_m0_behavior_disagreement_prioritized_replay_2026_09/summary/f1_summary.json"
+      ],
+      "report_paths": [
+        "training/docs/mortal/研发总览_当前.md"
+      ]
     }
   ]
 }
