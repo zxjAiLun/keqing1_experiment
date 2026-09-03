@@ -223,6 +223,18 @@ def train_t1_anchor_variant(seed: int, anchor_lambda: float, device: str, output
         q_target = (float(GAMMA) ** steps_to_done * kyoku_rewards).to(torch.float32)
         _verify_q_targets(q_target)
 
+        # Backpropagate the eval-mode anchor before constructing the much larger
+        # train-mode base graph. Parameters do not change between the two
+        # backward calls, so this is exactly the gradient of their summed loss
+        # while avoiding two retained Brain graphs on an 8 GiB GPU.
+        optimizer.zero_grad()
+        q_current_anchor = _eval_q(brain, dqn, obs, masks, preserve_training=True)
+        with torch.inference_mode():
+            q_parent = parent_dqn(parent_brain(obs), masks)
+        anchor_loss = legal_policy_kl_rows(q_current_anchor, q_parent, masks, ANCHOR_TEMPERATURE).mean()
+        weighted_anchor_loss = float(anchor_lambda) * anchor_loss
+        weighted_anchor_loss.backward()
+
         brain.train().freeze_bn(False)
         dqn.train()
         aux_net.train()
@@ -240,27 +252,17 @@ def train_t1_anchor_variant(seed: int, anchor_lambda: float, device: str, output
             cql_weight=CQL_MIN_Q_WEIGHT,
             aux_weight=AUX_WEIGHT,
         )
-        q_current_anchor = _eval_q(brain, dqn, obs, masks, preserve_training=True)
-        with torch.inference_mode():
-            q_parent = parent_dqn(parent_brain(obs), masks)
-        losses = compute_t1_losses(
-            base_losses=base_losses,
-            q_current_anchor=q_current_anchor,
-            q_parent=q_parent,
-            masks=masks,
-            anchor_lambda=anchor_lambda,
-        )
-        optimizer.zero_grad()
-        losses["total_loss_with_anchor"].backward()
+        base_losses["total_loss"].backward()
         optimizer.step()
 
+        total_loss = base_losses["total_loss"].detach() + weighted_anchor_loss.detach()
         record = {
             "step": step_idx,
             "rows_used": int(obs.shape[0]),
             "base_total_loss": float(base_losses["total_loss"].detach().cpu()),
-            "anchor_kl": float(losses["anchor_loss"].detach().cpu()),
-            "weighted_anchor_loss": float((anchor_lambda * losses["anchor_loss"]).detach().cpu()),
-            "total_loss": float(losses["total_loss_with_anchor"].detach().cpu()),
+            "anchor_kl": float(anchor_loss.detach().cpu()),
+            "weighted_anchor_loss": float(weighted_anchor_loss.detach().cpu()),
+            "total_loss": float(total_loss.cpu()),
         }
         if not all(math.isfinite(float(record[key])) for key in ("base_total_loss", "anchor_kl", "weighted_anchor_loss", "total_loss")):
             raise ContractError(f"Non-finite step metrics at seed={seed} step={step_idx}")
