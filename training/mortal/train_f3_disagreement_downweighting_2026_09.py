@@ -507,6 +507,10 @@ def run_f3_training(
         )
 
         matches = var_base_digest == r2c_row_digest
+        logger.info(
+            "[Seed %d] Base row identity: actual=%s expected=%s matches=%s",
+            s, var_base_digest, r2c_row_digest, matches,
+        )
         if not matches:
             all_rows_match_r2 = False
         row_usage_ok = all(rec["rows_used"] == BATCH_SIZE for rec in downweighting_stats["per_step"])

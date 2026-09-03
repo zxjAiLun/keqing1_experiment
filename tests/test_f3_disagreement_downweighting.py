@@ -88,6 +88,8 @@ def test_1_f3_contract_invariants() -> None:
     assert AGREEMENT_WEIGHT == 1.0
 
     assert len(EXPECTED_TRAINING_HARD_GATES) == 12
+    assert "weights_0_5_1_normalized_all_batches" in EXPECTED_TRAINING_HARD_GATES
+    assert "weights_2_1_normalized_all_batches" not in EXPECTED_TRAINING_HARD_GATES
     assert len(EXPECTED_EVAL_HARD_GATES) == 7
     assert len(EXPECTED_SUMMARY_HARD_GATES) == 7
 
@@ -705,6 +707,66 @@ def test_10_exact_seed_set_enforcement() -> None:
         run_f3_evaluation(seeds=[20260910, 20260911])
     with pytest.raises(ContractError):
         adjudicate_f3_downweighting(seeds=[20260913])
+
+
+def test_training_runner_emits_verifiable_manifest(tmp_path: Path, monkeypatch) -> None:
+    """Exercise real manifest assembly, not a fixture built from the gate constant."""
+    from training.mortal import train_f3_disagreement_downweighting_2026_09 as runner
+
+    def fake_train(seed, device, output_dir):
+        checkpoint = output_dir / f"variant_{seed}.pth"
+        checkpoint.write_bytes(b"mock checkpoint for manifest regression only")
+        stats = {
+            "batches": OPTIMIZER_STEPS,
+            "per_step": [
+                {
+                    "step": 70000 + i,
+                    "rows_used": 512,
+                    "disagreement_count": 64,
+                    "weights_unique": [0.5, 1.0],
+                    "weight_sum": 480.0,
+                }
+                for i in range(1, OPTIMIZER_STEPS + 1)
+            ],
+        }
+        return checkpoint, sha256_file(checkpoint), FROZEN_R2_CONTROL[seed]["row_identity_sha256"], stats
+
+    monkeypatch.setattr(runner, "train_f3_downweighted_variant", fake_train)
+    manifest = runner.run_f3_training(device="cpu", output_dir=tmp_path / "training")
+    saved = json.loads((tmp_path / "training" / "f3_training_manifest.json").read_text(encoding="utf-8"))
+    assert saved == manifest
+    assert manifest["hard_gates"]["weights_0_5_1_normalized_all_batches"] is True
+    assert verify_training_manifest(manifest) is True
+
+
+def test_f3_registry_closure_matches_formal_artifacts() -> None:
+    """The committed registry must bind the completed F3 evidence and stop the route."""
+    registry_path = REPO_ROOT / "training/docs/mortal/research_registry.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    state = registry["current_state"]
+    record = next(r for r in registry["records"] if r["experiment_id"] == EXPERIMENT_ID)
+
+    assert state["K1"] is None
+    assert state["next_experiment"] is None
+    assert state["next_experiment_status"] == "not_selected"
+    assert record["status"] == "closed"
+    assert record["next_experiment"] is None
+    assert record["formal_adjudication"]["verdict"] == "not_supported"
+    assert record["recipe_promotion"] is False
+    assert record["checkpoint_promotion"] is False
+    assert record["promoted_k1_checkpoint"] is None
+
+    formal = record["formal_adjudication"]
+    summary_path = REPO_ROOT / formal["summary_path"]
+    assert summary_path.is_file()
+    assert sha256_file(summary_path) == formal["summary_sha256"]
+    assert json.loads(summary_path.read_text(encoding="utf-8"))["verdict"] == "not_supported"
+
+    report_path = REPO_ROOT / record["report_paths"][0]
+    assert report_path.is_file()
+    report = report_path.read_text(encoding="utf-8")
+    assert "CLOSED / not_supported / K1 = null" in report
+    assert "永久关闭 K0-disagreement weighting/filtering 路线" in report
 
 
 def test_11_checkpoint_evaluator_compatibility() -> None:

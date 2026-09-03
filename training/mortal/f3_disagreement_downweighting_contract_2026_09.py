@@ -128,7 +128,7 @@ EXPECTED_TRAINING_HARD_GATES: frozenset[str] = frozenset({
     "all_3_variant_checkpoints_saved",
     "all_seeds_base_row_identity_matches_r2_control",
     "no_resampling_row_usage_exact",
-    "weights_2_1_normalized_all_batches",
+    "weights_0_5_1_normalized_all_batches",
     "scorer_parameters_bit_exact",
     "main_q_target_final_rank_mc_verified",
     "optimizer_preserved_k0_moments_410",
