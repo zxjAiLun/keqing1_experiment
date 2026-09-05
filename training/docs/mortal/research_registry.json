@@ -12,9 +12,9 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "T1 三 seed 训练已完成，training 16/16 gates PASS，held-out policy-drift 三指标全部满足 3/3 seed 改善。3×1000 Windows CUDA 评测进行中：2026-09-05 从已验证的 1200 局中断快照恢复，沿用冻结模型、game IDs 与 50 局批次。完整评测、统计裁决与最终报告尚待完成；K1 保持 null。",
-    "next_experiment": "T1_k0_policy_anchor_continuation_pilot_2026_09",
-    "next_experiment_status": "evaluation_in_progress",
+    "current_stage": "T1 K0 legal-policy anchor continuation pilot 已完成完整闭环：定标 9/9、训练 16/16、评测 7/7、汇总 8/8 gates PASS；held-out policy-drift 三指标均在 3/3 seed 改善，但 Primary 与 Absolute 均未通过 strength gate。verdict=not_supported，未晋级 recipe/checkpoint，K1 保持 null；T1 身份按停止规则关闭，下一实验尚未选择。",
+    "next_experiment": null,
+    "next_experiment_status": "not_selected",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
@@ -29,7 +29,7 @@
       "F2 无重采样 2× disagreement 温和加权已按预注册规则正式终止：不做权重网格、不做 margin threshold、不做比例 sweep；F1→F2 的 Primary 回升与重采样伤害假设一致但不能完成机制归因，不得宣称加权本身无害/有益。",
       "F3 disagreement 0.5× downweighting 已按预注册规则裁决为 not_supported：不追加对局、不挑选 seed、不继续做权重、比例或 margin sweep；永久关闭 K0-disagreement weighting/filtering 路线。",
       "不再沿用 C1/C2/C3 机制分支，下一阶段将进行全新的 K1 路线重置（route reset）。",
-      "T1 policy-anchor pilot 的 lambda=0.7867009210376891、temperature=1.0、三 seed、400 steps、held-out mechanism panel 与 3×1000 evaluation 已冻结；不得做参数 sweep、追加对局、挑 seed，且无论结果如何不得由 T1 直接晋级 K1。"
+      "T1 policy-anchor pilot 的 lambda=0.7867009210376891、temperature=1.0、三 seed、400 steps、held-out mechanism panel 与 3×1000 evaluation 已冻结；结果为 not_supported，禁止追加对局、挑 seed、参数或长度 sweep，且不得由 T1 晋级 K1。"
     ]
   },
   "records": [
@@ -1901,23 +1901,26 @@
         "bootstrap_reps": 5000,
         "bootstrap_seed": 20261003
       },
-      "status": "evaluation_in_progress",
-      "primary_result": "定标 9/9、训练 16/16 gates PASS；三 seed 均已完成 400 steps，held-out KL、greedy disagreement、centered advantage RMSE 均 3/3 seed 改善。training manifest SHA 35127a28a00a044cbf33330a4033ba2669f98803b1f815fd0f85e1adf39000f2。2026-09-05 从完整保留的 1200 局恢复冻结的 3000 局评测；强度结论尚未形成。",
+      "status": "closed",
+      "primary_result": "完整闭环通过：定标 9/9、训练 16/16、评测 7/7、汇总 8/8 gates PASS；held-out KL、greedy disagreement、centered advantage RMSE 均在 3/3 seed 严格改善。Primary（AnchorVariant−R2 Control）seed means [-7.380,-5.670,-7.515]，grand mean -6.855 pt，CI95 [-13.860,+0.270]；Absolute（AnchorVariant−K0）seed means [-1.440,-4.815,-3.015]，grand mean -3.090 pt，CI95 [-10.215,+4.261]。verdict=not_supported；无 recipe/checkpoint promotion，K1=null。",
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
       "checkpoint_promotion": false,
-      "closure_reason": null,
+      "closure_reason": "机制门通过但两个 strength gate 均失败：Primary 三 seed 均为负且 CI95 跨零，Absolute 三 seed 均为负且 CI95 跨零。策略锚定确实抑制了 K0 policy drift，但在本冻结 continuation 协议下带来强度损失，不能命名为 stability_only 或 anchor_promising。按停止规则关闭 T1：不追加对局、不挑 seed、不做 λ/temperature/长度 sweep，不晋级任何 recipe/checkpoint，K1 保持 null。",
       "predecessor": "F3_disagreement_downweighting_pilot_2026_09",
       "next_experiment": null,
-      "commits": ["673f9bc", "1af260a", "c62a569"],
+      "commits": ["673f9bc", "1af260a", "c62a569", "04a2bb6", "b7f5795"],
       "artifact_paths": [
         "artifacts/experiments/T1_k0_policy_anchor_continuation_pilot_2026_09/calibration/t1_lambda_calibration.json",
-        "artifacts/experiments/T1_k0_policy_anchor_continuation_pilot_2026_09/training/t1_training_manifest.json"
+        "artifacts/experiments/T1_k0_policy_anchor_continuation_pilot_2026_09/training/t1_training_manifest.json",
+        "artifacts/experiments/T1_k0_policy_anchor_continuation_pilot_2026_09/evaluation/t1_eval_manifest.json",
+        "artifacts/experiments/T1_k0_policy_anchor_continuation_pilot_2026_09/summary/t1_summary.json"
       ],
       "report_paths": [
         "training/docs/mortal/experiments_zh/2026-09_T1_K0策略锚定Continuation_Pilot_预注册设计.md",
-        "training/docs/mortal/experiments_zh/2026-09_T1_Windows评测恢复记录.md"
+        "training/docs/mortal/experiments_zh/2026-09_T1_Windows评测恢复记录.md",
+        "training/docs/mortal/experiments_zh/2026-09_T1_K0策略锚定Continuation_Pilot_最终结果报告.md"
       ],
       "preregistration": {
         "status": "FROZEN v1",
@@ -1925,6 +1928,24 @@
         "selected_lambda": 0.7867009210376891,
         "temperature": 1.0,
         "direct_k1_promotion": false
+      },
+      "formal_adjudication": {
+        "verdict": "not_supported",
+        "summary_path": "artifacts/experiments/T1_k0_policy_anchor_continuation_pilot_2026_09/summary/t1_summary.json",
+        "summary_sha256": "2686035e149292393ed49d82c3ed172354e5aa8ddba60953d4c1b1fd33c09edc",
+        "training_manifest_sha256": "35127a28a00a044cbf33330a4033ba2669f98803b1f815fd0f85e1adf39000f2",
+        "eval_manifest_sha256": "06a6487c0cbcdec1b3602af0333030a71cbb1c4c8c409c31577681508a42465b",
+        "calibration_sha256": "ab6b3f105fd69321265f181c32017918ff1790678d6114d552276f933e64ec27",
+        "mechanism_pass": true,
+        "primary_seed_means": [-7.38, -5.67, -7.515],
+        "primary_grand_mean": -6.855,
+        "primary_ci95": [-13.86, 0.27],
+        "absolute_seed_means": [-1.44, -4.815, -3.015],
+        "absolute_grand_mean": -3.09,
+        "absolute_ci95": [-10.215, 4.260749999999989],
+        "recipe_promotion": false,
+        "checkpoint_promotion": false,
+        "promoted_k1_checkpoint": null
       },
       "promoted_k1_checkpoint": null
     }

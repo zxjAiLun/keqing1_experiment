@@ -747,9 +747,8 @@ def test_f3_registry_closure_matches_formal_artifacts() -> None:
     record = next(r for r in registry["records"] if r["experiment_id"] == EXPERIMENT_ID)
 
     assert state["K1"] is None
-    assert state["next_experiment"] == "T1_k0_policy_anchor_continuation_pilot_2026_09"
-    successor = next(r for r in registry["records"] if r["experiment_id"] == state["next_experiment"])
-    assert state["next_experiment_status"] == successor["status"]
+    assert state["next_experiment"] is None
+    assert state["next_experiment_status"] == "not_selected"
     assert record["status"] == "closed"
     assert record["next_experiment"] == "T1_k0_policy_anchor_continuation_pilot_2026_09"
     assert record["formal_adjudication"]["verdict"] == "not_supported"

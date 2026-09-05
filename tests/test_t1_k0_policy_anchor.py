@@ -25,6 +25,7 @@ from training.mortal.t1_k0_policy_anchor_contract_2026_09 import (
     crossed_bootstrap_ci,
     legal_centered_q,
     legal_policy_kl_rows,
+    sha256_file,
     validate_t1_seed_set,
     verify_calibration,
     verify_recorded_training_evidence,
@@ -177,6 +178,28 @@ def test_score_reconstruction_applies_reach_accepted() -> None:
     scores, ranks = _scores_and_ranks_from_events(events, "fixture")
     assert scores == [24000.0, 25000.0, 25000.0, 25000.0]
     assert ranks[0] == 3
+
+
+def test_t1_registry_closure_binds_machine_adjudication() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    registry_path = repo_root / "training/docs/mortal/research_registry.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    record = next(row for row in registry["records"] if row["experiment_id"] == EXPERIMENT_ID)
+    assert registry["current_state"]["K1"] is None
+    assert registry["current_state"]["next_experiment"] is None
+    assert registry["current_state"]["next_experiment_status"] == "not_selected"
+    assert record["status"] == "closed"
+    assert record["formal_adjudication"]["verdict"] == "not_supported"
+    assert record["recipe_promotion"] is False and record["checkpoint_promotion"] is False
+    summary_path = repo_root / record["formal_adjudication"]["summary_path"]
+    assert sha256_file(summary_path) == record["formal_adjudication"]["summary_sha256"]
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert summary["verdict"] == "not_supported"
+    report_path = repo_root / record["report_paths"][-1]
+    assert report_path.is_file()
+    report = report_path.read_text(encoding="utf-8")
+    assert "CLOSED / not_supported / K1 = null" in report
+    assert "Primary" in report and "−6.855" in report
 
 
 def _resume_log(directory: Path, game_id: int, *, complete: bool = True) -> None:
