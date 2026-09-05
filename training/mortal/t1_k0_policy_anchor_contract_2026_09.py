@@ -288,6 +288,61 @@ def verify_calibration(cal: dict[str, Any]) -> float:
     return selected
 
 
+def verify_recorded_training_evidence(tr_man: dict[str, Any]) -> None:
+    """Recompute recorded arithmetic and mechanism decisions before adjudication."""
+    expected_config = {
+        "training_seeds": TRAINING_SEEDS, "steps_start": STEPS_START, "steps_target": STEPS_TARGET,
+        "optimizer_steps": OPTIMIZER_STEPS, "batch_size": BATCH_SIZE, "learning_rate": LEARNING_RATE,
+        "weight_decay": WEIGHT_DECAY, "cql_min_q_weight": CQL_MIN_Q_WEIGHT,
+        "aux_weight": AUX_WEIGHT, "gamma": GAMMA, "device": "cuda",
+    }
+    config = tr_man.get("training_config", {})
+    if any(config.get(key) != value for key, value in expected_config.items()):
+        raise ContractError("Recorded training configuration differs from frozen T1 contract")
+    anchor_lambda = float(tr_man["policy_anchor"]["lambda"])
+    mechanism = tr_man["mechanism_audit"]
+    if mechanism.get("panel") != "held_out_batches_401_to_416":
+        raise ContractError("Recorded mechanism panel mismatch")
+    overall = True
+    metric_keys = {
+        "kl_lower": "mean_kl_to_k0",
+        "greedy_disagreement_lower": "greedy_disagreement_rate_to_k0",
+        "centered_advantage_rmse_lower": "centered_advantage_rmse_to_k0",
+    }
+    for seed in TRAINING_SEEDS:
+        key = f"seed_{seed}"
+        steps = tr_man["row_identity"]["by_seed"][key]["anchor_stats"]["per_step"]
+        if [row.get("step") for row in steps] != list(range(1, OPTIMIZER_STEPS + 1)):
+            raise ContractError(f"Recorded step sequence mismatch for {seed}")
+        for row in steps:
+            values = [float(row.get(k, float("nan"))) for k in ("base_total_loss", "anchor_kl", "weighted_anchor_loss", "total_loss")]
+            if not all(math.isfinite(value) for value in values):
+                raise ContractError(f"Nonfinite recorded loss for {seed}")
+            base, kl, weighted, total = values
+            if not math.isclose(weighted, anchor_lambda * kl, rel_tol=1e-5, abs_tol=1e-6) or not math.isclose(total, base + weighted, rel_tol=1e-5, abs_tol=1e-6):
+                raise ContractError(f"Recorded anchor loss arithmetic mismatch for {seed}")
+        audit = mechanism["by_seed"][key]
+        if (audit.get("rows"), audit.get("batches"), audit.get("skip_batches")) != (MECHANISM_AUDIT_ROWS, MECHANISM_AUDIT_BATCHES, MECHANISM_AUDIT_SKIP_BATCHES):
+            raise ContractError(f"Recorded held-out range mismatch for {seed}")
+        if not re.fullmatch(r"[0-9a-f]{64}", audit.get("row_sha256", "")):
+            raise ContractError(f"Recorded held-out row digest missing for {seed}")
+        directions = {}
+        for direction, metric in metric_keys.items():
+            control = float(audit["control"].get(metric, float("nan")))
+            variant = float(audit["variant"].get(metric, float("nan")))
+            if not all(math.isfinite(v) and v >= 0 for v in (control, variant)):
+                raise ContractError(f"Invalid recorded mechanism metric for {seed}/{metric}")
+            if "disagreement_rate" in metric and max(control, variant) > 1:
+                raise ContractError(f"Invalid recorded disagreement rate for {seed}")
+            directions[direction] = variant < control
+        passed = all(directions.values())
+        if audit.get("directions") != directions or audit.get("all_directions_pass") is not passed:
+            raise ContractError(f"Recorded mechanism directions mismatch for {seed}")
+        overall = overall and passed
+    if mechanism.get("all_seed_directions_pass") is not overall:
+        raise ContractError("Recorded aggregate mechanism decision mismatch")
+
+
 def verify_training_manifest(tr_man: dict[str, Any]) -> bool:
     if tr_man.get("schema") != TRAINING_MANIFEST_SCHEMA or tr_man.get("experiment_id") != EXPERIMENT_ID:
         raise ContractError("Training manifest schema or experiment ID mismatch")
@@ -341,6 +396,7 @@ def verify_training_manifest(tr_man: dict[str, Any]) -> bool:
     mechanism = tr_man.get("mechanism_audit", {})
     if mechanism.get("rows_per_seed") != MECHANISM_AUDIT_ROWS or set(mechanism.get("by_seed", {})) != {f"seed_{s}" for s in TRAINING_SEEDS}:
         raise ContractError("Mechanism audit missing or incomplete")
+    verify_recorded_training_evidence(tr_man)
     return True
 
 

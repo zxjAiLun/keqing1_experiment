@@ -27,6 +27,7 @@ from training.mortal.t1_k0_policy_anchor_contract_2026_09 import (
     legal_policy_kl_rows,
     validate_t1_seed_set,
     verify_calibration,
+    verify_recorded_training_evidence,
 )
 from training.mortal.train_t1_k0_policy_anchor_2026_09 import compute_t1_losses
 
@@ -205,3 +206,72 @@ def test_resume_rejects_unsafe_existing_logs(tmp_path: Path, case: str) -> None:
     expected = {"gap": "contiguous prefix", "incomplete": "Incomplete resume log", "partial_batch": "50-game batch", "wrong_lineup": "Lineup mismatch"}
     with pytest.raises(ContractError, match=expected[case]):
         _verify_resume_prefix(tmp_path, seed, 2800000, 250)
+
+
+def _recorded_evidence() -> dict:
+    metrics = {"mean_kl_to_k0": 0.2, "greedy_disagreement_rate_to_k0": 0.1, "centered_advantage_rmse_to_k0": 0.8}
+    return {
+        "training_config": {
+            "training_seeds": [20260910, 20260911, 20260912], "steps_start": 70000, "steps_target": 70400,
+            "optimizer_steps": 400, "batch_size": 512, "learning_rate": 1e-4, "weight_decay": 0.1,
+            "cql_min_q_weight": 5.0, "aux_weight": 0.2, "gamma": 1.0, "device": "cuda",
+        },
+        "policy_anchor": {"lambda": 0.5},
+        "row_identity": {"by_seed": {
+            f"seed_{seed}": {"anchor_stats": {"per_step": [
+                {"step": step, "base_total_loss": 2.0, "anchor_kl": 0.2, "weighted_anchor_loss": 0.1, "total_loss": 2.1}
+                for step in range(1, 401)
+            ]}} for seed in TRAINING_SEEDS
+        }},
+        "mechanism_audit": {
+            "panel": "held_out_batches_401_to_416", "all_seed_directions_pass": True,
+            "by_seed": {f"seed_{seed}": {
+                "rows": 8192, "batches": 16, "skip_batches": 400, "row_sha256": "a" * 64,
+                "control": dict(metrics), "variant": {key: value / 2 for key, value in metrics.items()},
+                "directions": {"kl_lower": True, "greedy_disagreement_lower": True, "centered_advantage_rmse_lower": True},
+                "all_directions_pass": True,
+            } for seed in TRAINING_SEEDS},
+        },
+    }
+
+
+def test_recorded_evidence_accepts_both_supported_and_honest_failed_mechanism() -> None:
+    data = _recorded_evidence()
+    verify_recorded_training_evidence(data)
+    audit = data["mechanism_audit"]["by_seed"]["seed_20260910"]
+    audit["variant"]["mean_kl_to_k0"] = audit["control"]["mean_kl_to_k0"]
+    audit["directions"]["kl_lower"] = False
+    audit["all_directions_pass"] = False
+    data["mechanism_audit"]["all_seed_directions_pass"] = False
+    verify_recorded_training_evidence(data)
+
+
+@pytest.mark.parametrize("case, message", [
+    ("config", "configuration"), ("step", "step sequence"), ("nan_loss", "Nonfinite"),
+    ("weighted", "arithmetic"), ("total", "arithmetic"), ("held_out", "held-out range"),
+    ("metric", "directions mismatch"), ("nan_metric", "mechanism metric"), ("aggregate", "aggregate"),
+])
+def test_recorded_evidence_rejects_false_positive_gates(case: str, message: str) -> None:
+    data = _recorded_evidence()
+    step = data["row_identity"]["by_seed"]["seed_20260910"]["anchor_stats"]["per_step"][0]
+    audit = data["mechanism_audit"]["by_seed"]["seed_20260910"]
+    if case == "config":
+        data["training_config"]["learning_rate"] = 0.01
+    elif case == "step":
+        step["step"] = 2
+    elif case == "nan_loss":
+        step["base_total_loss"] = float("nan")
+    elif case == "weighted":
+        step["weighted_anchor_loss"] = 0.2
+    elif case == "total":
+        step["total_loss"] = 3.0
+    elif case == "held_out":
+        audit["skip_batches"] = 399
+    elif case == "metric":
+        audit["variant"]["mean_kl_to_k0"] = 0.3
+    elif case == "nan_metric":
+        audit["variant"]["mean_kl_to_k0"] = float("nan")
+    else:
+        data["mechanism_audit"]["all_seed_directions_pass"] = False
+    with pytest.raises(ContractError, match=message):
+        verify_recorded_training_evidence(data)
