@@ -12,9 +12,9 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "T1 K0 legal-policy anchor continuation pilot 已完成只读 λ 定标并冻结 preregistration：λ=0.7867009210376891，calibration 9/9 gates PASS、无 optimizer step/无 game outcome；训练、held-out policy-drift audit 与 3×1000 fresh evaluation 尚未执行。T1 不使用 behavior disagreement、不改变行权重，是 F1-F3 关闭后的全新 K1 route reset；adaptive pilot 不直接晋级 K1。",
+    "current_stage": "T1 三 seed 训练已完成，training 16/16 gates PASS，held-out policy-drift 三指标全部满足 3/3 seed 改善。3×1000 Windows CUDA 评测进行中：2026-09-05 从已验证的 1200 局中断快照恢复，沿用冻结模型、game IDs 与 50 局批次。完整评测、统计裁决与最终报告尚待完成；K1 保持 null。",
     "next_experiment": "T1_k0_policy_anchor_continuation_pilot_2026_09",
-    "next_experiment_status": "implemented_not_started",
+    "next_experiment_status": "evaluation_in_progress",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
@@ -1901,8 +1901,8 @@
         "bootstrap_reps": 5000,
         "bootstrap_seed": 20261003
       },
-      "status": "implemented_not_started",
-      "primary_result": "Preregistration FROZEN v1；只读 λ calibration COMPLETE（9/9 PASS，selected λ=0.7867009210376891，artifact SHA ab6b3f105fd69321265f181c32017918ff1790678d6114d552276f933e64ec27）；正式训练/evaluation 尚未开始。",
+      "status": "evaluation_in_progress",
+      "primary_result": "定标 9/9、训练 16/16 gates PASS；三 seed 均已完成 400 steps，held-out KL、greedy disagreement、centered advantage RMSE 均 3/3 seed 改善。training manifest SHA 35127a28a00a044cbf33330a4033ba2669f98803b1f815fd0f85e1adf39000f2。2026-09-05 从完整保留的 1200 局恢复冻结的 3000 局评测；强度结论尚未形成。",
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
@@ -1910,12 +1910,14 @@
       "closure_reason": null,
       "predecessor": "F3_disagreement_downweighting_pilot_2026_09",
       "next_experiment": null,
-      "commits": [],
+      "commits": ["673f9bc", "1af260a", "c62a569"],
       "artifact_paths": [
-        "artifacts/experiments/T1_k0_policy_anchor_continuation_pilot_2026_09/calibration/t1_lambda_calibration.json"
+        "artifacts/experiments/T1_k0_policy_anchor_continuation_pilot_2026_09/calibration/t1_lambda_calibration.json",
+        "artifacts/experiments/T1_k0_policy_anchor_continuation_pilot_2026_09/training/t1_training_manifest.json"
       ],
       "report_paths": [
-        "training/docs/mortal/experiments_zh/2026-09_T1_K0策略锚定Continuation_Pilot_预注册设计.md"
+        "training/docs/mortal/experiments_zh/2026-09_T1_K0策略锚定Continuation_Pilot_预注册设计.md",
+        "training/docs/mortal/experiments_zh/2026-09_T1_Windows评测恢复记录.md"
       ],
       "preregistration": {
         "status": "FROZEN v1",
