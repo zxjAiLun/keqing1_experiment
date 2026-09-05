@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import copy
+import gzip
+import json
+from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
 
-from training.mortal.eval_t1_k0_policy_anchor_2026_09 import _lineup_for_seed
+from training.mortal.eval_t1_k0_policy_anchor_2026_09 import _lineup_for_seed, _verify_resume_prefix
 from training.mortal.summary_t1_k0_policy_anchor_2026_09 import _scores_and_ranks_from_events
 from training.mortal.t1_k0_policy_anchor_contract_2026_09 import (
     ANCHOR_DIRECTION,
@@ -173,3 +176,32 @@ def test_score_reconstruction_applies_reach_accepted() -> None:
     scores, ranks = _scores_and_ranks_from_events(events, "fixture")
     assert scores == [24000.0, 25000.0, 25000.0, 25000.0]
     assert ranks[0] == 3
+
+
+def _resume_log(directory: Path, game_id: int, *, complete: bool = True) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    events = [{"type": "start_game", "seed": [game_id, 8192], "names": list(_lineup_for_seed(20260910))}]
+    if complete:
+        events.append({"type": "end_game"})
+    with gzip.open(directory / f"{game_id}_8192_a.json.gz", "wt", encoding="utf-8") as handle:
+        handle.write("\n".join(json.dumps(event) for event in events))
+
+
+def test_resume_preserves_exact_complete_batch_hashes(tmp_path: Path) -> None:
+    for game_id in range(2800000, 2800050):
+        _resume_log(tmp_path / "logs", game_id)
+    hashes = _verify_resume_prefix(tmp_path, 20260910, 2800000, 250)
+    assert len(hashes) == 50
+    assert all(len(value) == 64 for value in hashes.values())
+
+
+@pytest.mark.parametrize("case", ["gap", "incomplete", "partial_batch", "wrong_lineup"])
+def test_resume_rejects_unsafe_existing_logs(tmp_path: Path, case: str) -> None:
+    count = 49 if case == "partial_batch" else 50
+    for offset in range(count):
+        game_id = 2800000 + offset + (1 if case == "gap" else 0)
+        _resume_log(tmp_path / "logs", game_id, complete=not (case == "incomplete" and offset == 0))
+    seed = 20260911 if case == "wrong_lineup" else 20260910
+    expected = {"gap": "contiguous prefix", "incomplete": "Incomplete resume log", "partial_batch": "50-game batch", "wrong_lineup": "Lineup mismatch"}
+    with pytest.raises(ContractError, match=expected[case]):
+        _verify_resume_prefix(tmp_path, seed, 2800000, 250)

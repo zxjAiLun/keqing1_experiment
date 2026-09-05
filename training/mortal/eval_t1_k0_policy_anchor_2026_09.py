@@ -51,6 +51,25 @@ def _lineup_for_seed(seed: int) -> tuple[str, ...]:
     return tuple(name.format(seed=seed) for name in EVALUATION_LINEUP_TEMPLATE)
 
 
+def _verify_resume_prefix(shard_dir: Path, seed: int, seed_start: int, games_count: int) -> dict[str, str]:
+    """Only reuse complete logs forming an exact prefix of the frozen shard."""
+    paths = sorted((shard_dir / "logs").glob("*.json.gz"))
+    ids = []
+    hashes = {}
+    for path in paths:
+        ident = parse_game_identity(path, lineup=_lineup_for_seed(seed))
+        if ident["events"][-1].get("type") != "end_game":
+            raise ContractError(f"Incomplete resume log: {path}")
+        ids.append(ident["game_id"])
+        hashes[str(path)] = sha256_file(path)
+    if len(ids) > games_count or sorted(ids) != list(range(seed_start, seed_start + len(ids))):
+        raise ContractError(f"Resume logs must form a unique contiguous prefix: {shard_dir}")
+    # Preserve the original 50-game inference batch boundaries.
+    if len(ids) % 50:
+        raise ContractError(f"Resume prefix is not a complete 50-game batch: {shard_dir}")
+    return hashes
+
+
 def run_single_shard(
     panel_name: str,
     shard_idx: int,
@@ -63,11 +82,28 @@ def run_single_shard(
     var_path: Path,
     panel_dir: Path,
     device: str = "cuda",
+    resume: bool = False,
 ) -> Path:
     """Run one shard of exact games_count 4-player games with four_player_native."""
     shard_dir = panel_dir / f"shard_{shard_idx:03d}"
-    check_directory_empty_or_nonexistent(shard_dir)
+    if not resume:
+        check_directory_empty_or_nonexistent(shard_dir)
     shard_dir.mkdir(parents=True, exist_ok=True)
+    preserved = _verify_resume_prefix(shard_dir, seed_key, seed_start, games_count) if resume else {}
+    metrics_path = shard_dir / "metrics.json"
+    if resume and metrics_path.exists():
+        run = json.loads(metrics_path.read_text(encoding="utf-8"))["run"]
+        expected = {
+            "seed_start": seed_start, "seed_key": EVAL_SEED_KEY, "games": games_count,
+            "seat_mode": "random", "native_batch_games": 50, "device": device,
+            "models": dict(zip(_lineup_for_seed(seed_key), map(str, (k0_path, ext_path, ctrl_path, var_path)), strict=True)),
+        }
+        if any(run.get(key) != value for key, value in expected.items()):
+            raise ContractError(f"Resume metrics protocol mismatch: {metrics_path}")
+        if len(preserved) != games_count:
+            raise ContractError(f"Completed metrics with missing logs: {shard_dir}")
+        logger.info("[%s] Reusing verified completed shard %d", panel_name, shard_idx)
+        return shard_dir
 
     cmd = [
         sys.executable,
@@ -86,14 +122,19 @@ def run_single_shard(
     ]
     if device == "cuda":
         cmd.append("--require-cuda")
+    if preserved:
+        cmd.append("--resume")
 
     logger.info("[%s] Executing shard %d CLI: %s", panel_name, shard_idx, " ".join(cmd))
-    res = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    # Keep child diagnostics on disk even if the calling terminal disappears.
+    with (shard_dir / "execution.log").open("a", encoding="utf-8") as output:
+        res = subprocess.run(cmd, stdout=output, stderr=subprocess.STDOUT, text=True, check=False)
     if res.returncode != 0:
-        logger.error("[%s] Shard %d failed with code %d:\nSTDOUT:\n%s\nSTDERR:\n%s", panel_name, shard_idx, res.returncode, res.stdout, res.stderr)
         raise RuntimeError(f"[{panel_name}] Shard {shard_idx} execution failed: exit code {res.returncode}")
 
-    metrics_path = shard_dir / "metrics.json"
+    for path, digest in preserved.items():
+        if sha256_file(Path(path)) != digest:
+            raise ContractError(f"Existing resume log changed: {path}")
     if not metrics_path.exists():
         raise FileNotFoundError(f"Missing metrics.json in {shard_dir}")
 
@@ -139,10 +180,14 @@ def run_t1_evaluation(
     eval_dir: Path = T1_EVAL_DIR,
     seeds: list[int] | None = None,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    resume: bool = False,
 ) -> dict[str, Any]:
     """Execute complete 3-panel 3000-hanchan evaluation reusing frozen R2 Control checkpoints."""
     target_seeds = validate_t1_seed_set(seeds)
-    check_directory_empty_or_nonexistent(eval_dir)
+    if not resume:
+        check_directory_empty_or_nonexistent(eval_dir)
+    elif (eval_dir / "t1_eval_manifest.json").exists():
+        raise ContractError("Evaluation already has a final manifest; do not resume")
     eval_dir.mkdir(parents=True, exist_ok=True)
 
     tr_man_path = training_dir / "t1_training_manifest.json"
@@ -156,6 +201,25 @@ def run_t1_evaluation(
     ext_path, ext_sha = resolve_ext_mortal_checkpoint()
     if ext_sha != EXT_MORTAL_EXPECTED_SHA256 or k0_sha != K0_EXPECTED_SHA256:
         raise ContractError(f"Canonical model SHA mismatch: k0={k0_sha} ext={ext_sha}")
+
+    preserved_logs: dict[str, str] = {}
+    if resume:
+        # Validate every existing shard before launching any further games.
+        for seed in target_seeds:
+            for idx in range(EVAL_SHARDS_PER_PANEL):
+                directory = eval_dir / f"panel_seed_{seed}" / f"shard_{idx:03d}"
+                preserved_logs.update(_verify_resume_prefix(
+                    directory, seed, EVAL_SEED_START + idx * EVAL_GAMES_PER_SHARD, EVAL_GAMES_PER_SHARD,
+                ))
+        all_paths = {str(path) for path in eval_dir.rglob("*.json.gz")}
+        if all_paths != set(preserved_logs):
+            raise ContractError("Unexpected game logs outside frozen panel/shard layout")
+        receipt = {
+            "experiment_id": EXPERIMENT_ID, "training_manifest_sha256": sha256_file(tr_man_path),
+            "existing_log_count": len(preserved_logs), "existing_log_sha256": preserved_logs,
+        }
+        receipt_path = eval_dir / f"resume_receipt_{time.time_ns()}.json"
+        receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
 
     panels_manifest: dict[str, Any] = {}
     total_logs_across_all_panels = 0
@@ -195,6 +259,7 @@ def run_t1_evaluation(
                 var_path=var_path,
                 panel_dir=panel_dir,
                 device=device,
+                resume=resume,
             )
             shard_dirs.append(str(s_dir))
 
@@ -240,6 +305,9 @@ def run_t1_evaluation(
         raise ContractError(f"Eval hard gates mismatch: {set(hard_gates.keys())} vs {set(EXPECTED_EVAL_HARD_GATES)}")
     if not all(hard_gates.values()):
         raise ContractError(f"Eval hard gate failed: {hard_gates}")
+    for path, digest in preserved_logs.items():
+        if sha256_file(Path(path)) != digest:
+            raise ContractError(f"Preserved log changed during evaluation: {path}")
 
     manifest = {
         "schema": EVAL_MANIFEST_SCHEMA,
@@ -262,6 +330,7 @@ def run_t1_evaluation(
         "panels": panels_manifest,
         "hard_gates": hard_gates,
         "total_games_evaluated": total_logs_across_all_panels,
+        "resumed_existing_logs": len(preserved_logs),
         "verdict": "evaluation_completed" if all(hard_gates.values()) else "evaluation_failed",
     }
 
@@ -275,10 +344,11 @@ def main() -> None:
     parser.add_argument("--training-dir", type=Path, default=T1_TRAINING_DIR)
     parser.add_argument("--eval-dir", type=Path, default=T1_EVAL_DIR)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--resume", action="store_true", help="Verify and preserve existing contiguous 50-game batches")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-    res = run_t1_evaluation(training_dir=args.training_dir, eval_dir=args.eval_dir, device=args.device)
+    res = run_t1_evaluation(training_dir=args.training_dir, eval_dir=args.eval_dir, device=args.device, resume=args.resume)
     print(json.dumps(res, indent=2, ensure_ascii=False))
 
 
