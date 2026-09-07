@@ -1907,7 +1907,7 @@
       "promoted_checkpoint": null,
       "recipe_promotion": false,
       "checkpoint_promotion": false,
-      "closure_reason": "机制门通过但两个 strength gate 均失败：Primary 三 seed 均为负且 CI95 跨零，Absolute 三 seed 均为负且 CI95 跨零。策略锚定确实抑制了 K0 policy drift，但在本冻结 continuation 协议下带来强度损失，不能命名为 stability_only 或 anchor_promising。按停止规则关闭 T1：不追加对局、不挑 seed、不做 λ/temperature/长度 sweep，不晋级任何 recipe/checkpoint，K1 保持 null。",
+      "closure_reason": "机制门通过但两个 strength gate 均失败：Primary 三 seed 均为负且 CI95 跨零，Absolute 三 seed 均为负且 CI95 跨零。策略锚定确实抑制了 K0 policy drift，但本冻结 continuation 协议下的强度点估计为负，未获得强度收益支持；两个 CI95 均跨零，不能宣称已统计证实强度损失，不能命名为 stability_only 或 anchor_promising。按停止规则关闭 T1：不追加对局、不挑 seed、不做 λ/temperature/长度 sweep，不晋级任何 recipe/checkpoint，K1 保持 null。",
       "predecessor": "F3_disagreement_downweighting_pilot_2026_09",
       "next_experiment": null,
       "commits": ["673f9bc", "1af260a", "c62a569", "04a2bb6", "b7f5795"],
