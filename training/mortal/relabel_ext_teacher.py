@@ -135,6 +135,12 @@ class _ShardWriter:
         self.shard_index = 0
         self.rows_written = 0
         self.rows_in_current_shard = 0
+        # Per-shard row counts (index i = shard i), for manifest bookkeeping
+        # so consumers never have to decompress shards just to count rows.
+        self.shard_rows: list[int] = []
+        # Phase timing (seconds) for this writer.
+        self.pack_seconds = 0.0
+        self.write_seconds = 0.0
 
     def add(self, row: dict[str, Any]) -> None:
         self.pending.append(row)
@@ -146,6 +152,7 @@ class _ShardWriter:
     def _pack_block(self) -> None:
         if not self.pending:
             return
+        t0 = time.perf_counter()
         self.blocks.append(
             {
                 "obs": np.stack([row["obs"] for row in self.pending]),
@@ -161,6 +168,7 @@ class _ShardWriter:
         self.block_rows += len(self.pending)
         self.rows_in_current_shard += len(self.pending)
         self.pending.clear()
+        self.pack_seconds += time.perf_counter() - t0
 
     def flush(self) -> None:
         self._pack_block()
@@ -177,12 +185,16 @@ class _ShardWriter:
             for key in self.blocks[0]
         }
         tmp_path = path.with_name(path.name + ".tmp")
+        t0 = time.perf_counter()
         # np.savez_compressed appends .npz to str paths; write via an explicit
         # file object so the .tmp suffix is preserved for the atomic replace.
         with tmp_path.open("wb") as handle:
             np.savez_compressed(handle, **payload)
         tmp_path.replace(path)
-        self.rows_written += int(len(payload["obs"]))
+        self.write_seconds += time.perf_counter() - t0
+        rows_in_shard = int(len(payload["obs"]))
+        self.shard_rows.append(rows_in_shard)
+        self.rows_written += rows_in_shard
         self.blocks.clear()
         self.block_rows = 0
         self.shard_index += 1
@@ -190,7 +202,13 @@ class _ShardWriter:
 
     def close(self) -> dict[str, Any]:
         self.flush()
-        return {"shards": self.shard_index, "rows": self.rows_written}
+        return {
+            "shards": self.shard_index,
+            "rows": self.rows_written,
+            "shard_rows": list(self.shard_rows),
+            "pack_seconds": self.pack_seconds,
+            "write_seconds": self.write_seconds,
+        }
 
 
 def _write_manifest(manifest: dict[str, Any], manifest_path: Path, *, incomplete: bool, split_stats: dict, pool_stats: dict, writers: dict | None = None) -> None:
@@ -215,6 +233,7 @@ def _write_manifest(manifest: dict[str, Any], manifest_path: Path, *, incomplete
             ),
             "flushed_shards": (writers[split].shard_index if writers else 0),
             "flushed_rows": (writers[split].rows_written if writers else 0),
+            "shard_rows": (list(writers[split].shard_rows) if writers else []),
             "shard_files": sorted(p.name for p in manifest_path.parent.glob(f"{split}_*.npz")),
         }
         for split in ("train", "holdout")
@@ -335,6 +354,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             prev_split = previous.get("splits", {}).get(split, {})
             writer.shard_index = int(prev_split.get("flushed_shards", 0))
             writer.rows_written = int(prev_split.get("flushed_rows", 0))
+            writer.shard_rows = [int(v) for v in prev_split.get("shard_rows", [])]
     split_stats = {
         split: {"hanchans": 0, "rows": 0, "behavior_matches": 0}
         for split in ("train", "holdout")
@@ -359,15 +379,34 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     mask_buffer: list[np.ndarray] = []
     row_meta: list[dict[str, Any]] = []
     file_hashes: dict[str, str] = {}
-    teacher_agreement_total = 0
-    behavior_rows_total = 0
+    if not previous:
+        teacher_agreement_total = 0
+        behavior_rows_total = 0
+
+    # Per-phase timing (seconds): where the relabel wall-clock actually goes.
+    #   parse:    libriichi gzip load + PlayerState replay per source file
+    #   sha:      source-file SHA-256 hashing
+    #   stack:    np.stack of the inference batch (numpy -> pinned transfer)
+    #   inference: teacher forward (mortal + dqn) incl. H2D/D2H copies
+    #   write:    npz compression + atomic replace
+    #   total:    whole run (includes everything else)
+    timing = {
+        "parse": 0.0,
+        "sha": 0.0,
+        "stack": 0.0,
+        "inference": 0.0,
+        "write": 0.0,
+    }
 
     def _flush_inference() -> None:
         nonlocal teacher_agreement_total, behavior_rows_total
         if not obs_buffer:
             return
+        t_stack = time.perf_counter()
         obs_t = torch.as_tensor(np.stack(obs_buffer), device=device)
         mask_t = torch.as_tensor(np.stack(mask_buffer), device=device)
+        timing["stack"] += time.perf_counter() - t_stack
+        t_infer = time.perf_counter()
         with (
             torch.autocast(device.type, enabled=bool(args.enable_amp)),
             torch.inference_mode(),
@@ -376,6 +415,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             q_out = dqn(phi, mask_t)
         q_np = q_out.to(torch.float32).cpu().numpy()
         greedy = q_np.argmax(axis=-1)
+        timing["inference"] += time.perf_counter() - t_infer
         for i, meta in enumerate(row_meta):
             row = {
                 "obs": obs_buffer[i],
@@ -385,7 +425,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "teacher_q": q_np[i],
                 "pool_index": meta["pool_index"],
                 "player_id": meta["player_id"],
-                "file_row": meta["file_row"],
+ "file_row": meta["file_row"],
             }
             writers[meta["split"]].add(row)
             split_stats[meta["split"]]["rows"] += 1
@@ -406,10 +446,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             if file_key in manifest["files"]:
                 # Already recorded by a previous snapshot; skip entirely.
                 continue
+            t_sha = time.perf_counter()
             file_sha = _sha256_file(path)
+            timing["sha"] += time.perf_counter() - t_sha
             file_hashes[file_key] = file_sha
             split = _holdout_bucket(file_key, args.holdout_salt, args.holdout_ratio)
+            t_parse = time.perf_counter()
             data = loader.load_gz_log_files([str(path)])
+            timing["parse"] += time.perf_counter() - t_parse
             if len(data) != 1:
                 raise RuntimeError(f"loader returned {len(data)} entries for one file: {path}")
             for game in data[0]:
@@ -463,6 +507,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     for writer in writers.values():
         writer.close()
 
+    elapsed = time.time() - started_at
     manifest["splits"] = {
         split: {
             **split_stats[split],
@@ -473,6 +518,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "flushed_shards": writers[split].shard_index,
             "flushed_rows": writers[split].rows_written,
+            "shard_rows": list(writers[split].shard_rows),
             "shard_files": sorted(p.name for p in output_dir.glob(f"{split}_*.npz")),
         }
         for split in ("train", "holdout")
@@ -485,6 +531,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             teacher_agreement_total / behavior_rows_total if behavior_rows_total else None
         ),
     }
+    manifest["timing"] = {
+        **{key: round(value, 3) for key, value in timing.items()},
+        "pack": round(sum(w.pack_seconds for w in writers.values()), 3),
+        "write": round(sum(w.write_seconds for w in writers.values()), 3),
+        "total": round(elapsed, 3),
+        "rows_per_sec_total": (
+            round(manifest["totals"]["rows"] / elapsed, 1) if elapsed > 0 else None
+        ),
+    }
     tmp_path = manifest_path.with_name(manifest_path.name + ".tmp")
     tmp_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp_path.replace(manifest_path)
@@ -493,8 +548,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     print(json.dumps({
         "totals": manifest["totals"],
         "splits": {s: manifest["splits"][s] for s in ("train", "holdout")},
-        "elapsed_sec": elapsed,
-        "rows_per_sec": manifest["totals"]["rows"] / elapsed if elapsed > 0 else None,
+        "timing": manifest["timing"],
         "manifest": str(manifest_path),
     }, ensure_ascii=False, indent=2), flush=True)
     return manifest

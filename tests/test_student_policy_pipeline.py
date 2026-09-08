@@ -50,6 +50,27 @@ def _synthetic_shard(path: Path, rows: int, seed: int) -> None:
     )
 
 
+class TestManifestRowCount:
+    def test_rows_from_manifest_shard_rows(self) -> None:
+        from training.mortal.train_student_policy import _rows_from_manifest
+
+        manifest = {"splits": {"train": {"shard_rows": [10, 20, 30], "flushed_shards": 3, "flushed_rows": 60}}}
+        assert _rows_from_manifest(manifest, "train", [Path("a"), Path("b"), Path("c")]) == 60
+
+    def test_rows_from_manifest_flushed_fallback(self) -> None:
+        from training.mortal.train_student_policy import _rows_from_manifest
+
+        manifest = {"splits": {"train": {"flushed_shards": 2, "flushed_rows": 25}}}
+        assert _rows_from_manifest(manifest, "train", [Path("a"), Path("b")]) == 25
+
+    def test_rows_from_manifest_refuses_missing(self) -> None:
+        from training.mortal.train_student_policy import _rows_from_manifest
+
+        manifest = {"splits": {"train": {"shard_rows": [10, 20]}}}
+        with pytest.raises(RuntimeError):
+            _rows_from_manifest(manifest, "train", [Path("a"), Path("b"), Path("c")])
+
+
 class TestShardStream:
     def test_sequential_order_and_cursor(self, tmp_path: Path) -> None:
         from training.mortal.train_student_policy import ShardStream

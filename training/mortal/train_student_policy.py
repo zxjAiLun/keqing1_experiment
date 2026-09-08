@@ -147,12 +147,22 @@ class ShardStream:
         return payload, (next_shard, next_row)
 
 
-def _shard_row_total(shard_paths: list[Path]) -> int:
-    total = 0
-    for path in shard_paths:
-        with np.load(path) as payload:
-            total += int(len(payload["obs"]))
-    return total
+def _rows_from_manifest(manifest: dict[str, Any], split: str, shard_paths: list[Path]) -> int:
+    """Row count for a split, read from the manifest instead of decompressing
+    every shard.  Falls back to summing ``shard_rows`` by shard filename order;
+    only if the manifest lacks both does it scan shards (loud, not silent)."""
+    split_info = manifest.get("splits", {}).get(split, {})
+    shard_rows = split_info.get("shard_rows")
+    if shard_rows is not None and len(shard_rows) == len(shard_paths):
+        return int(sum(shard_rows))
+    flushed = split_info.get("flushed_rows")
+    if flushed is not None and int(split_info.get("flushed_shards", -1)) == len(shard_paths):
+        return int(flushed)
+    raise RuntimeError(
+        f"manifest does not record a usable row count for split {split!r} "
+        f"(shard_rows={shard_rows!r}, shards on disk={len(shard_paths)}); "
+        "regenerate the label cache manifest"
+    )
 
 
 def _build_models(*, version: int, conv_channels: int, num_blocks: int, device: torch.device, mortal_root: Path):
@@ -186,9 +196,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     holdout_shards = _shard_paths(args.dataset_dir.resolve(), "holdout")
 
     logging.info("train shards: %d, holdout shards: %d", len(train_shards), len(holdout_shards))
-    train_rows = _shard_row_total(train_shards)
-    holdout_rows = _shard_row_total(holdout_shards)
-    logging.info("train rows: %s, holdout rows: %s", f"{train_rows:,}", f"{holdout_rows:,}")
+    train_rows = _rows_from_manifest(manifest, "train", train_shards)
+    holdout_rows = _rows_from_manifest(manifest, "holdout", holdout_shards)
+    logging.info("train rows: %s, holdout rows: %s (from manifest)", f"{train_rows:,}", f"{holdout_rows:,}")
 
     version = 4
     mortal, dqn = _build_models(
@@ -269,6 +279,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "teacher_sha256": manifest.get("teacher_sha256"),
             "totals": manifest.get("totals"),
             "holdout_ratio": manifest.get("holdout_ratio"),
+            "train_rows": int(train_rows),
+            "holdout_rows": int(holdout_rows),
         },
         "optim": {
             "lr": float(args.lr),
