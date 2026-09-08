@@ -466,11 +466,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             timing["parse"] += time.perf_counter() - t_parse
             if len(data) != 1:
                 raise RuntimeError(f"loader returned {len(data)} entries for one file: {path}")
+            file_rows = 0
             for game in data[0]:
                 obs = game.take_obs()
                 masks = game.take_masks()
                 actions = game.take_actions()
                 player_id = int(game.take_player_id())
+                file_rows += len(obs)
                 for row_index in range(len(obs)):
                     obs_buffer.append(obs[row_index])
                     mask_buffer.append(masks[row_index])
@@ -486,7 +488,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     if len(obs_buffer) >= args.inference_batch:
                         _flush_inference()
             pool_stats[pool_name]["files"] += 1
-            pool_stats[pool_name]["rows"] += len(obs) * 4  # all four perspectives contributed
+            pool_stats[pool_name]["rows"] += file_rows
             split_stats[split]["hanchans"] += 1
             manifest["files"][file_key] = {
                 "pool": pool_name,
