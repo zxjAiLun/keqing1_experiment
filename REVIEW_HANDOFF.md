@@ -34,7 +34,7 @@
 | 决策行 | **11,487,044**（train 10,340,197 / holdout 1,146,847；holdout 10.03%，按 hanchan SHA-256 划分） |
 | teacher-behavior agreement | **94.72%**（train/holdout 间一致：94.72/94.68） |
 | 分片 | 5,796 npz（zlib-1，23GB） |
-| 完整性验证 | `incomplete=None`；抽样 12 分片 23,379 行教师+行为标签 100% 在 legal mask 内；`shard_rows` 与分片逐个精确一致；总和 == totals；源文件 SHA 全记录 |
+| 完整性验证 | `incomplete=None`；抽样 12 分片 23,379 行教师+行为标签 100% 在 legal mask 内；`shard_rows` 与分片逐个精确一致；总和 == totals；源文件 SHA 全记录。**限制**：旧版一次 snapshot→kill→resume 边界可能遗漏尚留在 inference buffer 的最多 511 行（512 batch），因此这些检查证明 cache 内部账面/磁盘一致，不证明对全部源状态逐行无遗漏；见“已知问题与限制”。 |
 | 生成耗时 | 两段共约 8h（首轮 5.6h 到 68% 中断 + 续跑 2.8h），中间经历一次手动停止→manifest 快照续跑 |
 
 三池行数：S0 3,856,181 / D3 3,872,813 / V2 3,758,214。
@@ -74,11 +74,12 @@ student：`192×40 v4、batch 512、lr 1e-4、AdamW wd 0.1、warmup 200、fp32`�
 
 ## 已知问题与限制
 
-1. **CUDA conv backward 非确定性**：断点恢复后权重轨迹与不间断运行相差 ~1e-3 量级（两次 fresh run 也不同）。流 cursor/RNG/optimizer/scheduler/scaler 状态恢复是精确的。与 Mortal 主线 runner 同等保证水平。
-2. holdout 划分按 hanchan SHA-256，**未按池分层**（实测 train/holdout agreement 一致，但 S0/D3/V2 在 holdout 中的比例未显式控制）。
-3. 杠选择行（`always_include_kan_select=True`）与行为动作同语义重标注（教师贪心含杠后选牌）。
-4. V2 的 `platform_accounts` 是同 6,000 场重命名副本，未计入（勘察确认）；三池合计 18,000 场无重复 canonical game。
-5. relabel 的 `pool_stats.rows` 首轮（12,300 场）用的是近似计数（最后一场×4），续跑段为精确计数；manifest `files`/`shard_rows`/totals 均精确，`pool_stats.rows` 仅 S0/D3 段有 ~1% 近似（已在 head commit 修复后续运行）。
+1. **旧版正式 cache 的一次 resume 边界风险（量化且不重建）**：旧代码周期性 snapshot 时先记录完成文件、但未先排空 inference buffer；若随即 kill/resume，已标记文件的尾部最多 `inference_batch - 1 = 511` 行会被跳过。正式 cache 已知仅一次中断/续跑，因此理论上限为 **511 / 11,487,044 = 0.00445%** 行，并不推翻 cache/25k 训练或要求重建 23GB cache。cache 的 shard/manifest 内部一致性仍成立，但不再表述为“源状态逐行完全无遗漏”。新代码已将 `_flush_inference()` 置于周期 snapshot 前；marker-based interrupted-vs-continuous regression 直接比较完整 payload sequence，防止复发。
+2. **CUDA conv backward 非确定性**：断点恢复后权重轨迹与不间断运行相差 ~1e-3 量级（两次 fresh run 也不同）。流 cursor/RNG/optimizer/scheduler/scaler 状态恢复是精确的。与 Mortal 主线 runner 同等保证水平。
+3. holdout 划分按 hanchan SHA-256，**未按池分层**（实测 train/holdout agreement 一致，但 S0/D3/V2 在 holdout 中的比例未显式控制）。
+4. 杠选择行（`always_include_kan_select=True`）与行为动作同语义重标注（教师贪心含杠后选牌）。
+5. V2 的 `platform_accounts` 是同 6,000 场重命名副本，未计入（勘察确认）；三池合计 18,000 场无重复 canonical game。
+6. `pool_stats.rows` 首轮（12,300 场）曾用近似计数；正式 totals/`files`/`shard_rows` 精确，且后续代码已修正 pool 统计。
 
 ## Review 已决事项
 

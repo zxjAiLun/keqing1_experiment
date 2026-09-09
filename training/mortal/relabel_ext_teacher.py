@@ -504,9 +504,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                     flush=True,
                 )
             # Persist the manifest periodically so an interrupted run can
-            # --resume from the last flush boundary: stale tail shards are
-            # discarded on resume, and completed source files are skipped.
+            # --resume from the last flush boundary.  Flush inference first so
+            # every row from files marked complete is handed to the writers;
+            # _write_manifest then flushes those writer buffers before snapshot.
             if (file_index + 1) % int(args.manifest_snapshot_every) == 0:
+                _flush_inference()
                 _write_manifest(
                     manifest, manifest_path,
                     incomplete=True,
