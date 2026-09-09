@@ -66,27 +66,11 @@ student：`192×40 v4、batch 512、lr 1e-4、AdamW wd 0.1、warmup 200、fp32`�
 
 **pilot 300 场（88,418 行）**：2000 步 train CE 1.75→0.09、agreement 0.38→0.97；holdout step 500 触底 0.708 后过拟合（预期，小包容量耗尽）。恢复验证：2100 步 cursor 与逐 shard 模拟逐位一致。
 
-**正式缓存 sanity（11.49M 行）**：1200 步（61 万行暴露）：
+**旧版顺序采样 sanity（11.49M 缓存上的管线检查）**：1200 步时 holdout CE 0.787→0.584、agreement 0.738→0.788。由于当时 train shard 未打散且 holdout 从 shard 0 开始顺序读，这组数字只证明 **S0 前段训练 + S0 前段 holdout 持续改善**，不代表跨全缓存/三池的 holdout 曲线。`7c37dda` 后已按 review 修复：train shard 以固定 seed 一次性打散；holdout 从全范围均匀取 24 shard，并报告 overall + S0/D3/V2。正式 25k 训练只使用修复后的采样语义。
 
-| steps | holdout CE | holdout agreement |
-|---|---|---|
-| 400 | 0.787 | 0.738 |
-| 800 | 0.608 | 0.776 |
-| 1200 | 0.584 | 0.788 |
+## 正式训练预算（review 决策）
 
-**无过拟合迹象，持续收敛**。train CE 0.563 / agreement 0.794 @1200。吞吐 ~1,100 rows/s（0.47s/step 含 holdout 评估）。
-
-## 正式训练预算（提案，待 review 决策）
-
-按实测 1,100 rows/s（0.47s/step）：
-
-| 方案 | 步数 | 行暴露 | 耗时 | 说明 |
-|---|---|---|---|---|
-| 最小正式 | 25,000 | 12.8M（≈1.24 epoch） | ~3.3h | 略超一个 epoch 的暴露量 |
-| 建议 | 50,000 | 25.6M（≈2.5 epoch） | ~6.5h | pilot 过拟合点在大包下显著推迟 |
-| 上限 | 100,000 | 51.2M（≈5 epoch） | ~13h | 需看 holdout 曲线决定是否值得 |
-
-建议以 holdout agreement 为读点指标（每 2000 步评估一次，checkpoint 每 2000 步），先跑 50,000 步（~6.5h，过夜），按曲线再议是否延长。磁盘：checkpoint ~130MB/个 × 保留读点。
+第一读点固定为 **25,000 步**（约 1.x pass）：192×40、batch 512、fp32、pure teacher-greedy CE、lr 1e-4、AdamW wd 0.1、warmup **显式 200**。每 2,000 步输出/保存 overall + S0/D3/V2 holdout 指标；25k 后先看四条曲线。若 overall 与各 pool 仍明显改善，则从同一 checkpoint/实验身份续到 50k；若平台或单池恶化，先 review 曲线。
 
 ## 已知问题与限制
 
@@ -96,10 +80,10 @@ student：`192×40 v4、batch 512、lr 1e-4、AdamW wd 0.1、warmup 200、fp32`�
 4. V2 的 `platform_accounts` 是同 6,000 场重命名副本，未计入（勘察确认）；三池合计 18,000 场无重复 canonical game。
 5. relabel 的 `pool_stats.rows` 首轮（12,300 场）用的是近似计数（最后一场×4），续跑段为精确计数；manifest `files`/`shard_rows`/totals 均精确，`pool_stats.rows` 仅 S0/D3 段有 ~1% 近似（已在 head commit 修复后续运行）。
 
-## 需要 review 决策的事项
+## Review 已决事项
 
-1. **训练预算**：25k / 50k / 100k 步（或按 epoch 定义），读点间隔。
-2. **holdout 划分**是否需要改为按池分层（当前 SHA 哈希，实测无偏）。
-3. **标签语义确认**：纯贪心（无 agari guard）是否符合"教师重新作答"的预期——S0 内 ~0.04% 守卫翻转行,学生会被教成"all-last 末位不放弃和牌"。这是文档语义的自然结果，但值得显式确认。
-4. **学生容量**：192×40（K0 家族）vs 教师同容量 256×54。当前按改向文档"网络容量按现有 GPU 吞吐定一个配置"选了 192×40（也是 K0 容量，便于历史对照）。
+1. 标签保持 external network 的纯贪心 hard label；不把 arena `rule_based_agari_guard` 混入 cache，不重生成标签。
+2. hanchan SHA holdout split 保持不变；不按池重划、不重建 cache。只修 evaluator 采样。
+3. 学生容量保持 192×40；不加 soft-Q/value/auxiliary loss。
+4. 正式训练第一读点为 25k；健康则同一 checkpoint 续到 50k。
 5. 后续阶段（学生自身状态采集）不在本 handoff 范围。

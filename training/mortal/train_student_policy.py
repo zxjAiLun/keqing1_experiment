@@ -52,7 +52,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--conv-channels", type=int, default=192)
     parser.add_argument("--num-blocks", type=int, default=40)
     parser.add_argument("--holdout-every", type=int, default=2000, help="steps between holdout evaluations (0 disables)")
-    parser.add_argument("--holdout-batches", type=int, default=20)
+    parser.add_argument("--holdout-batches", type=int, default=24, help="uniformly spaced holdout shards; one batch per shard")
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--save-every", type=int, default=2000)
     parser.add_argument("--num-workers", type=int, default=0, help="dataloader workers for shard reading (0: main process)")
@@ -90,6 +90,16 @@ def _shard_paths(dataset_dir: Path, split: str) -> list[Path]:
     if not paths:
         raise FileNotFoundError(f"no {split}_*.npz shards in {dataset_dir}")
     return paths
+
+
+def _uniform_shard_indices(shard_count: int, sample_count: int) -> list[int]:
+    """Deterministically spread samples across the full shard range."""
+    if shard_count <= 0 or sample_count <= 0:
+        return []
+    count = min(shard_count, sample_count)
+    if count == 1:
+        return [0]
+    return [round(i * (shard_count - 1) / (count - 1)) for i in range(count)]
 
 
 class ShardStream:
@@ -194,8 +204,18 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     manifest = _load_manifest(args.dataset_dir.resolve())
     train_shards = _shard_paths(args.dataset_dir.resolve(), "train")
     holdout_shards = _shard_paths(args.dataset_dir.resolve(), "holdout")
+    # The cache is physically ordered S0 -> D3 -> V2.  Shuffle only the shard
+    # list, once and deterministically, so the existing cursor/resume contract
+    # remains unchanged while each pass mixes all three source pools.
+    random.Random(int(args.seed)).shuffle(train_shards)
+    holdout_indices = _uniform_shard_indices(len(holdout_shards), int(args.holdout_batches))
+    holdout_sample_shards = [holdout_shards[index] for index in holdout_indices]
+    pool_names = list(manifest.get("pools", {}))
+    if not pool_names:
+        raise RuntimeError("dataset manifest does not record pool identities")
 
-    logging.info("train shards: %d, holdout shards: %d", len(train_shards), len(holdout_shards))
+    logging.info("train shards: %d (seed-shuffled), holdout shards: %d", len(train_shards), len(holdout_shards))
+    logging.info("holdout sample: %d shards uniformly spanning indices %s", len(holdout_indices), holdout_indices)
     train_rows = _rows_from_manifest(manifest, "train", train_shards)
     holdout_rows = _rows_from_manifest(manifest, "holdout", holdout_shards)
     logging.info("train rows: %s, holdout rows: %s (from manifest)", f"{train_rows:,}", f"{holdout_rows:,}")
@@ -230,7 +250,6 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     scaler = torch.amp.GradScaler(device.type, enabled=bool(args.enable_amp))
 
     stream = ShardStream(train_shards, seed=int(args.seed))
-    holdout_stream = ShardStream(holdout_shards, seed=int(args.seed) + 1)
 
     steps = 0
     cursor = (0, 0)
@@ -291,6 +310,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         },
         "git_commit": _git_revision(_REPO_ROOT),
         "seed": int(args.seed),
+        "sampling": {
+            "train": "seeded_one_time_shard_shuffle",
+            "holdout": "uniform_full_range_one_batch_per_shard",
+            "holdout_shard_indices": holdout_indices,
+            "pool_names": pool_names,
+        },
     }
     (output_dir / "training_contract.json").write_text(
         json.dumps(contract, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -320,13 +345,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     def evaluate_holdout() -> dict[str, float]:
         mortal.eval()
         dqn.eval()
-        total_ce = 0.0
-        total_agree = 0.0
-        total_rows = 0
-        # Sequential scan over holdout batches (deterministic, fixed count).
-        hcursor = (0, 0)
-        for _ in range(int(args.holdout_batches)):
-            payload, hcursor = holdout_stream.read_chunk(hcursor[0], hcursor[1], int(args.batch_size))
+        totals = {name: {"ce": 0.0, "agree": 0.0, "rows": 0} for name in ["overall", *pool_names]}
+        # One batch from each uniformly spaced shard.  Unlike a prefix scan,
+        # this remains deterministic while covering the cache's S0/D3/V2 span.
+        for shard_path in holdout_sample_shards:
+            with np.load(shard_path) as shard:
+                take = min(int(args.batch_size), len(shard["obs"]))
+                payload = {key: shard[key][:take] for key in ("obs", "mask", "teacher_action", "pool")}
             obs = torch.as_tensor(payload["obs"], dtype=torch.float32, device=device)
             mask = torch.as_tensor(payload["mask"], dtype=torch.bool, device=device)
             teacher_action = torch.as_tensor(payload["teacher_action"], dtype=torch.int64, device=device)
@@ -336,16 +361,29 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             log_probs = q_out.float().log_softmax(dim=-1)
             ce = -log_probs.gather(1, teacher_action.unsqueeze(1)).squeeze(1)
             agree = (q_out.float().argmax(dim=-1) == teacher_action).to(torch.float32)
-            total_ce += float(ce.sum().cpu())
-            total_agree += float(agree.sum().cpu())
-            total_rows += int(obs.shape[0])
+            pool_ids = torch.as_tensor(payload["pool"], dtype=torch.int64, device=device)
+            for pool_id, name in enumerate(pool_names):
+                selected = pool_ids == pool_id
+                rows = int(selected.sum().item())
+                if rows:
+                    totals[name]["ce"] += float(ce[selected].sum().cpu())
+                    totals[name]["agree"] += float(agree[selected].sum().cpu())
+                    totals[name]["rows"] += rows
+            totals["overall"]["ce"] += float(ce.sum().cpu())
+            totals["overall"]["agree"] += float(agree.sum().cpu())
+            totals["overall"]["rows"] += int(obs.shape[0])
         mortal.train()
         dqn.train()
-        return {
-            "holdout_ce": total_ce / max(1, total_rows),
-            "holdout_agreement": total_agree / max(1, total_rows),
-            "holdout_rows": float(total_rows),
-        }
+        metrics: dict[str, float] = {}
+        for name, values in totals.items():
+            rows = int(values["rows"])
+            if rows == 0:
+                raise RuntimeError(f"holdout sample has no rows for pool {name!r}")
+            prefix = "holdout" if name == "overall" else f"holdout_{name}"
+            metrics[f"{prefix}_ce"] = values["ce"] / rows
+            metrics[f"{prefix}_agreement"] = values["agree"] / rows
+            metrics[f"{prefix}_rows"] = float(rows)
+        return metrics
 
     window_ce = 0.0
     window_agree = 0.0
@@ -425,11 +463,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             metrics["steps"] = steps
             history.append(metrics)
             logging.info(
-                "holdout: steps=%s ce=%.4f agreement=%.4f rows=%.0f",
+                "holdout: steps=%s overall ce=%.4f agreement=%.4f rows=%.0f",
                 steps, metrics["holdout_ce"], metrics["holdout_agreement"], metrics["holdout_rows"],
             )
             writer.add_scalar("holdout/ce", metrics["holdout_ce"], steps)
             writer.add_scalar("holdout/agreement", metrics["holdout_agreement"], steps)
+            for pool_name in pool_names:
+                prefix = f"holdout_{pool_name}"
+                logging.info(
+                    "holdout: steps=%s pool=%s ce=%.4f agreement=%.4f rows=%.0f",
+                    steps, pool_name, metrics[f"{prefix}_ce"], metrics[f"{prefix}_agreement"], metrics[f"{prefix}_rows"],
+                )
+                writer.add_scalar(f"holdout/{pool_name}/ce", metrics[f"{prefix}_ce"], steps)
+                writer.add_scalar(f"holdout/{pool_name}/agreement", metrics[f"{prefix}_agreement"], steps)
 
         if int(args.save_every) > 0 and steps % int(args.save_every) == 0:
             save_checkpoint()
