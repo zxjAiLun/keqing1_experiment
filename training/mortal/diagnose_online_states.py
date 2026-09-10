@@ -136,12 +136,24 @@ def _mask_bits(mask: np.ndarray) -> int:
     return bits
 
 
-def _replay_hanchan(path: Path, student_seats: list[int]) -> dict[int, list[dict[str, Any]]]:
-    """Decision states per student seat, in log order."""
+def _replay_hanchan(
+    path: Path,
+    student_seats: list[int],
+    counters: collections.Counter | None = None,
+) -> dict[int, list[dict[str, Any]]]:
+    """Model-consulted decision states per seat, in log order.
+
+    Mirrors the arena-consultation rule already established in
+    ``d3_native_scene``: a post-riichi forced discard (exactly one legal action)
+    may report ``can_act`` but is never a real model decision, so it must not be
+    counted.  Such rows are trivially perfect (same action for both models, zero
+    teacher gap, rank 1) and would inflate agreement.
+    """
     from libriichi.state import PlayerState  # noqa: PLC0415
 
     events = read_log_events(path)
     collected: dict[int, list[dict[str, Any]]] = {seat: [] for seat in student_seats}
+    counted = {seat: 0 for seat in student_seats}
     for seat in student_seats:
         state = PlayerState(seat)
         kyoku = -1
@@ -153,6 +165,8 @@ def _replay_hanchan(path: Path, student_seats: list[int]) -> dict[int, list[dict
             state.update(json.dumps(event, ensure_ascii=False))
             if not state.last_cans.can_act:
                 continue
+            if counters is not None:
+                counters["raw_can_act"] += 1
             label = expected_label(events, index, seat, state)
             # version 4, at_kan_select=False: the main decision row of the 46-dim
             # action space (kan choices are still label 42, matching gameplay.rs).
@@ -162,6 +176,14 @@ def _replay_hanchan(path: Path, student_seats: list[int]) -> dict[int, list[dict
                 "mask_bits": following.get("meta", {}).get("mask_bits"),
                 "q_values": following.get("meta", {}).get("q_values"),
             } if following is not None and following.get("meta") else {}
+            # Same predicate as d3_native_scene: own riichi + single legal action.
+            own_riichi = bool(state.self_riichi_declared or state.self_riichi_accepted)
+            if own_riichi and int(np.asarray(mask).sum()) == 1:
+                if counters is not None:
+                    counters["forced_post_riichi_skipped"] += 1
+                    if logged_meta.get("mask_bits") is not None:
+                        counters["forced_post_riichi_with_logged_meta"] += 1
+                continue
             collected[seat].append(
                 {
                     "obs": obs,
@@ -175,6 +197,9 @@ def _replay_hanchan(path: Path, student_seats: list[int]) -> dict[int, list[dict
                 }
             )
             decision_index += 1
+            counted[seat] += 1
+    if counters is not None and collected:
+        counters["seats_replayed"] += len(collected)
     return collected
 
 
@@ -219,6 +244,8 @@ def _analyse(run_label: str, log_dir: Path, args: argparse.Namespace, student, t
     student_action_types = collections.Counter()
     teacher_action_types = collections.Counter()
     agree_by_action_type = collections.defaultdict(lambda: [0, 0])
+    # per action type: [agreement, support, gap_mass, gap_gt_1]
+    type_stats = collections.defaultdict(lambda: [0.0, 0, 0.0, 0])
     by_kyoku: dict[int, list[float]] = collections.defaultdict(lambda: [0.0, 0.0])
     by_phase: dict[str, list[float]] = collections.defaultdict(lambda: [0.0, 0.0])
 
@@ -236,7 +263,11 @@ def _analyse(run_label: str, log_dir: Path, args: argparse.Namespace, student, t
         seed = int(list(first.get("seed") or [0])[0])
         counters["hanchans"] += 1
 
-        collected = _replay_hanchan(path, student_seats + [seat for seat in teacher_seats if seat not in student_seats])
+        collected = _replay_hanchan(
+            path,
+            student_seats + [seat for seat in teacher_seats if seat not in student_seats],
+            counters,
+        )
         for seat, records in collected.items():
             if not records:
                 continue
@@ -284,6 +315,11 @@ def _analyse(run_label: str, log_dir: Path, args: argparse.Namespace, student, t
                     bucket = agree_by_action_type[ACTION_TYPES.get(teacher_choice, "unknown")]
                     bucket[0] += agree
                     bucket[1] += 1
+                    type_bucket = type_stats[ACTION_TYPES.get(teacher_choice, "unknown")]
+                    type_bucket[0] += agree
+                    type_bucket[1] += 1
+                    type_bucket[2] += gap
+                    type_bucket[3] += int(gap > 1.0)
                     if row["label"] is not None:
                         legal_actual = np.where(mask, teacher_outputs["q"][index], -np.inf)
                         gap_actual_values.append(float(legal_actual.max() - legal_actual[int(row["label"])]))
@@ -320,15 +356,30 @@ def _analyse(run_label: str, log_dir: Path, args: argparse.Namespace, student, t
         }
 
     decisions = counters["student_decisions"]
+    total_gap = float(sum(gap_values))
     return {
         "run": run_label,
         "log_dir": str(log_dir),
         "hanchans": counters["hanchans"],
         "student_seats_decisions": decisions,
         "teacher_seats_decisions": counters["teacher_decisions"],
+        "consultation_filter": {
+            "rule": "model-consulted states only: post-riichi forced discards (own riichi AND exactly 1 legal action) are excluded, mirroring d3_native_scene",
+            "raw_can_act_states": counters["raw_can_act"],
+            "forced_post_riichi_skipped": counters["forced_post_riichi_skipped"],
+            "forced_skip_rate_of_raw_can_act": (
+                counters["forced_post_riichi_skipped"] / counters["raw_can_act"] if counters["raw_can_act"] else None
+            ),
+            "forced_skipped_that_had_logged_meta": counters["forced_post_riichi_with_logged_meta"],
+            "note": "forced_skipped_that_had_logged_meta is evidence about this arena: >0 would mean the arena did consult those states",
+            "corrected_consulted_states": counters["raw_can_act"] - counters["forced_post_riichi_skipped"],
+        },
         "offline_comparison_anchor": {
-            "note": "compare with the offline holdout figures recorded for the same student",
-            "offline_full_holdout_agreement": 0.9046830135144444 if args.student_name == "student50k" else None,
+            "note": "offline anchor must be the >=2-legal fixed-sample diagnostic, not the full holdout which includes single-legal-action rows",
+            "offline_ge2_legal_fixed_sample_agreement": (
+                0.9007 if args.student_name == "student50k" else (0.9133 if args.student_name == "student_distill5k" else None)
+            ),
+            "offline_ge2_legal_sample_rows": 75855,
         },
         "agreement": {
             "teacher_argmax_vs_student_argmax": (counters["student_teacher_agree"] / decisions) if decisions else None,
@@ -363,6 +414,20 @@ def _analyse(run_label: str, log_dir: Path, args: argparse.Namespace, student, t
         "agreement_by_teacher_action_type": {
             name: {"agreement": bucket[0] / bucket[1], "n": bucket[1]}
             for name, bucket in sorted(agree_by_action_type.items())
+            if bucket[1]
+        },
+        "teacher_action_type_contribution": {
+            name: {
+                "support": int(bucket[1]),
+                "support_share": bucket[1] / decisions if decisions else None,
+                "agreement": bucket[0] / bucket[1],
+                "disagreements": int(bucket[1] - bucket[0]),
+                "disagreement_share": ((bucket[1] - bucket[0]) / decisions) if decisions else None,
+                "teacher_q_gap_mass": bucket[2],
+                "teacher_q_gap_mass_share": (bucket[2] / total_gap) if total_gap > 0 else None,
+                "gap_gt_1_count": int(bucket[3]),
+            }
+            for name, bucket in sorted(type_stats.items())
             if bucket[1]
         },
         "student_actual_action_types": dict(sorted(student_action_types.items())),
