@@ -13,7 +13,7 @@
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
     "current_stage": "P4 学生主线（Mortal-native 学生）：P4-M1 现成语料 external 重标注缓存已建立并关闭（18,000 半庄 / 11,487,044 行 / agreement 94.72%）；P4-M2 硬标签 192×40 学生训练 50k 完成（holdout agreement 0.9047），1v3 双向显示与 K0 无明确强弱差异、弱于 external 约 9–10 pt/半庄；P4-M3 T=1 纯 KL 软目标蒸馏 5k 监督侧改善明显但实战未获 support（参数线关闭）；P4-M4/P4-M5 诊断确认错误集中在教师 top-2 gap 小的状态，且在线（学生自走出局面）一致率与离线基本一致——状态分布偏移支不成立。K1 仍未产生；本线尚无 promotion gate。",
-    "next_experiment": "P4-M6_student_capacity_probe_256x54_2026_09",    "next_experiment_status": "pre_registered_not_started",    "prohibitions": [
+    "next_experiment": "P4-M6_student_capacity_probe_256x54_2026_09",    "next_experiment_status": "preregistered_not_started",    "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
       "不重跑 D1/D2/D3 或扫描后代视角比例。",
@@ -1966,7 +1966,7 @@
         "教师 checkpoint 由 sha256 绑定；标签=纯贪心，不含 arena rule_based_agari_guard",
         "分片 zlib-1（zipfile deflate level 1），rows_per_shard=2048，inference_batch=512，fp32"
       ],
-      "training_seeds": null,
+      "training_seeds": [],
       "evaluation_protocol": "teacher-behavior agreement（train/holdout 分列）；抽样分片标签合法性与 shard_rows 一致性；manifest totals 与磁盘分片逐一对账",
       "status": "operational",
       "primary_result": "18,000 半庄 / 11,487,044 行（train 10,340,197 / holdout 1,146,847）/ agreement 94.72%（train 94.72 / holdout 94.68）/ 5,796 npz / 23GB / incomplete=None；抽样 12 分片 23,379 行标签 100% 合法且行数与 manifest 逐分片一致",
@@ -2132,7 +2132,7 @@
         "单合法动作状态排除在 agreement/loss 之外",
         "跨池不比较原始 Q 差；严重度用池内中位 top-2 gap 作尺度"
       ],
-      "training_seeds": null,
+      "training_seeds": [],
       "evaluation_protocol": "agreement / 学生选择在教师排序中的名次 / 教师 top1−学生选择 Q 差分布与尾部 / 按教师 top-2 gap 四分位的错误率",
       "status": "analysis_only",
       "primary_result": "agreement 0.9007；错误 9.93%；错误中第2名占 81.8%、第3名 1,009、名次≥3 仅占全部状态约 2%；错误行教师 Q 差 p50 0.429 / p90 1.480 / p99 3.377；按教师自身 top-2 gap 四分位的错误率 0.312 → 0.073 → 0.011 → 0.001（三池同形）。教师 Q 尺度：top-2 gap p50 2.05、每状态合法 Q std p50 3.14。",
@@ -2172,7 +2172,7 @@
         "名次与一致率按 seed 聚类；mask 校验行单独复算",
         "离线锚点必须用 ≥2 合法动作的固定样本，不用含单合法动作的 full holdout/monitor"
       ],
-      "training_seeds": null,
+      "training_seeds": [],
       "evaluation_protocol": "model-consulted 状态上的 teacher agreement（含仅 mask 校验行版本）、教师 Q 差与尾部、名次≥3 占比、按动作类型与局内阶段的分解；完整性：重放 mask vs 日志 mask_bits、重推理复现日志动作",
       "status": "analysis_only",
       "primary_result": "修正后 online agreement：student50k 0.9006（A 单挑，66,407 决策）/ 0.9023（B 三座，120,179），distill5k 0.9134 / 0.9126；与离线 ≥2 合法锚点 0.9007 / 0.9133 基本一致（差 0.003–0.16 pp，CI 重叠）。Q 差/名次同样与离线持平或略好。forced post-riichi 跳过占 raw can_act 5.5–6.4%，其中带日志 meta 者 0 个（证实未被咨询）。完整性：mask 不符率 0.25–0.29%（不影响结论，另有 mask-verified-only 版本），重推理复现动作率 学生 0.9999 / 教师 0.9962–0.9970。动作类型：discard 占 88–90% 分歧与 83–86% gap mass；chi 条件一致率最差（0.71）但只占 3.4%/5.0%；distill5k 把错误重分配到立直（分歧 94→231、gap mass 份额 0.81%→3.08%）。",
@@ -2200,6 +2200,38 @@
       "preregistration": null,
       "formal_adjudication": null,
       "promoted_k1_checkpoint": null
+    },
+    {
+      "experiment_id": "P4-M6_student_capacity_probe_256x54_2026_09",
+      "name_zh": "P4-M6 学生容量探针 192×40 → 256×54（预注册，未启动）",
+      "category": "model_candidate",
+      "parent_model": "P4-M2 的训练 recipe（纯 hard teacher-greedy CE），容量改为教师同规模 256×54",
+      "control": "P4-M2 的 192×40 @50k 学生，沿用同一评测协议",
+      "variant": "fresh 256×54 student，除容量外其余与 P4-M2 完全一致（纯 hard 教师贪心 CE，无 MC/辅助头/锚定）",
+      "changed_variable": "学生网络容量 192×40 → 256×54（教师同规模，约 23.7M 参数）",
+      "fixed_variables": [
+        "目标函数仍为纯 masked-Q 教师贪心硬标签 CE；不混合软目标",
+        "数据仍为 P4-M1 缓存的 train 部分；holdout 不进入训练",
+        "评测协议沿用：全量 holdout + 1v3 双向（seed 聚类 CI95）",
+        "必须先完成 forward+backward 资源 smoke，并据其确定 microbatch 与是否使用梯度累积"
+      ],
+      "training_seeds": [],
+      "evaluation_protocol": "第一步仅为资源检查（GPU allocated/reserved、WDDM 总显存、RSS、step 吞吐）；训练预算与读点待资源结论后再登记",
+      "status": "preregistered_not_started",
+      "primary_result": "未启动：本轮只登记方向与前置条件，未训练、未占用 GPU。",
+      "promoted_data_route": false,
+      "promoted_checkpoint": false,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": "预注册理由：状态分布偏移候选已被 P4-M5 削弱；软目标候选（P4-M3）已试且未获 support；192×40 hard 学生在约 34k 后停在 ~90% fidelity；教师本身为 256×54；容量原本只是为验证训练路线而刻意压低。禁止直接按 batch512 开跑。",
+      "predecessor": "P4-M5_online_state_diagnostic_2026_09",
+      "next_experiment": null,
+      "commits": [],
+      "artifact_paths": [],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_50k训练_1v3双向评测_在线诊断_最终结果报告.md",
+        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_产物索引.json"
+      ]
     }
   ]
 }
