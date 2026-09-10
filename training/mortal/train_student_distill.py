@@ -117,6 +117,29 @@ def _kl_loss(*, student_q: torch.Tensor, teacher_q: torch.Tensor, legal: torch.T
     return _kl_per_row(student_q=student_q, teacher_q=teacher_q, legal=legal, temperature=temperature).mean()
 
 
+def _stage_contract(*, recipe: dict[str, Any], dataset_manifest: dict[str, Any]) -> dict[str, Any]:
+    """Checkpoint contract recognizable by the shared tooling.
+
+    Every consumer (native arena, holdout evaluation, supervision-gap diagnostic)
+    reads architecture through ``four_player_native._model_dimensions``, which
+    accepts the student-policy contract.  A stage checkpoint must therefore carry
+    one, or it cannot be evaluated at all.
+    """
+    return {
+        "schema": "keqing.mortal.student_policy_v1",
+        "student": recipe["student"],
+        "objective": recipe["objective"],
+        "parent_checkpoint": recipe["parent_checkpoint"],
+        "parent_sha256": recipe["parent_sha256"],
+        "parent_steps": recipe["parent_steps"],
+        "temperature": recipe["temperature"],
+        "optim": recipe["optim"],
+        "dataset_manifest": dataset_manifest,
+        "git_commit": recipe["git_commit"],
+        "distill_recipe": recipe,
+    }
+
+
 def _check_resume(recipe_path: Path, recipe: dict[str, Any], *, state_exists: bool, resume: bool) -> None:
     """Fail closed unless this stage's recorded recipe matches exactly."""
     if not state_exists:
@@ -244,7 +267,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "current_dqn": dqn.state_dict(),
                 "steps": steps,
                 "cursor": list(cursor),
-                "recipe": recipe,
+                "training_contract": stage_contract,
                 "parent_checkpoint": str(args.parent_checkpoint.resolve()),
             },
             path,
@@ -311,6 +334,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         return metrics
 
     writer = SummaryWriter(str(output_dir / "tb_distill"))
+    stage_contract = _stage_contract(recipe=recipe, dataset_manifest=recipe["dataset"])
     stage_saves = sorted({int(value) for value in args.stage_saves})
     if steps == 0 and 0 in stage_saves:
         save_stage(output_dir / "student_distill_step_000000.pth")

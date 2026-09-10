@@ -120,3 +120,35 @@ def test_recipe_identity_fails_closed(tmp_path: Path) -> None:
     ):
         with pytest.raises(RuntimeError, match="refusing --resume"):
             _check_resume(recipe_path, mutated, state_exists=True, resume=True)
+
+
+def test_stage_checkpoint_contract_is_readable_by_shared_tooling() -> None:
+    """Regression: stage checkpoints must be loadable by every consumer.
+
+    The native arena, the holdout evaluation, and the supervision-gap diagnostic
+    all read architecture through ``four_player_native._model_dimensions``. A
+    stage checkpoint without that contract is unusable in evaluation, which is
+    how the first saved stage files failed.
+    """
+    from training.mortal.four_player_native import _model_dimensions
+    from training.mortal.train_student_distill import _stage_contract
+
+    recipe = {
+        "objective": "kl_teacher_soft_target_only",
+        "parent_checkpoint": "parent.pth",
+        "parent_sha256": "deadbeef",
+        "parent_steps": 50000,
+        "student": {"version": 4, "conv_channels": 192, "num_blocks": 40},
+        "temperature": {"teacher": 1.0, "student": 1.0},
+        "optim": {"lr": 1e-5},
+        "git_commit": None,
+    }
+    contract = _stage_contract(recipe=recipe, dataset_manifest={"train_rows": 1, "holdout_rows": 1})
+    assert _model_dimensions({"training_contract": contract}) == (4, 192, 40)
+    # the parent stage's own hard-label contract must keep working unchanged
+    assert _model_dimensions({
+        "training_contract": {
+            "schema": "keqing.mortal.student_policy_v1",
+            "student": {"version": 4, "conv_channels": 192, "num_blocks": 40},
+        }
+    }) == (4, 192, 40)
