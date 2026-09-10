@@ -12,10 +12,8 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "T1 K0 legal-policy anchor continuation pilot 已完成完整闭环：定标 9/9、训练 16/16、评测 7/7、汇总 8/8 gates PASS；held-out policy-drift 三指标均在 3/3 seed 改善，但 Primary 与 Absolute 均未通过 strength gate。verdict=not_supported，未晋级 recipe/checkpoint，K1 保持 null；T1 身份按停止规则关闭，下一实验尚未选择。",
-    "next_experiment": null,
-    "next_experiment_status": "not_selected",
-    "prohibitions": [
+    "current_stage": "P4 学生主线（Mortal-native 学生）：P4-M1 现成语料 external 重标注缓存已建立并关闭（18,000 半庄 / 11,487,044 行 / agreement 94.72%）；P4-M2 硬标签 192×40 学生训练 50k 完成（holdout agreement 0.9047），1v3 双向显示与 K0 无明确强弱差异、弱于 external 约 9–10 pt/半庄；P4-M3 T=1 纯 KL 软目标蒸馏 5k 监督侧改善明显但实战未获 support（参数线关闭）；P4-M4/P4-M5 诊断确认错误集中在教师 top-2 gap 小的状态，且在线（学生自走出局面）一致率与离线基本一致——状态分布偏移支不成立。K1 仍未产生；本线尚无 promotion gate。",
+    "next_experiment": "P4-M6_student_capacity_probe_256x54_2026_09",    "next_experiment_status": "pre_registered_not_started",    "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
       "不重跑 D1/D2/D3 或扫描后代视角比例。",
@@ -29,7 +27,12 @@
       "F2 无重采样 2× disagreement 温和加权已按预注册规则正式终止：不做权重网格、不做 margin threshold、不做比例 sweep；F1→F2 的 Primary 回升与重采样伤害假设一致但不能完成机制归因，不得宣称加权本身无害/有益。",
       "F3 disagreement 0.5× downweighting 已按预注册规则裁决为 not_supported：不追加对局、不挑选 seed、不继续做权重、比例或 margin sweep；永久关闭 K0-disagreement weighting/filtering 路线。",
       "不再沿用 C1/C2/C3 机制分支，下一阶段将进行全新的 K1 路线重置（route reset）。",
-      "T1 policy-anchor pilot 的 lambda=0.7867009210376891、temperature=1.0、三 seed、400 steps、held-out mechanism panel 与 3×1000 evaluation 已冻结；结果为 not_supported，禁止追加对局、挑 seed、参数或长度 sweep，且不得由 T1 晋级 K1。"
+      "T1 policy-anchor pilot 的 lambda=0.7867009210376891、temperature=1.0、三 seed、400 steps、held-out mechanism panel 与 3×1000 evaluation 已冻结；结果为 not_supported，禁止追加对局、挑 seed、参数或长度 sweep，且不得由 T1 晋级 K1。",
+      "P4 学生主线：不启动 DAgger / 学生状态采集（P4-M5 已削弱其动机）。",
+      "不恢复 T=2 或 hard+soft 混合蒸馏、不把 P4-M3 续到 10k（该参数线已关闭）。",
+      "256×54 容量探针在正式训练前必须先做 forward+backward 资源 smoke；禁止直接沿用 batch512 开跑。",
+      "不重建 P4-M1 标签缓存、不为『做显著』追加 seed 或挑选读点。",
+      "不新增第三个产物根；P4 产物必须落在 artifacts/experiments/student_policy_v1/ 或 artifacts/eval/，并按结果报告 §12 目录约定登记。"
     ]
   },
   "records": [
@@ -1947,6 +1950,255 @@
         "checkpoint_promotion": false,
         "promoted_k1_checkpoint": null
       },
+      "promoted_k1_checkpoint": null
+    },
+    {
+      "experiment_id": "P4-M1_ext_relabel_label_cache_2026_09",
+      "name_zh": "P4-M1 现成语料 external 重标注标签缓存",
+      "category": "data",
+      "parent_model": "external teacher（不属于 K lineage）：E:/AUbuntuProject/project/keqing1/artifacts/external_mortal_20240308_best_min.pth，sha256 0a88ddad649804d085491b5397d895f596b0e55f30632c549ea145bb44786563",
+      "control": "无（数据生成，非 A/B 实验）",
+      "variant": "全视角重标注：S0 6000 + D3 6000 + V2 6000 = 18,000 半庄；GameplayLoader(oracle=False, player_names=None), always_include_kan_select=True；教师在每个可见状态上取纯贪心动作作为 46 维硬标签",
+      "changed_variable": "状态来源改为现成三池语料，标签来源改为本地 external 静态重标注（不生成新对局）",
+      "fixed_variables": [
+        "源日志只读，三池身份不重叠、不重新生成",
+        "train/holdout 按 hanchan SHA-256（salt keqing.mortal.relabel.v1，ratio 0.10），与文件顺序无关",
+        "教师 checkpoint 由 sha256 绑定；标签=纯贪心，不含 arena rule_based_agari_guard",
+        "分片 zlib-1（zipfile deflate level 1），rows_per_shard=2048，inference_batch=512，fp32"
+      ],
+      "training_seeds": null,
+      "evaluation_protocol": "teacher-behavior agreement（train/holdout 分列）；抽样分片标签合法性与 shard_rows 一致性；manifest totals 与磁盘分片逐一对账",
+      "status": "operational",
+      "primary_result": "18,000 半庄 / 11,487,044 行（train 10,340,197 / holdout 1,146,847）/ agreement 94.72%（train 94.72 / holdout 94.68）/ 5,796 npz / 23GB / incomplete=None；抽样 12 分片 23,379 行标签 100% 合法且行数与 manifest 逐分片一致",
+      "promoted_data_route": false,
+      "promoted_checkpoint": false,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": "缓存已生成并被 P4-M2/P4-M3 直接使用，作为本线当前语料；不重建、不重跑。如实登记限制：旧代码一次 snapshot→kill→resume 边界最多遗漏 inference_batch-1=511 行（0.00445%，正式 cache 仅一次中断/续跑），已在 commit 9328847 修复；因此不得声称“对全部源状态逐行无遗漏”。",
+      "predecessor": null,
+      "next_experiment": "P4-M2_hard_label_student_50k_2026_09",
+      "commits": [
+        "a95884a",
+        "c0c8b23",
+        "a47f6ab",
+        "5438367",
+        "7c37dda",
+        "9328847"
+      ],
+      "artifact_paths": [
+        "artifacts/experiments/student_policy_v1/labels_full_18000h/manifest.json",
+        "artifacts/experiments/student_policy_v1/labels_full_18000h/",
+        "artifacts/experiments/student_policy_v1/relabel_full.log",
+        "artifacts/experiments/student_policy_v1/relabel_full_resume.log",
+        "artifacts/experiments/student_policy_v1/labels_pilot_300h/"
+      ],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_50k训练_1v3双向评测_在线诊断_最终结果报告.md",
+        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_产物索引.json"
+      ],
+      "preregistration": "主线改向文档（training/docs/mortal/2026-09-07_现成语料与早期路线复盘_主线改向.md）提出“现成状态 + external 重标注 + 纯策略训练”；缓存参数（2048/512/zlib-1/fp32）在资源 smoke 后冻结，未做网格。",
+      "formal_adjudication": null,
+      "promoted_k1_checkpoint": null
+    },
+    {
+      "experiment_id": "P4-M2_hard_label_student_50k_2026_09",
+      "name_zh": "P4-M2 硬标签 Mortal-native 学生 50k 与 1v3 双向评测",
+      "category": "model_candidate",
+      "parent_model": "无（随机初始化 Brain(192×40)+DQN v4，K0 家族容量）；训练数据为 P4-M1 缓存",
+      "control": "K0_70k 与 external_mortal，各做 1v3 双向同桌（单挑 vs 3×同一模型及其反向）",
+      "variant": "纯 masked-Q 教师贪心 hard-label 交叉熵，50,000 步（192×40 / batch 512 / lr 1e-4 / wd 0.1 / warmup 200 / fp32）",
+      "changed_variable": "首次从随机初始化训练 Mortal-native 学生，目标仅为教师贪心硬标签",
+      "fixed_variables": [
+        "无 MC/GRP/辅助头/K0 锚定；只有合法动作策略损失",
+        "train shard 以 seed 20260908 一次性打散；holdout 取 24 个全范围均匀 shard",
+        "无 AMP；断点恢复含 cursor/optimizer/scheduler/RNG",
+        "1v3 评测：原生 OneVsThree.py_vs_py（2 个批量引擎）、四座轮换、fp32、quick_eval、agari guard；名次由原生 Stat.from_log 重算并与原生返回对账"
+      ],
+      "training_seeds": [
+        20260908
+      ],
+      "evaluation_protocol": "全量 holdout（1,146,847 行）agreement/CE；1v3 双向各 256 半庄（seed 700100-700163 vs K0；710000-710063 vs external），按 seed 聚类 CI95；行为表型由原生 Stat 报告（1024 座次-局）",
+      "status": "closed",
+      "primary_result": "holdout agreement 0.9047（CE 0.2420；S0 0.9041 / D3 0.9049 / V2 0.9050）；vs K0 双向未见明确强弱差异（单挑位 +0.88 / +1.06 pt，CI 均跨零）；vs external 双向支持学生更弱（学生单挑 −10.02 pt CI95 [−19.34,−1.05]；external 单挑 +8.44 pt CI95 [−0.004,+16.35]）；行为：和牌率 21.50% ≈ 教师 21.56%，但放铳 14.54% vs 12.54%、立直 22.16% vs 19.27%；曲线在约 34k 后进入平坦带，端点 50k 不优于 46k/48k",
+      "promoted_data_route": false,
+      "promoted_checkpoint": false,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": "本线尚未定义 promotion gate，故不构成晋级；作为开发基线保留，不作为 K1 候选。25k/36k/46k 权重已被 2k 周期保存覆盖，仅 50k 权重归档（sha256 fda2041363e2b48375298fac2a441e9df6abb13cf0fcbf72346cfe30b05f1c36），原计划的 25k vs 50k 对局无法执行。8 局四引擎冒烟的“偏保守”结论已按 1024 座次-局撤回。",
+      "predecessor": "P4-M1_ext_relabel_label_cache_2026_09",
+      "next_experiment": "P4-M3_soft_target_distill_T1_5k_2026_09",
+      "commits": [
+        "a95884a",
+        "c0c8b23",
+        "a47f6ab",
+        "471d8de",
+        "7c37dda",
+        "a2d4244",
+        "eb68b40",
+        "29d74ea",
+        "7029869"
+      ],
+      "artifact_paths": [
+        "artifacts/experiments/student_policy_v1/student_formal_25k/student_step_050000.pth",
+        "artifacts/experiments/student_policy_v1/student_formal_25k/student_step_050000.archive.json",
+        "artifacts/experiments/student_policy_v1/student_formal_25k/history.json",
+        "artifacts/experiments/student_policy_v1/student_formal_25k/full_holdout_50k.json",
+        "artifacts/experiments/student_policy_v1/student_formal_25k/",
+        "artifacts/eval/ovt_student50k_vs_3k0/",
+        "artifacts/eval/ovt_3student50k_vs_k0/",
+        "artifacts/eval/ovt_student50k_vs_3ext/",
+        "artifacts/eval/ovt_3student50k_vs_ext/",
+        "artifacts/eval/statreport_hard50k_A/",
+        "artifacts/eval/statreport_hard50k_B/",
+        "artifacts/eval/one_vs_three_speedtest/",
+        "artifacts/eval/student50k_smoke/",
+        "artifacts/experiments/student_policy_v1/student_sampling_sanity/",
+        "artifacts/experiments/student_policy_v1/student_full_cache_sanity/",
+        "artifacts/experiments/student_policy_v1/student_pilot_run/"
+      ],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_50k训练_1v3双向评测_在线诊断_最终结果报告.md",
+        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_产物索引.json"
+      ],
+      "preregistration": "预注册：先跑 25k 读点；overall 与三池仍改善则同一 checkpoint/实验身份续到 50k；50k 后停止，不自动续 100k。1v3 双向为开发筛查，不因单方向正点估计晋级。",
+      "formal_adjudication": null,
+      "promoted_k1_checkpoint": null
+    },
+    {
+      "experiment_id": "P4-M3_soft_target_distill_T1_5k_2026_09",
+      "name_zh": "P4-M3 T=1 纯 KL 软目标蒸馏 5k 候选",
+      "category": "objective",
+      "parent_model": "P4-M2 的 50k 学生权重（sha256 fda2041363e2b48375298fac2a441e9df6abb13cf0fcbf72346cfe30b05f1c36）",
+      "control": "父 50k 权重本身，同 seed 段（710000-710063）配对 1v3；固定样本监督诊断的 stage 0",
+      "variant": "仅复制父模型权重；新建 AdamW（lr 1e-5、wd 0.1、clip 1.0）、100 步线性 warmup 后恒定；纯 KL(p_teacher‖p_student) 软目标，温度 T=1，仅合法动作；沿用父阶段 shard 顺序与 50k 游标；5,000 步",
+      "changed_variable": "监督信号由教师 argmax 硬标签变为教师合法动作 Q 的 softmax 分布",
+      "fixed_variables": [
+        "192×40 容量不变、batch 512、fp32 不变",
+        "不使用 hard CE / MC / 辅助头 / 风险权重",
+        "数据仍为 P4-M1 缓存的 train 部分；holdout 不进入训练",
+        "stage 权重 0/2500/5000 独立保存且从不覆盖"
+      ],
+      "training_seeds": [
+        20260908
+      ],
+      "evaluation_protocol": "监测样本 KL + hard agreement；固定样本（75,855 行 ≥2 合法）监督诊断 stage 0/2500/5000；同 seed 段 1v3 双向各 256 半庄，按 seed 配对 delta + 聚类 CI95",
+      "status": "not_supported",
+      "primary_result": "监督侧明确改善：hard agreement 0.9122→0.9206（监测），固定样本 0.9007→0.9133，平均教师 Q 差 0.0652→0.0470，名次≥3 1.81%→1.34%（均值与尾部同时缩小）。实战未获支持：学生单挑配对 delta +3.16 pt CI95 [−8.79,+14.59]；镜像方向（external 单挑）−10.20 pt CI95 [−22.32,+1.58]。两个方向点估计同向，但两个 CI 均跨零。",
+      "promoted_data_route": false,
+      "promoted_checkpoint": false,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": "按预注册规则判为 not supported for promotion / directionally positive：不续 10k、不试 T=2、不追加 soft/hard 混合配方；不因第二个方向差 1.58 pt 而补样本做显著。该结果只否定这一个具体配方，不否定“更丰富监督”整体。实现缺口已修：stage checkpoint 缺 contract（5363fcf）、resume 未绑定配方身份。",
+      "predecessor": "P4-M2_hard_label_student_50k_2026_09",
+      "next_experiment": "P4-M4_teacher_supervision_gap_diagnostic_2026_09",
+      "commits": [
+        "55e662e",
+        "5363fcf",
+        "48f484b"
+      ],
+      "artifact_paths": [
+        "artifacts/experiments/student_policy_v1/student_distill_t1_5k/distill_recipe.json",
+        "artifacts/experiments/student_policy_v1/student_distill_t1_5k/distill_history.json",
+        "artifacts/experiments/student_policy_v1/student_distill_t1_5k/student_distill_step_000000.pth",
+        "artifacts/experiments/student_policy_v1/student_distill_t1_5k/student_distill_step_002500.pth",
+        "artifacts/experiments/student_policy_v1/student_distill_t1_5k/student_distill_step_005000.pth",
+        "artifacts/experiments/student_policy_v1/student_distill_t1_5k/distill_state.pth",
+        "artifacts/experiments/student_policy_v1/student_distill_t1_5k/",
+        "artifacts/eval/ovt_distill5k_vs_3ext/",
+        "artifacts/eval/ovt_3distill5k_vs_ext/",
+        "artifacts/eval/distill_5k.err.log",
+        "artifacts/experiments/student_policy_v1/gap_diag_distill_step_000000.json",
+        "artifacts/experiments/student_policy_v1/gap_diag_distill_step_002500.json",
+        "artifacts/experiments/student_policy_v1/gap_diag_distill_step_005000.json"
+      ],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_50k训练_1v3双向评测_在线诊断_最终结果报告.md",
+        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_产物索引.json"
+      ],
+      "preregistration": "候选配方由 review 单点指定（T=1、lr 1e-5、5000 步、无网格）；成功判据为同 seed 段 1v3 配对比较出现清楚改善，否则记为未获支持且不自动延长。",
+      "formal_adjudication": null,
+      "promoted_k1_checkpoint": null
+    },
+    {
+      "experiment_id": "P4-M4_teacher_supervision_gap_diagnostic_2026_09",
+      "name_zh": "P4-M4 教师监督缺口固定样本诊断",
+      "category": "mechanistic_audit",
+      "parent_model": "P4-M2 50k 学生权重（推断方）；教师 Q 来自 P4-M1 缓存",
+      "control": "无（单模型诊断，非 A/B）",
+      "variant": "固定样本：每池 16 个均匀间隔 holdout shard、stride 抽样，共 75,855 行（≥2 合法动作）；学生 argmax 与缓存教师 Q 对照",
+      "changed_variable": "分析对象：把“剩余错误有多严重”量化为教师排序名次与教师 Q 差",
+      "fixed_variables": [
+        "样本身份固定（shard 列表/stride/quota 写入结果 JSON）",
+        "单合法动作状态排除在 agreement/loss 之外",
+        "跨池不比较原始 Q 差；严重度用池内中位 top-2 gap 作尺度"
+      ],
+      "training_seeds": null,
+      "evaluation_protocol": "agreement / 学生选择在教师排序中的名次 / 教师 top1−学生选择 Q 差分布与尾部 / 按教师 top-2 gap 四分位的错误率",
+      "status": "analysis_only",
+      "primary_result": "agreement 0.9007；错误 9.93%；错误中第2名占 81.8%、第3名 1,009、名次≥3 仅占全部状态约 2%；错误行教师 Q 差 p50 0.429 / p90 1.480 / p99 3.377；按教师自身 top-2 gap 四分位的错误率 0.312 → 0.073 → 0.011 → 0.001（三池同形）。教师 Q 尺度：top-2 gap p50 2.05、每状态合法 Q std p50 3.14。",
+      "promoted_data_route": false,
+      "promoted_checkpoint": false,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": "分组命名在 48f484b 修正：原『材料=20.3%』实为“第2名超出中位 gap 或名次≥3”，不是高代价错误清单，因此不支持对所谓 20% 直接加权。唯一可靠发现是错误高度集中于教师 top-2 gap 小的状态。",
+      "predecessor": "P4-M3_soft_target_distill_T1_5k_2026_09",
+      "next_experiment": "P4-M5_online_state_diagnostic_2026_09",
+      "commits": [
+        "929c91a",
+        "48f484b"
+      ],
+      "artifact_paths": [
+        "artifacts/experiments/student_policy_v1/teacher_supervision_gap_50k.json",
+        "artifacts/eval/gap_diag.stdout.log"
+      ],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_50k训练_1v3双向评测_在线诊断_最终结果报告.md",
+        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_产物索引.json"
+      ],
+      "preregistration": null,
+      "formal_adjudication": null,
+      "promoted_k1_checkpoint": null
+    },
+    {
+      "experiment_id": "P4-M5_online_state_diagnostic_2026_09",
+      "name_zh": "P4-M5 在线状态（学生自走局面）一致率诊断",
+      "category": "mechanistic_audit",
+      "parent_model": "P4-M2 50k 学生 与 P4-M3 distill5k；教师为 external_mortal",
+      "control": "离线固定样本 ≥2 合法锚点（student50k 0.9007 / distill5k 0.9133）",
+      "variant": "复用现有 1v3 日志，只取学生实际控制座位：PlayerState 重放 + encode_obs(4, False)，同一状态同时跑学生与教师；不生成新对局、不训练",
+      "changed_variable": "测量对象由语料/holdout 状态分布改为学生自己走出的状态分布",
+      "fixed_variables": [
+        "arena consultation 判定镜像 d3_native_scene：立直后单合法动作的被迫打牌不计入",
+        "名次与一致率按 seed 聚类；mask 校验行单独复算",
+        "离线锚点必须用 ≥2 合法动作的固定样本，不用含单合法动作的 full holdout/monitor"
+      ],
+      "training_seeds": null,
+      "evaluation_protocol": "model-consulted 状态上的 teacher agreement（含仅 mask 校验行版本）、教师 Q 差与尾部、名次≥3 占比、按动作类型与局内阶段的分解；完整性：重放 mask vs 日志 mask_bits、重推理复现日志动作",
+      "status": "analysis_only",
+      "primary_result": "修正后 online agreement：student50k 0.9006（A 单挑，66,407 决策）/ 0.9023（B 三座，120,179），distill5k 0.9134 / 0.9126；与离线 ≥2 合法锚点 0.9007 / 0.9133 基本一致（差 0.003–0.16 pp，CI 重叠）。Q 差/名次同样与离线持平或略好。forced post-riichi 跳过占 raw can_act 5.5–6.4%，其中带日志 meta 者 0 个（证实未被咨询）。完整性：mask 不符率 0.25–0.29%（不影响结论，另有 mask-verified-only 版本），重推理复现动作率 学生 0.9999 / 教师 0.9962–0.9970。动作类型：discard 占 88–90% 分歧与 83–86% gap mass；chi 条件一致率最差（0.71）但只占 3.4%/5.0%；distill5k 把错误重分配到立直（分歧 94→231、gap mass 份额 0.81%→3.08%）。",
+      "promoted_data_route": false,
+      "promoted_checkpoint": false,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": "结论为 C 支成立：没有证据支持状态分布偏移/学生状态覆盖是当前问题，因此 DAgger-like 采集在本阶段没有投入价值。这不等于认定容量是根因，只是移除一个候选。首次发布（41df052）漏了 post-riichi forced-discard 过滤，已在 8facd0f 修正——该缺陷曾把 online 一致率抬高约 0.25pp，与被解释效应同量级。",
+      "predecessor": "P4-M4_teacher_supervision_gap_diagnostic_2026_09",
+      "next_experiment": "P4-M6_student_capacity_probe_256x54_2026_09",
+      "commits": [
+        "41df052",
+        "8facd0f"
+      ],
+      "artifact_paths": [
+        "artifacts/experiments/student_policy_v1/online_state_diag_hard50k.json",
+        "artifacts/experiments/student_policy_v1/online_state_diag_distill5k.json",
+        "artifacts/eval/online_diag_hard50k.stdout.log",
+        "artifacts/eval/online_diag_distill5k.stdout.log"
+      ],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_50k训练_1v3双向评测_在线诊断_最终结果报告.md",
+        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_产物索引.json"
+      ],
+      "preregistration": null,
+      "formal_adjudication": null,
       "promoted_k1_checkpoint": null
     }
   ]
