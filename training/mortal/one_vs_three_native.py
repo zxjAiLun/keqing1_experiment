@@ -51,6 +51,16 @@ from training.mortal.four_player_native import _load_engine  # noqa: E402
 _SPLIT_SEATS = (("a", 0), ("b", 1), ("c", 2), ("d", 3))
 
 
+def _sha256_file(path: Path) -> str:
+    import hashlib
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def _parse_model_spec(value: str) -> tuple[str, Path]:
     if "=" not in value:
         raise ValueError(f"model spec must be LABEL=PATH, got: {value}")
@@ -168,6 +178,34 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     log_dir = args.output_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
 
+    # Resume must be bound to the exact evaluation, not just to log filenames:
+    # the seed band and the two checkpoints (by content hash) are part of the
+    # identity, so a different run can never silently reuse another run's logs.
+    identity = {
+        "challenger": {"label": challenger_label, "path": str(challenger_path), "sha256": _sha256_file(challenger_path)},
+        "champion": {"label": champion_label, "path": str(champion_path), "sha256": _sha256_file(champion_path)},
+        "seeds": {"seed_start": int(args.seed_start), "seed_count": int(args.seeds), "seed_key": int(args.seed_key)},
+        "batch_seeds": int(args.batch_seeds),
+        "rank_points_profile": rank_points_profile,
+        "rank_points_values": [float(value) for value in rank_points],
+        "enable_amp": bool(args.enable_amp),
+    }
+    identity_path = args.output_dir / "run_identity.json"
+    if args.resume and identity_path.exists():
+        recorded = json.loads(identity_path.read_text(encoding="utf-8"))
+        if recorded != identity:
+            raise RuntimeError(
+                "refusing --resume: run identity differs from the recorded one "
+                f"({identity_path}); use a fresh output directory"
+            )
+        print(f"[one_vs_three] resume identity verified against {identity_path}", flush=True)
+    elif args.resume:
+        raise RuntimeError(
+            f"refusing --resume: {identity_path} is missing, so existing logs cannot be "
+            "bound to a known evaluation"
+        )
+    identity_path.write_text(json.dumps(identity, ensure_ascii=False, indent=2), encoding="utf-8")
+
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats()
 
@@ -250,13 +288,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         rank_counts[rank - 1] += 1
 
     native_counts = [0, 0, 0, 0]
+    verified_seeds: list[int] = []
+    reused_seed_count = 0
     for batch in native_batches:
         if batch["rankings"] is None:
+            reused_seed_count += batch["seed_count"]
             continue
+        verified_seeds.extend(batch["seed_start"] + i for i in range(batch["seed_count"]))
         for index, value in enumerate(batch["rankings"]):
             native_counts[index] += value
-    reused_all = all(batch["reused"] for batch in native_batches)
-    ranks_match_native = reused_all or native_counts == rank_counts
+
+    # Compare only over the batches the native arena actually returned in this
+    # invocation; reused logs have no native aggregate to check against.
+    verified_counts = [0, 0, 0, 0]
+    for seed in verified_seeds:
+        for rank in ranks_by_seed[seed]:
+            verified_counts[rank - 1] += 1
+    if verified_seeds:
+        ranks_match_native: bool | None = native_counts == verified_counts
+    else:
+        ranks_match_native = None
 
     pt_by_rank = [float(value) for value in rank_points]
     games = len(flat_ranks)
@@ -317,15 +368,25 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "integrity": {
             "native_rank_counts": native_counts,
             "log_rank_counts": rank_counts,
-            "ranks_match_native": bool(ranks_match_native),
+            "verified_log_rank_counts": verified_counts,
+            "verified_seeds": len(verified_seeds),
+            "reused_seed_count": reused_seed_count,
+            "ranks_match_native": ranks_match_native,
+            "reused_logs_are_unverified": reused_seed_count > 0,
             "native_batches": native_batches,
             "per_seed_ranks": {str(seed): ranks_by_seed[seed] for seed in completed_seeds},
         },
     }
 
     (args.output_dir / "metrics.json").write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
-    if not ranks_match_native:
+    if ranks_match_native is False:
         print("[one_vs_three] WARNING: log-derived ranks disagree with native counts", flush=True)
+    if reused_seed_count:
+        print(
+            f"[one_vs_three] NOTE: {reused_seed_count} seeded batch(es) were reused from disk "
+            "and are unverified against a native return",
+            flush=True,
+        )
     return document
 
 
