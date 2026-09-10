@@ -99,7 +99,7 @@ def _quantiles(values: np.ndarray) -> dict[str, float]:
     }
 
 
-def _pool_report(rows: dict[str, np.ndarray], pool_name: str) -> dict[str, object]:
+def _pool_report(rows: dict[str, np.ndarray], pool_name: str, *, scale_note: str) -> dict[str, object]:
     """rows keys: student_rank (int), loss (float), gap (float), legal (int), agree (bool)"""
     student_rank = rows["student_rank"]
     loss = rows["loss"]
@@ -132,16 +132,30 @@ def _pool_report(rows: dict[str, np.ndarray], pool_name: str) -> dict[str, objec
     if median_gap is None:
         severity = {}
     else:
-        near_tie = errors & (student_rank == 2) & (loss <= median_gap)
-        material = errors & ~near_tie
+        # NOTE: "second choice within the median gap" is a reporting split, not a
+        # severity judgement.  The other group deliberately mixes two different
+        # things -- a rank >= 3 choice (which may itself be a near-tie with the
+        # top two) and a second choice that lost by more than the median gap -- so
+        # it must NOT be read as an inventory of individually costly mistakes.
+        second_choice_within_gap = errors & (student_rank == 2) & (loss <= median_gap)
+        other = errors & ~second_choice_within_gap
         severity = {
             "scale": "within-pool median teacher top-2 gap",
+            "scale_note": scale_note,
             "median_top2_gap": median_gap,
-            "near_tie_error_states": int(near_tie.sum()),
-            "near_tie_error_share_of_errors": float(near_tie.sum() / max(1, errors.sum())),
-            "material_error_states": int(material.sum()),
-            "material_error_share_of_errors": float(material.sum() / max(1, errors.sum())),
-            "material_error_note": "rank >= 3, or teacher's 2nd choice lost by more than the median top-2 gap",
+            "second_choice_within_median_gap_states": int(second_choice_within_gap.sum()),
+            "second_choice_within_median_gap_share_of_errors": float(
+                second_choice_within_gap.sum() / max(1, errors.sum())
+            ),
+            "other_disagreement_states": int(other.sum()),
+            "other_disagreement_share_of_errors": float(other.sum() / max(1, errors.sum())),
+            "other_disagreement_definition": (
+                "rank >= 3 OR second choice beyond the median gap; a rank >= 3 choice "
+                "can still be a near-tie with the top two, so this is not a count of "
+                "individually costly errors"
+            ),
+            "rank_ge3_share_of_all_rows": float((errors & (student_rank >= 3)).sum() / max(1, student_rank.size)),
+            "disagreement_share_of_all_rows": float(errors.sum() / max(1, student_rank.size)),
             "errors_beyond_teacher_second_choice": int((errors & (student_rank >= 3)).sum()),
         }
 
@@ -274,8 +288,17 @@ def main() -> None:
             "detailed": sample_record,
         },
         "caveat": "loss is the teacher's own Q difference for the missed action, not a counterfactual gain; raw Q differences are only compared within a pool",
-        "overall": _pool_report(overall, "overall"),
-        "pools": {name: _pool_report(collected[name], name) for name in pool_names},
+        "overall": _pool_report(
+            overall, "overall",
+            scale_note=(
+                "merged over all sampled pools (a pooled median), not an aggregate of "
+                "the per-pool medians; the pool scales are close but not identical"
+            ),
+        ),
+        "pools": {
+            name: _pool_report(collected[name], name, scale_note="this pool's own median gap")
+            for name in pool_names
+        },
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -291,9 +314,10 @@ def main() -> None:
             return "loss on errors p50/p90/p99 : " + "/".join(f"{entry['loss_teacher_top1_minus_student_choice'][k]:.3f}" for k in ("p50", "p90", "p99"))
         if key == "severity":
             sev = entry["error_severity"]
-            return (f"error severity             : near-tie {sev['near_tie_error_states']} "
-                    f"({sev['near_tie_error_share_of_errors']:.1%}) vs material {sev['material_error_states']} "
-                    f"({sev['material_error_share_of_errors']:.1%}); rank>=3 {sev['errors_beyond_teacher_second_choice']}")
+            return (f"error split                : second-choice-within-gap {sev['second_choice_within_median_gap_states']} "
+                    f"({sev['second_choice_within_median_gap_share_of_errors']:.1%} of errors) vs other {sev['other_disagreement_states']} "
+                    f"({sev['other_disagreement_share_of_errors']:.1%}); rank>=3 {sev['errors_beyond_teacher_second_choice']} "
+                    f"= {sev['rank_ge3_share_of_all_rows']:.2%} of all rows, not {sev['other_disagreement_share_of_errors']:.0%}")
         return ""
 
     print("\n--- one-page summary (overall) ---")
