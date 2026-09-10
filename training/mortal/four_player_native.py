@@ -91,6 +91,28 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _model_dimensions(state: dict[str, Any]) -> tuple[int, int, int]:
+    """Read model dimensions from standard or student-policy checkpoints."""
+    cfg = state.get("config")
+    if cfg is not None:
+        return (
+            int(cfg["control"].get("version", 4)),
+            int(cfg["resnet"]["conv_channels"]),
+            int(cfg["resnet"]["num_blocks"]),
+        )
+
+    contract = state.get("training_contract")
+    if contract is not None and contract.get("schema") == "keqing.mortal.student_policy_v1":
+        student = contract["student"]
+        return (
+            int(student.get("version", 4)),
+            int(student["conv_channels"]),
+            int(student["num_blocks"]),
+        )
+
+    raise KeyError("checkpoint has neither standard config nor student-policy training_contract")
+
+
 def _load_engine(
     *,
     label: str,
@@ -108,10 +130,7 @@ def _load_engine(
     from model import Brain, DQN  # noqa: PLC0415
 
     state = torch.load(state_file, weights_only=True, map_location=torch.device("cpu"))
-    cfg = state["config"]
-    version = int(cfg["control"].get("version", 4))
-    conv_channels = int(cfg["resnet"]["conv_channels"])
-    num_blocks = int(cfg["resnet"]["num_blocks"])
+    version, conv_channels, num_blocks = _model_dimensions(state)
 
     mortal = Brain(version=version, conv_channels=conv_channels, num_blocks=num_blocks).eval()
     dqn = DQN(version=version).eval()

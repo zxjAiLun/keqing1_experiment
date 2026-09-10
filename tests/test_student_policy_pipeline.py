@@ -50,6 +50,30 @@ def _synthetic_shard(path: Path, rows: int, seed: int) -> None:
     )
 
 
+class TestEvaluatorCheckpointCompatibility:
+    def test_model_dimensions_accept_standard_and_student_contracts(self) -> None:
+        from training.mortal.four_player_native import _model_dimensions
+
+        assert _model_dimensions({
+            "config": {
+                "control": {"version": 4},
+                "resnet": {"conv_channels": 256, "num_blocks": 54},
+            }
+        }) == (4, 256, 54)
+        assert _model_dimensions({
+            "training_contract": {
+                "schema": "keqing.mortal.student_policy_v1",
+                "student": {"version": 4, "conv_channels": 192, "num_blocks": 40},
+            }
+        }) == (4, 192, 40)
+
+    def test_model_dimensions_refuses_unknown_checkpoint(self) -> None:
+        from training.mortal.four_player_native import _model_dimensions
+
+        with pytest.raises(KeyError, match="neither standard config nor student-policy"):
+            _model_dimensions({"training_contract": {"schema": "unknown"}})
+
+
 class TestManifestRowCount:
     def test_rows_from_manifest_shard_rows(self) -> None:
         from training.mortal.train_student_policy import _rows_from_manifest
