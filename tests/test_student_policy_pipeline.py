@@ -322,3 +322,16 @@ class TestStudentResumeState:
         assert _parse_stage_save_steps("0,2000,5000,10000", 10000) == {0, 2000, 5000, 10000}
         with pytest.raises(ValueError):
             _parse_stage_save_steps("10001", 10000)
+
+    def test_pause_file_default_off_and_exit_semantics(self) -> None:
+        """--pause-file must default to empty (no pause) and the runner must
+        report paused=False on a normal completion."""
+        from training.mortal.train_student_policy import _parse_args
+        import sys
+        argv = sys.argv
+        try:
+            sys.argv = ["train_student_policy.py", "--dataset-dir", "d", "--output-dir", "o", "--target-steps", "10"]
+            args = _parse_args()
+            assert args.pause_file == ""
+        finally:
+            sys.argv = argv

@@ -68,6 +68,11 @@ def _parse_args() -> argparse.Namespace:
         default="",
         help="comma-separated optimizer-update boundaries to preserve independently (0 allowed)",
     )
+    parser.add_argument(
+        "--pause-file",
+        default="",
+        help="if this path exists at an optimizer-update boundary, save state and exit cleanly",
+    )
     parser.add_argument("--num-workers", type=int, default=0, help="dataloader workers for shard reading (0: main process)")
     parser.add_argument("--enable-amp", action="store_true")
     return parser.parse_args()
@@ -491,6 +496,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     window_rows = 0
     run_rows = 0
     run_updates = 0
+    paused = False
     started = time.perf_counter()
 
     if steps == 0 and 0 in stage_save_steps:
@@ -606,6 +612,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             preserve_stage_once()
         elif int(args.save_every) > 0 and steps % int(args.save_every) == 0:
             save_checkpoint()
+        # Safe pause: only ever at a completed optimizer-update boundary, after
+        # any due checkpoint, so the on-disk state is a full resume point.
+        if args.pause_file and Path(args.pause_file).exists():
+            save_checkpoint()
+            logging.info("pause requested at optimizer update %s; state saved; exiting cleanly", steps)
+            paused = True
+            break
 
     if steps in stage_save_steps:
         preserve_stage_once()
@@ -617,6 +630,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     writer.close()
     return {
         "steps": steps,
+        "paused": paused,
         "optimizer_updates": steps,
         "microbatches_seen": microbatches_seen,
         "rows_seen": rows_seen,
