@@ -23,6 +23,7 @@ import json
 import logging
 import math
 import random
+import shutil
 import subprocess
 import time
 from datetime import datetime
@@ -43,7 +44,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--mortal-root", type=Path, default=Path("third_party/Mortal"))
     parser.add_argument("--target-steps", type=int, required=True)
-    parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--batch-size", type=int, default=512, help="training microbatch rows")
+    parser.add_argument("--accumulation-steps", type=int, default=1, help="microbatches per optimizer update")
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=0.1)
     parser.add_argument("--warmup-steps", type=int, default=1000)
@@ -52,9 +54,20 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--conv-channels", type=int, default=192)
     parser.add_argument("--num-blocks", type=int, default=40)
     parser.add_argument("--holdout-every", type=int, default=2000, help="steps between holdout evaluations (0 disables)")
-    parser.add_argument("--holdout-batches", type=int, default=24, help="uniformly spaced holdout shards; one batch per shard")
-    parser.add_argument("--log-every", type=int, default=100)
-    parser.add_argument("--save-every", type=int, default=2000)
+    parser.add_argument("--holdout-batches", type=int, default=24, help="uniformly spaced holdout shards")
+    parser.add_argument(
+        "--holdout-rows-per-shard",
+        type=int,
+        default=512,
+        help="fixed panel rows per selected shard; inference is split into training-sized microbatches",
+    )
+    parser.add_argument("--log-every", type=int, default=100, help="optimizer updates between train logs")
+    parser.add_argument("--save-every", type=int, default=2000, help="optimizer updates between rolling saves")
+    parser.add_argument(
+        "--stage-save-steps",
+        default="",
+        help="comma-separated optimizer-update boundaries to preserve independently (0 allowed)",
+    )
     parser.add_argument("--num-workers", type=int, default=0, help="dataloader workers for shard reading (0: main process)")
     parser.add_argument("--enable-amp", action="store_true")
     return parser.parse_args()
@@ -100,6 +113,26 @@ def _uniform_shard_indices(shard_count: int, sample_count: int) -> list[int]:
     if count == 1:
         return [0]
     return [round(i * (shard_count - 1) / (count - 1)) for i in range(count)]
+
+
+def _parse_stage_save_steps(value: str, target_steps: int) -> set[int]:
+    stages = {int(item.strip()) for item in value.split(",") if item.strip()}
+    if any(step < 0 or step > target_steps for step in stages):
+        raise ValueError("--stage-save-steps must be within [0, target_steps]")
+    return stages
+
+
+def _accumulation_row_weights(row_counts: list[int]) -> list[float]:
+    """Weights making several microbatch means equal one row-mean update.
+
+    Full 128x4 groups therefore use four 1/4-weight losses.  A short shard-tail
+    microbatch is weighted by its real row count rather than repeated, dropped,
+    or treated as a full microbatch.
+    """
+    total = sum(row_counts)
+    if total <= 0:
+        raise ValueError("an accumulation group must contain at least one row")
+    return [rows / total for rows in row_counts]
 
 
 class ShardStream:
@@ -192,10 +225,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if args.target_steps <= 0:
         raise ValueError("--target-steps must be positive")
-    if args.batch_size <= 0:
-        raise ValueError("--batch-size must be positive")
-    if args.holdout_every < 0 or args.holdout_batches < 0:
-        raise ValueError("--holdout-every/--holdout-batches must be non-negative")
+    if args.batch_size <= 0 or args.accumulation_steps <= 0:
+        raise ValueError("--batch-size/--accumulation-steps must be positive")
+    if args.holdout_every < 0 or args.holdout_batches < 0 or args.holdout_rows_per_shard <= 0:
+        raise ValueError("holdout intervals/counts must be non-negative and rows per shard positive")
+    stage_save_steps = _parse_stage_save_steps(str(args.stage_save_steps), int(args.target_steps))
 
     device = torch.device(args.device)
     output_dir = args.output_dir.resolve()
@@ -219,6 +253,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     train_rows = _rows_from_manifest(manifest, "train", train_shards)
     holdout_rows = _rows_from_manifest(manifest, "holdout", holdout_shards)
     logging.info("train rows: %s, holdout rows: %s (from manifest)", f"{train_rows:,}", f"{holdout_rows:,}")
+
+    # Seed before model construction: fresh-init identity must not depend on
+    # unrelated Torch activity earlier in the process.
+    random.seed(int(args.seed))
+    np.random.seed(int(args.seed))
+    torch.manual_seed(int(args.seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(args.seed))
 
     version = 4
     mortal, dqn = _build_models(
@@ -252,35 +294,60 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     stream = ShardStream(train_shards, seed=int(args.seed))
 
     steps = 0
+    microbatches_seen = 0
+    rows_seen = 0
     cursor = (0, 0)
     python_rng_state = None
+    numpy_rng_state = None
     torch_rng_state = None
     cuda_rng_states = None
     history: list[dict[str, Any]] = []
 
     if state_file.exists():
         state = torch.load(state_file, map_location=device, weights_only=False)
+        previous_contract = state.get("training_contract", {})
+        previous_optim = previous_contract.get("optim", {})
+        expected_resume = {
+            "lr": float(args.lr),
+            "weight_decay": float(args.weight_decay),
+            "warmup_steps": int(args.warmup_steps),
+            "microbatch_size": int(args.batch_size),
+            "accumulation_steps": int(args.accumulation_steps),
+        }
+        actual_resume = {
+            key: previous_optim.get(key, previous_optim.get("batch_size") if key == "microbatch_size" else None)
+            for key in expected_resume
+        }
+        if actual_resume != expected_resume:
+            raise RuntimeError(f"resume recipe mismatch: checkpoint={actual_resume}, requested={expected_resume}")
+        previous_student = previous_contract.get("student", {})
+        expected_student = {"version": version, "conv_channels": int(args.conv_channels), "num_blocks": int(args.num_blocks)}
+        actual_student = {key: previous_student.get(key) for key in expected_student}
+        if actual_student != expected_student:
+            raise RuntimeError(f"resume architecture mismatch: checkpoint={actual_student}, requested={expected_student}")
         mortal.load_state_dict(state["mortal"])
         dqn.load_state_dict(state["current_dqn"])
         optimizer.load_state_dict(state["optimizer"])
         scheduler.load_state_dict(state["scheduler"])
         scaler.load_state_dict(state["scaler"])
         steps = int(state["steps"])
+        microbatches_seen = int(state.get("microbatches_seen", steps))
+        rows_seen = int(state.get("rows_seen", steps * int(args.batch_size)))
         cursor = (int(state["cursor"][0]), int(state["cursor"][1]))
         history = list(state.get("history", []))
         python_rng_state = state.get("python_rng_state")
+        numpy_rng_state = state.get("numpy_rng_state")
         torch_rng_state = state.get("torch_rng_state")
         cuda_rng_states = state.get("cuda_rng_states")
-        logging.info("resumed checkpoint: steps=%s cursor=%s", steps, cursor)
+        logging.info("resumed checkpoint: steps=%s rows=%s cursor=%s", steps, rows_seen, cursor)
         if python_rng_state is not None:
             random.setstate(python_rng_state)
+        if numpy_rng_state is not None:
+            np.random.set_state(numpy_rng_state)
         if torch_rng_state is not None:
             torch.set_rng_state(torch_rng_state.detach().cpu())
         if cuda_rng_states is not None and torch.cuda.is_available():
             torch.cuda.set_rng_state_all([s.detach().cpu() for s in cuda_rng_states])
-    else:
-        random.seed(int(args.seed))
-        torch.manual_seed(int(args.seed))
 
     writer = SummaryWriter(str(output_dir / "tb_student"))
 
@@ -305,15 +372,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "lr": float(args.lr),
             "weight_decay": float(args.weight_decay),
             "warmup_steps": int(args.warmup_steps),
+            "microbatch_size": int(args.batch_size),
+            "accumulation_steps": int(args.accumulation_steps),
+            "effective_batch_size_nominal": int(args.batch_size) * int(args.accumulation_steps),
             "batch_size": int(args.batch_size),
             "enable_amp": bool(args.enable_amp),
+            "gradient_clip_norm": 1.0,
+        },
+        "checkpointing": {
+            "unit": "optimizer_updates",
+            "stage_save_steps": sorted(stage_save_steps),
+            "resume_boundary": "complete_optimizer_update_only",
         },
         "git_commit": _git_revision(_REPO_ROOT),
         "seed": int(args.seed),
         "sampling": {
             "train": "seeded_one_time_shard_shuffle",
-            "holdout": "uniform_full_range_one_batch_per_shard",
+            "holdout": "uniform_full_range_fixed_rows_per_shard_chunked_for_inference",
             "holdout_shard_indices": holdout_indices,
+            "holdout_rows_per_shard": int(args.holdout_rows_per_shard),
+            "holdout_inference_microbatch": int(args.batch_size),
             "pool_names": pool_names,
         },
     }
@@ -321,7 +399,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         json.dumps(contract, ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    def save_checkpoint() -> None:
+    def save_checkpoint(*, stage: bool = False) -> Path:
         checkpoint = {
             "mortal": mortal.state_dict(),
             "current_dqn": dqn.state_dict(),
@@ -329,9 +407,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "scheduler": scheduler.state_dict(),
             "scaler": scaler.state_dict(),
             "steps": steps,
+            "optimizer_updates": steps,
+            "microbatches_seen": microbatches_seen,
+            "rows_seen": rows_seen,
             "cursor": list(cursor),
             "history": history,
             "python_rng_state": random.getstate(),
+            "numpy_rng_state": np.random.get_state(),
             "torch_rng_state": torch.get_rng_state(),
             "cuda_rng_states": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
             "training_contract": contract,
@@ -339,39 +421,58 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         tmp_path = state_file.with_name(state_file.name + ".tmp")
         torch.save(checkpoint, tmp_path)
         tmp_path.replace(state_file)
-        logging.info("saved checkpoint: %s steps=%s", state_file, steps)
+        logging.info("saved checkpoint: %s steps=%s rows=%s", state_file, steps, rows_seen)
+        if stage:
+            stage_path = output_dir / f"student_step_{steps:06d}.pth"
+            stage_tmp = stage_path.with_name(stage_path.name + ".tmp")
+            shutil.copyfile(state_file, stage_tmp)
+            stage_tmp.replace(stage_path)
+            logging.info("preserved stage checkpoint: %s", stage_path)
+            return stage_path
+        return state_file
+
+    last_stage_saved: int | None = None
+
+    def preserve_stage_once() -> None:
+        nonlocal last_stage_saved
+        if steps in stage_save_steps and last_stage_saved != steps:
+            save_checkpoint(stage=True)
+            last_stage_saved = steps
 
     @torch.inference_mode()
     def evaluate_holdout() -> dict[str, float]:
         mortal.eval()
         dqn.eval()
         totals = {name: {"ce": 0.0, "agree": 0.0, "rows": 0} for name in ["overall", *pool_names]}
-        # One batch from each uniformly spaced shard.  Unlike a prefix scan,
-        # this remains deterministic while covering the cache's S0/D3/V2 span.
+        # Preserve the historical panel identity and row count (normally
+        # 24 shards x up to 512 rows) independently of the training microbatch.
+        # Inference is chunked to avoid changing the resource envelope.
         for shard_path in holdout_sample_shards:
             with np.load(shard_path) as shard:
-                take = min(int(args.batch_size), len(shard["obs"]))
+                take = min(int(args.holdout_rows_per_shard), len(shard["obs"]))
                 payload = {key: shard[key][:take] for key in ("obs", "mask", "teacher_action", "pool")}
-            obs = torch.as_tensor(payload["obs"], dtype=torch.float32, device=device)
-            mask = torch.as_tensor(payload["mask"], dtype=torch.bool, device=device)
-            teacher_action = torch.as_tensor(payload["teacher_action"], dtype=torch.int64, device=device)
-            with torch.autocast(device.type, enabled=bool(args.enable_amp)):
-                phi = mortal(obs)
-                q_out = dqn(phi, mask)
-            log_probs = q_out.float().log_softmax(dim=-1)
-            ce = -log_probs.gather(1, teacher_action.unsqueeze(1)).squeeze(1)
-            agree = (q_out.float().argmax(dim=-1) == teacher_action).to(torch.float32)
-            pool_ids = torch.as_tensor(payload["pool"], dtype=torch.int64, device=device)
-            for pool_id, name in enumerate(pool_names):
-                selected = pool_ids == pool_id
-                rows = int(selected.sum().item())
-                if rows:
-                    totals[name]["ce"] += float(ce[selected].sum().cpu())
-                    totals[name]["agree"] += float(agree[selected].sum().cpu())
-                    totals[name]["rows"] += rows
-            totals["overall"]["ce"] += float(ce.sum().cpu())
-            totals["overall"]["agree"] += float(agree.sum().cpu())
-            totals["overall"]["rows"] += int(obs.shape[0])
+            for start in range(0, take, int(args.batch_size)):
+                end = min(take, start + int(args.batch_size))
+                obs = torch.as_tensor(payload["obs"][start:end], dtype=torch.float32, device=device)
+                mask = torch.as_tensor(payload["mask"][start:end], dtype=torch.bool, device=device)
+                teacher_action = torch.as_tensor(payload["teacher_action"][start:end], dtype=torch.int64, device=device)
+                with torch.autocast(device.type, enabled=bool(args.enable_amp)):
+                    phi = mortal(obs)
+                    q_out = dqn(phi, mask)
+                log_probs = q_out.float().log_softmax(dim=-1)
+                ce = -log_probs.gather(1, teacher_action.unsqueeze(1)).squeeze(1)
+                agree = (q_out.float().argmax(dim=-1) == teacher_action).to(torch.float32)
+                pool_ids = torch.as_tensor(payload["pool"][start:end], dtype=torch.int64, device=device)
+                for pool_id, name in enumerate(pool_names):
+                    selected = pool_ids == pool_id
+                    rows = int(selected.sum().item())
+                    if rows:
+                        totals[name]["ce"] += float(ce[selected].sum().cpu())
+                        totals[name]["agree"] += float(agree[selected].sum().cpu())
+                        totals[name]["rows"] += rows
+                totals["overall"]["ce"] += float(ce.sum().cpu())
+                totals["overall"]["agree"] += float(agree.sum().cpu())
+                totals["overall"]["rows"] += int(obs.shape[0])
         mortal.train()
         dqn.train()
         metrics: dict[str, float] = {}
@@ -385,82 +486,106 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             metrics[f"{prefix}_rows"] = float(rows)
         return metrics
 
-    window_ce = 0.0
-    window_agree = 0.0
+    window_ce_sum = 0.0
+    window_correct = 0
     window_rows = 0
-    window_count = 0
-    started = time.time()
+    run_rows = 0
+    run_updates = 0
+    started = time.perf_counter()
+
+    if steps == 0 and 0 in stage_save_steps:
+        preserve_stage_once()
 
     while steps < args.target_steps:
-        payload, next_cursor = stream.read_chunk(cursor[0], cursor[1], int(args.batch_size))
-        if len(payload["obs"]) < int(args.batch_size):
-            # Partial chunks also occur at plain shard boundaries; only the
-            # dataset end (wrap to (0, 0)) needs padding from the beginning.
-            if next_cursor == (0, 0) and cursor != (0, 0):
-                remaining = int(args.batch_size) - len(payload["obs"])
-                payload2, _ = stream.read_chunk(0, 0, remaining)
-                payload = {key: np.concatenate([payload[key], payload2[key]]) for key in payload}
-                next_cursor = (0, remaining)
-            else:
-                # Shard-boundary tail: keep the short batch (last partial batch
-                # of a shard).  This is deterministic and resume-safe.
-                pass
-        obs = torch.as_tensor(payload["obs"], dtype=torch.float32, device=device)
-        mask = torch.as_tensor(payload["mask"], dtype=torch.bool, device=device)
-        teacher_action = torch.as_tensor(payload["teacher_action"], dtype=torch.int64, device=device)
-        if not bool(mask[torch.arange(len(teacher_action)), teacher_action].all().item()):
-            raise RuntimeError("teacher label outside legal mask — dataset corruption")
-
-        with torch.autocast(device.type, enabled=bool(args.enable_amp)):
-            phi = mortal(obs)
-            q_out = dqn(phi, mask)
-            log_probs = q_out.log_softmax(dim=-1)
-            ce = -log_probs.gather(1, teacher_action.unsqueeze(1)).squeeze(1)
-            loss = ce.mean()
-        if not bool(torch.isfinite(loss).all().item()):
-            raise RuntimeError(f"non-finite loss at step {steps + 1}")
-
+        # Assemble one optimizer update before backward so every microbatch mean
+        # can be weighted by its real row count.  This preserves a row-mean loss
+        # even at shard tails without repeating or dropping rows.
+        group: list[tuple[dict[str, np.ndarray], tuple[int, int]]] = []
+        group_cursor = cursor
+        for _ in range(int(args.accumulation_steps)):
+            payload, next_cursor = stream.read_chunk(group_cursor[0], group_cursor[1], int(args.batch_size))
+            group.append((payload, next_cursor))
+            group_cursor = next_cursor
+        row_counts = [len(payload["obs"]) for payload, _ in group]
+        row_weights = _accumulation_row_weights(row_counts)
         optimizer.zero_grad(set_to_none=True)
-        scaler.scale(loss).backward()
+        update_ce_sum = 0.0
+        update_correct = 0
+        update_rows = 0
+
+        for (payload, next_cursor), loss_weight in zip(group, row_weights, strict=True):
+            obs = torch.as_tensor(payload["obs"], dtype=torch.float32, device=device)
+            mask = torch.as_tensor(payload["mask"], dtype=torch.bool, device=device)
+            teacher_action = torch.as_tensor(payload["teacher_action"], dtype=torch.int64, device=device)
+            if not bool(mask[torch.arange(len(teacher_action), device=device), teacher_action].all().item()):
+                raise RuntimeError("teacher label outside legal mask — dataset corruption")
+
+            with torch.autocast(device.type, enabled=bool(args.enable_amp)):
+                phi = mortal(obs)
+                q_out = dqn(phi, mask)
+                log_probs = q_out.log_softmax(dim=-1)
+                ce = -log_probs.gather(1, teacher_action.unsqueeze(1)).squeeze(1)
+                loss = ce.mean()
+            if not bool(torch.isfinite(loss).all().item()):
+                raise RuntimeError(f"non-finite loss at optimizer update {steps + 1}")
+            scaler.scale(loss * loss_weight).backward()
+            with torch.inference_mode():
+                correct = int((q_out.float().argmax(dim=-1) == teacher_action).sum().item())
+            update_ce_sum += float(ce.detach().sum().cpu())
+            update_correct += correct
+            update_rows += len(teacher_action)
+            microbatches_seen += 1
+            cursor = next_cursor
+
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(parameters, 1.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(parameters, 1.0)
+        if not bool(torch.isfinite(grad_norm).item()):
+            raise RuntimeError(f"non-finite gradient norm at optimizer update {steps + 1}")
         scaler.step(optimizer)
         scaler.update()
         scheduler.step()
-
-        with torch.inference_mode():
-            agree = (q_out.float().argmax(dim=-1) == teacher_action).to(torch.float32).mean().item()
-        window_ce += float(loss.detach().cpu())
-        window_agree += agree
-        window_count += 1
-        cursor = next_cursor
         steps += 1
+        rows_seen += update_rows
+        run_updates += 1
+        run_rows += update_rows
+        window_ce_sum += update_ce_sum
+        window_correct += update_correct
+        window_rows += update_rows
 
         if steps % int(args.log_every) == 0 or steps >= args.target_steps:
-            avg_ce = window_ce / max(1, window_count)
-            avg_agree = window_agree / max(1, window_count)
-            rate = steps / max(1e-9, time.time() - started)
+            elapsed = time.perf_counter() - started
+            avg_ce = window_ce_sum / max(1, window_rows)
+            avg_agree = window_correct / max(1, window_rows)
             logging.info(
-                "steps=%s/%s train_ce=%.4f train_agreement=%.4f lr=%.3e rows/s=%.0f cursor=%s",
+                "steps=%s/%s train_ce=%.4f train_agreement=%.4f lr=%.3e "
+                "run_rows=%s total_rows=%s rows/s=%.0f cursor=%s",
                 steps,
                 args.target_steps,
                 avg_ce,
                 avg_agree,
                 scheduler.get_last_lr()[0],
-                rate * int(args.batch_size),
+                run_rows,
+                rows_seen,
+                run_rows / max(1e-9, elapsed),
                 cursor,
             )
             writer.add_scalar("train/ce", avg_ce, steps)
             writer.add_scalar("train/agreement", avg_agree, steps)
             writer.add_scalar("train/lr", scheduler.get_last_lr()[0], steps)
+            writer.add_scalar("train/rows_seen", rows_seen, steps)
+            writer.add_scalar("train/run_rows_per_sec", run_rows / max(1e-9, elapsed), steps)
             writer.flush()
-            window_ce = 0.0
-            window_agree = 0.0
-            window_count = 0
+            window_ce_sum = 0.0
+            window_correct = 0
+            window_rows = 0
 
         if int(args.holdout_every) > 0 and (steps % int(args.holdout_every) == 0 or steps >= args.target_steps):
             metrics = evaluate_holdout()
             metrics["steps"] = steps
+            metrics["optimizer_updates"] = steps
+            metrics["rows_seen"] = rows_seen
+            metrics["microbatches_seen"] = microbatches_seen
+            metrics["run_elapsed_sec"] = time.perf_counter() - started
             history.append(metrics)
             logging.info(
                 "holdout: steps=%s overall ce=%.4f agreement=%.4f rows=%.0f",
@@ -477,15 +602,30 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 writer.add_scalar(f"holdout/{pool_name}/ce", metrics[f"{prefix}_ce"], steps)
                 writer.add_scalar(f"holdout/{pool_name}/agreement", metrics[f"{prefix}_agreement"], steps)
 
-        if int(args.save_every) > 0 and steps % int(args.save_every) == 0:
+        if steps in stage_save_steps:
+            preserve_stage_once()
+        elif int(args.save_every) > 0 and steps % int(args.save_every) == 0:
             save_checkpoint()
 
-    save_checkpoint()
+    if steps in stage_save_steps:
+        preserve_stage_once()
+    else:
+        save_checkpoint()
     (output_dir / "history.json").write_text(
         json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     writer.close()
-    return {"steps": steps, "state_file": str(state_file), "history": history}
+    return {
+        "steps": steps,
+        "optimizer_updates": steps,
+        "microbatches_seen": microbatches_seen,
+        "rows_seen": rows_seen,
+        "run_rows": run_rows,
+        "run_updates": run_updates,
+        "run_elapsed_sec": time.perf_counter() - started,
+        "state_file": str(state_file),
+        "history": history,
+    }
 
 
 def main() -> None:

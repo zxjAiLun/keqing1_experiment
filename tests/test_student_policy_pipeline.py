@@ -306,3 +306,19 @@ class TestStudentResumeState:
         assert abs(lrs[-1] - peak_lr) < 1e-12
         assert max(lrs) <= peak_lr + 1e-12
         assert abs(lrs[5] - peak_lr * 0.5) < 1e-12
+
+    def test_accumulation_row_weights_include_short_tail_exactly(self) -> None:
+        from training.mortal.train_student_policy import _accumulation_row_weights
+
+        weights = _accumulation_row_weights([128, 128, 17, 128])
+        assert sum(weights) == pytest.approx(1.0)
+        assert weights == pytest.approx([128 / 401, 128 / 401, 17 / 401, 128 / 401])
+        with pytest.raises(ValueError):
+            _accumulation_row_weights([0, 0])
+
+    def test_stage_save_steps_validation(self) -> None:
+        from training.mortal.train_student_policy import _parse_stage_save_steps
+
+        assert _parse_stage_save_steps("0,2000,5000,10000", 10000) == {0, 2000, 5000, 10000}
+        with pytest.raises(ValueError):
+            _parse_stage_save_steps("10001", 10000)
