@@ -101,6 +101,16 @@ ENTRIES: list[tuple[str, str, str, str, bool, str]] = [
     ("P4-M6", "file", f"{SP}/P4-M6_capacity_256x54_hardce_10k/resource_summary.json",
      "10k 运行资源峰值（wall 9567 s、GPU 峰值 6801/8188 MiB、系统内存峰值 98.7%）", False, ""),
     ("P4-M6", "file", f"{SP}/P4-M6_capacity_256x54_hardce_10k/train.stderr.log", "10k 首段训练日志", False, ""),
+    ("P4-M6", "file", f"{SP}/P4-M6_capacity_256x54_hardce_10k/student_step_015000.pth",
+     "★ 15k 步 stage 权重（续训段）", True, ""),
+    ("P4-M6", "file", f"{SP}/P4-M6_capacity_256x54_hardce_10k/student_step_020000.pth",
+     "★ 20k 步 stage 权重（续训端点；尚未做 1v3 强度评测）", True, ""),
+    ("P4-M6", "file", f"{SP}/P4-M6_capacity_probe/run_capacity_resume_20k_monitored.py",
+     "续训到 20k 的监控运行包装脚本（含时间序列与安全暂停）", False, ""),
+    ("P4-M6", "file", f"{SP}/P4-M6_capacity_256x54_hardce_10k/resource_timeseries_10k_to_20k.jsonl",
+     "★ 续训资源时间序列（每 10s 一行，1150 行）", False, ""),
+    ("P4-M6", "file", f"{SP}/P4-M6_capacity_256x54_hardce_10k/resource_summary_10k_to_20k.json",
+     "续训资源汇总（wall 11624 s、未触发暂停）", False, ""),
 ]
 
 

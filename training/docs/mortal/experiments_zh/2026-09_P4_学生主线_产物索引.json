@@ -396,9 +396,9 @@
       "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k",
       "description": "容量候选首段训练目录（256×54、microbatch128×accum4、纯 hard 教师贪心 CE，10k optimizer updates）",
       "exists": true,
-      "files": 9,
-      "bytes": 1237734426,
-      "listing_sha256": "1c4d5031c4dd6793ae741c55463cf457337a8280c41a94c75440eff9b6d7cf24"
+      "files": 14,
+      "bytes": 1809280568,
+      "listing_sha256": "85fe5d3dbfdea5f65f02a00233429a91f054ffc13e188243ebc50a2feba2fafb"
     },
     {
       "experiment": "P4-M6",
@@ -442,8 +442,8 @@
       "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/history.json",
       "description": "5 个 holdout 读点（2k/4k/6k/8k/10k；截至 10k agreement 0.8653）",
       "exists": true,
-      "bytes": 3218,
-      "sha256": "b0e150ac4cb4585043155ad2c395b4b874d4b0913c5df94c129bd5063b2bc2a9"
+      "bytes": 6444,
+      "sha256": "266708274c5a566536160afd0d2b4f7b97bca7fe72b26000780ff8b45a7238df"
     },
     {
       "experiment": "P4-M6",
@@ -460,6 +460,48 @@
       "description": "10k 首段训练日志",
       "exists": true,
       "bytes": 21743
+    },
+    {
+      "experiment": "P4-M6",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/student_step_015000.pth",
+      "description": "★ 15k 步 stage 权重（续训段）",
+      "exists": true,
+      "bytes": 285581958,
+      "sha256": "0fa51f9e6fda1f05282d0ddf164f76e63bcdca11cdcdd79ffccba17b29b7cf2f"
+    },
+    {
+      "experiment": "P4-M6",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/student_step_020000.pth",
+      "description": "★ 20k 步 stage 权重（续训端点；尚未做 1v3 强度评测）",
+      "exists": true,
+      "bytes": 285583366,
+      "sha256": "9693a20500ae7453ddba801b64a57794014c8f96b28d01425ebec5d365619e55"
+    },
+    {
+      "experiment": "P4-M6",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_probe/run_capacity_resume_20k_monitored.py",
+      "description": "续训到 20k 的监控运行包装脚本（含时间序列与安全暂停）",
+      "exists": true,
+      "bytes": 6968
+    },
+    {
+      "experiment": "P4-M6",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/resource_timeseries_10k_to_20k.jsonl",
+      "description": "★ 续训资源时间序列（每 10s 一行，1150 行）",
+      "exists": true,
+      "bytes": 347022
+    },
+    {
+      "experiment": "P4-M6",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/resource_summary_10k_to_20k.json",
+      "description": "续训资源汇总（wall 11624 s、未触发暂停）",
+      "exists": true,
+      "bytes": 881
     }
   ]
 }
