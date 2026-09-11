@@ -357,6 +357,109 @@
       "exists": true,
       "bytes": 20551,
       "sha256": "9d46ec80214c7e5bbe6d4a567b1b26454e66233a689e69c81f27e59a501cbc8d"
+    },
+    {
+      "experiment": "P4-M6",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_probe/microbatch128.json",
+      "description": "资源探针 microbatch128：稳定 672.6 rows/s，WDDM 最低余量 1604 MiB（PASS）",
+      "exists": true,
+      "bytes": 10344
+    },
+    {
+      "experiment": "P4-M6",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_probe/microbatch256.json",
+      "description": "资源探针 microbatch256：WDDM 最低余量 116 MiB、系统内存 92.3%、提交内存贴近上限（REJECT）",
+      "exists": true,
+      "bytes": 10338
+    },
+    {
+      "experiment": "P4-M6",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_probe/p4_m6_resource_probe.py",
+      "description": "资源探针脚本（真实 trainer 模型/数据/损失路径，不保存权重）",
+      "exists": true,
+      "bytes": 10498
+    },
+    {
+      "experiment": "P4-M6",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_probe/run_capacity_10k_monitored.py",
+      "description": "10k 首段的带资源监控运行包装脚本",
+      "exists": true,
+      "bytes": 6228
+    },
+    {
+      "experiment": "P4-M6",
+      "kind": "dir",
+      "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k",
+      "description": "容量候选首段训练目录（256×54、microbatch128×accum4、纯 hard 教师贪心 CE，10k optimizer updates）",
+      "exists": true,
+      "files": 9,
+      "bytes": 1237734426,
+      "listing_sha256": "1c4d5031c4dd6793ae741c55463cf457337a8280c41a94c75440eff9b6d7cf24"
+    },
+    {
+      "experiment": "P4-M6",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/student_step_000000.pth",
+      "description": "★ 0 步 stage 权重（fresh 256×54 初始化）",
+      "exists": true,
+      "bytes": 95409075,
+      "sha256": "f9072df0218965899c7820cd1b4f670abfb8bdb9f616e77b77565ade90c341be"
+    },
+    {
+      "experiment": "P4-M6",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/student_step_002000.pth",
+      "description": "★ 2k 步 stage 权重",
+      "exists": true,
+      "bytes": 285572998,
+      "sha256": "d0f0f893341ce29278dec3f8bc997cccf14f2868035ac3a0a522702cb3007cb5"
+    },
+    {
+      "experiment": "P4-M6",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/student_step_005000.pth",
+      "description": "★ 5k 步 stage 权重",
+      "exists": true,
+      "bytes": 285573510,
+      "sha256": "42f26cc5c8353c391eac8a88373abbe02522318e7864bab89365fa776852f215"
+    },
+    {
+      "experiment": "P4-M6",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/student_step_010000.pth",
+      "description": "★ 10k 步 stage 权重（首段端点；尚未做 1v3 强度评测）",
+      "exists": true,
+      "bytes": 285574854,
+      "sha256": "d5882238139c1081d2979b701e7c06e9c73eda725669cff179d31d7b38e81c4c"
+    },
+    {
+      "experiment": "P4-M6",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/history.json",
+      "description": "5 个 holdout 读点（2k/4k/6k/8k/10k；截至 10k agreement 0.8653）",
+      "exists": true,
+      "bytes": 3218,
+      "sha256": "b0e150ac4cb4585043155ad2c395b4b874d4b0913c5df94c129bd5063b2bc2a9"
+    },
+    {
+      "experiment": "P4-M6",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/resource_summary.json",
+      "description": "10k 运行资源峰值（wall 9567 s、GPU 峰值 6801/8188 MiB、系统内存峰值 98.7%）",
+      "exists": true,
+      "bytes": 2312
+    },
+    {
+      "experiment": "P4-M6",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/train.stderr.log",
+      "description": "10k 首段训练日志",
+      "exists": true,
+      "bytes": 21743
     }
   ]
 }

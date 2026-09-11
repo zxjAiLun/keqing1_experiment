@@ -79,6 +79,28 @@ ENTRIES: list[tuple[str, str, str, str, bool, str]] = [
      "★ 在线状态诊断（student50k）：forced-discard 修正后 agreement 0.9006/0.9023", True, ""),
     ("P4-M5", "file", f"{SP}/online_state_diag_distill5k.json",
      "★ 在线状态诊断（distill5k）：0.9134/0.9126", True, ""),
+    # ---- P4-M6: capacity candidate (resource probe + first 10k segment) ----
+    ("P4-M6", "file", f"{SP}/P4-M6_capacity_probe/microbatch128.json",
+     "资源探针 microbatch128：稳定 672.6 rows/s，WDDM 最低余量 1604 MiB（PASS）", False, ""),
+    ("P4-M6", "file", f"{SP}/P4-M6_capacity_probe/microbatch256.json",
+     "资源探针 microbatch256：WDDM 最低余量 116 MiB、系统内存 92.3%、提交内存贴近上限（REJECT）", False, ""),
+    ("P4-M6", "file", f"{SP}/P4-M6_capacity_probe/p4_m6_resource_probe.py",
+     "资源探针脚本（真实 trainer 模型/数据/损失路径，不保存权重）", False, ""),
+    ("P4-M6", "file", f"{SP}/P4-M6_capacity_probe/run_capacity_10k_monitored.py",
+     "10k 首段的带资源监控运行包装脚本", False, ""),
+    ("P4-M6", "dir", f"{SP}/P4-M6_capacity_256x54_hardce_10k",
+     "容量候选首段训练目录（256×54、microbatch128×accum4、纯 hard 教师贪心 CE，10k optimizer updates）", False, "*"),
+    ("P4-M6", "file", f"{SP}/P4-M6_capacity_256x54_hardce_10k/student_step_000000.pth",
+     "★ 0 步 stage 权重（fresh 256×54 初始化）", True, ""),
+    ("P4-M6", "file", f"{SP}/P4-M6_capacity_256x54_hardce_10k/student_step_002000.pth", "★ 2k 步 stage 权重", True, ""),
+    ("P4-M6", "file", f"{SP}/P4-M6_capacity_256x54_hardce_10k/student_step_005000.pth", "★ 5k 步 stage 权重", True, ""),
+    ("P4-M6", "file", f"{SP}/P4-M6_capacity_256x54_hardce_10k/student_step_010000.pth",
+     "★ 10k 步 stage 权重（首段端点；尚未做 1v3 强度评测）", True, ""),
+    ("P4-M6", "file", f"{SP}/P4-M6_capacity_256x54_hardce_10k/history.json",
+     "5 个 holdout 读点（2k/4k/6k/8k/10k；截至 10k agreement 0.8653）", True, ""),
+    ("P4-M6", "file", f"{SP}/P4-M6_capacity_256x54_hardce_10k/resource_summary.json",
+     "10k 运行资源峰值（wall 9567 s、GPU 峰值 6801/8188 MiB、系统内存峰值 98.7%）", False, ""),
+    ("P4-M6", "file", f"{SP}/P4-M6_capacity_256x54_hardce_10k/train.stderr.log", "10k 首段训练日志", False, ""),
 ]
 
 

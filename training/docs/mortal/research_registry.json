@@ -12,8 +12,9 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "P4 学生主线（Mortal-native 学生）：P4-M1 现成语料 external 重标注缓存已建立并关闭（18,000 半庄 / 11,487,044 行 / agreement 94.72%）；P4-M2 硬标签 192×40 学生训练 50k 完成（holdout agreement 0.9047），1v3 双向显示与 K0 无明确强弱差异、弱于 external 约 9–10 pt/半庄；P4-M3 T=1 纯 KL 软目标蒸馏 5k 监督侧改善明显但实战未获 support（参数线关闭）；P4-M4/P4-M5 诊断确认错误集中在教师 top-2 gap 小的状态，且在线（学生自走出局面）一致率与离线基本一致——状态分布偏移支不成立。K1 仍未产生；本线尚无 promotion gate。",
-    "next_experiment": "P4-M6_student_capacity_probe_256x54_2026_09",    "next_experiment_status": "preregistered_not_started",    "prohibitions": [
+    "current_stage": "P4 学生主线（Mortal-native 学生）：P4-M1 现成语料 external 重标注缓存已建立并关闭（18,000 半庄 / 11,487,044 行 / agreement 94.72%）；P4-M2 硬标签 192×40 学生训练 50k 完成（holdout agreement 0.9047），1v3 双向显示与 K0 无明确强弱差异、弱于 external 约 9–10 pt/半庄；P4-M3 T=1 纯 KL 软目标蒸馏 5k 监督侧改善明显但实战未获 support（参数线关闭）；P4-M4/P4-M5 诊断确认错误集中在教师 top-2 gap 小的状态，且在线（学生自走出局面）一致率与离线基本一致——状态分布偏移支不成立。容量候选 P4-M6 已按授权执行：先完成 256×54 资源探针（microbatch128 稳定 672.6 rows/s、WDDM 最低余量 1604 MiB；microbatch256 被拒，WDDM 最低余量 116 MiB、系统内存峰值 92.3%），随后按 microbatch128×累积4（effective 512，BN 仍按 128）跑完 fresh 256×54 hard-CE 首段 10k optimizer updates：实际 5,113,478 行 / 约 2.65 小时，holdout agreement 2k 0.8149 → 10k 0.8653（CE 0.3466）；尚未做 1v3，本段不产生强度裁决，也不与成熟 50k（0.9047）直接比较。K1 仍未产生；本线尚无 promotion gate。",
+    "next_experiment": null,
+    "next_experiment_status": "not_selected",    "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
       "不重跑 D1/D2/D3 或扫描后代视角比例。",
@@ -32,7 +33,8 @@
       "不恢复 T=2 或 hard+soft 混合蒸馏、不把 P4-M3 续到 10k（该参数线已关闭）。",
       "256×54 容量探针在正式训练前必须先做 forward+backward 资源 smoke；禁止直接沿用 batch512 开跑。",
       "不重建 P4-M1 标签缓存、不为『做显著』追加 seed 或挑选读点。",
-      "不新增第三个产物根；P4 产物必须落在 artifacts/experiments/student_policy_v1/ 或 artifacts/eval/，并按结果报告 §12 目录约定登记。"
+      "不新增第三个产物根；P4 产物必须落在 artifacts/experiments/student_policy_v1/ 或 artifacts/eval/，并按结果报告 §12 目录约定登记。",
+      "P4-M6 首段（256×54 @10k）只完成资源探针与第一段训练，尚未评测：禁止把 @10k 直接与成熟 192×40 @50k 做强度裁决（预算不同，≈409 万 optimizer-update 行 vs 约 2600 万行），禁止未获新授权自动续跑到 20k/25k/50k；续跑与否由项目负责人根据首段曲线与成本另行决定。"
     ]
   },
   "records": [
@@ -2203,7 +2205,7 @@
     },
     {
       "experiment_id": "P4-M6_student_capacity_probe_256x54_2026_09",
-      "name_zh": "P4-M6 学生容量探针 192×40 → 256×54（预注册，未启动）",
+      "name_zh": "P4-M6 学生容量探针 + 256×54 首段 10k（资源探针通过；仅首段，未获强度裁决）",
       "category": "model_candidate",
       "parent_model": "P4-M2 的训练 recipe（纯 hard teacher-greedy CE），容量改为教师同规模 256×54",
       "control": "P4-M2 的 192×40 @50k 学生，沿用同一评测协议",
@@ -2216,18 +2218,33 @@
         "必须先完成 forward+backward 资源 smoke，并据其确定 microbatch 与是否使用梯度累积"
       ],
       "training_seeds": [],
-      "evaluation_protocol": "第一步仅为资源检查（GPU allocated/reserved、WDDM 总显存、RSS、step 吞吐）；训练预算与读点待资源结论后再登记",
-      "status": "preregistered_not_started",
-      "primary_result": "未启动：本轮只登记方向与前置条件，未训练、未占用 GPU。",
+      "evaluation_protocol": "含两段：(1) 资源探针——microbatch128 与 256 各自运行真实 forward+backward+optimizer step，记录 CUDA allocated/reserved、WDDM 整卡显存、RSS、系统提交/pagefile、step 时延与吞吐；(2) 正式首段——microbatch128、梯度累积4、FP32、AdamW(lr1e-4, wd0.1, clip1.0)、warmup200、seed20260908，10,000 次 optimizer update，按 stage 保存 0/2k/5k/10k，每 2k 在历史同口径 holdout 面板（24 shard × 512 行 = 11,555 行）上评估。",
+      "status": "evaluation_in_progress",
+      "primary_result": "资源：microbatch128 稳定通过（稳定 672.6 rows/s，WDDM 最低余量 1604 MiB）；microbatch256 被拒（WDDM 最低余量 116 MiB、系统内存峰值 92.3%、commit 逼近上限）。首段 10k 完成：实际 5,113,478 训练行 / 40,000 microbatch / 约 2.65 小时，返回码 0、无紧急停止。holdout 轨迹 2k 0.8149 → 4k 0.8378 → 6k 0.8460 → 8k 0.8638 → 10k 0.8653（CE 0.3466）。首段资源峰值：WDDM 最低余量 1156 MiB、进程树 RSS 2.36 GiB、系统内存峰值 98.7%。尚未做 1v3 强度评测，因此不产生强弱裁决。",
       "promoted_data_route": false,
       "promoted_checkpoint": false,
       "recipe_promotion": false,
       "checkpoint_promotion": false,
-      "closure_reason": "预注册理由：状态分布偏移候选已被 P4-M5 削弱；软目标候选（P4-M3）已试且未获 support；192×40 hard 学生在约 34k 后停在 ~90% fidelity；教师本身为 256×54；容量原本只是为验证训练路线而刻意压低。禁止直接按 batch512 开跑。",
+      "closure_reason": "本段不是强度裁决：256×54 @10k 的 holdout 0.8653 仍低于 192×40 成熟 50k 的 0.9047，但训练量仅为后者约 1/5（409.08 万 optimizer-update 行 vs 约 2600 万行）且不是同一预算，因此不構成容量结论。P4-M5 已削弱状态分布偏移候选；P4-M3 软目标未获 support；容量候选在此仅作为最有信息量的一刀被购买一段预算。禁止把本段直接与成熟 50k 做强度裁决；禁止未经新授权自动续跑到 50k。",
       "predecessor": "P4-M5_online_state_diagnostic_2026_09",
       "next_experiment": null,
-      "commits": [],
-      "artifact_paths": [],
+      "commits": [
+        "423ea22"
+      ],
+      "artifact_paths": [
+        "artifacts/experiments/student_policy_v1/P4-M6_capacity_probe/microbatch128.json",
+        "artifacts/experiments/student_policy_v1/P4-M6_capacity_probe/microbatch256.json",
+        "artifacts/experiments/student_policy_v1/P4-M6_capacity_probe/p4_m6_resource_probe.py",
+        "artifacts/experiments/student_policy_v1/P4-M6_capacity_probe/run_capacity_10k_monitored.py",
+        "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/",
+        "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/student_step_000000.pth",
+        "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/student_step_002000.pth",
+        "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/student_step_005000.pth",
+        "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/student_step_010000.pth",
+        "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/history.json",
+        "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/resource_summary.json",
+        "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/training_contract.json"
+      ],
       "report_paths": [
         "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_50k训练_1v3双向评测_在线诊断_最终结果报告.md",
         "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_产物索引.json"
