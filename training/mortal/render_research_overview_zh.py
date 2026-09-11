@@ -120,7 +120,7 @@ def load_registry(path: Path) -> dict[str, Any]:
 
 def status_text(status: str) -> str:
     return {
-        "evaluation_in_progress": "训练完成，评测进行中",
+        "evaluation_in_progress": "训练完成，待续训/评测决策",
         "operational": "运行中",
         "closed": "已关闭",
         "rejected": "拒绝/不晋级",
