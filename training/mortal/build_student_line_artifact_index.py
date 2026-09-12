@@ -165,6 +165,8 @@ ENTRIES: list[tuple[str, str, str, str, bool, str]] = [
      "方向 A same-seed paired 差值（C4 − hard50k）", False, ""),
     ("P4-M10", "file", f"{EV}/p4m10_comparisons/ext_vs_trio_delta.json",
      "方向 B same-seed paired 差值（ext 面对 3×C4 − 3×hard50k）", False, ""),
+    ("P4-M10", "file", f"{SP}/P4-M10_onpolicy_pg_4x256/guard_reconciliation_backfill.json",
+     "★ agari guard / claim 抢先的只读补记（运行期字段为 null，本文件补出真实计数）", False, ""),
 ]
 
 
