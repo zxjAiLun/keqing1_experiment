@@ -396,9 +396,9 @@
       "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k",
       "description": "容量候选首段训练目录（256×54、microbatch128×accum4、纯 hard 教师贪心 CE，10k optimizer updates）",
       "exists": true,
-      "files": 14,
-      "bytes": 1809280568,
-      "listing_sha256": "85fe5d3dbfdea5f65f02a00233429a91f054ffc13e188243ebc50a2feba2fafb"
+      "files": 15,
+      "bytes": 1904679874,
+      "listing_sha256": "8e1419f958e9ad32d31efe480166adb4bd9e258bb005bdffc275dbdd234c5fc6"
     },
     {
       "experiment": "P4-M6",
@@ -502,6 +502,45 @@
       "description": "续训资源汇总（wall 11624 s、未触发暂停）",
       "exists": true,
       "bytes": 881
+    },
+    {
+      "experiment": "P4-M7",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/student_step_020000_eval_weights.pth",
+      "description": "★ P4-M7 eval-only 权重副本（仅去除训练状态；模型张量与 20k checkpoint 逐张量一致）",
+      "exists": true,
+      "bytes": 95399306,
+      "sha256": "c988c8a6ad09e73a29cb7d2c50ba14478c9e68b5e09531c712f92438bd2b76ec"
+    },
+    {
+      "experiment": "P4-M7",
+      "kind": "dir",
+      "path": "artifacts/eval/ovt_capacity256x54_20k_vs_3ext",
+      "description": "★ 256×54@20k 单挑 vs 3×external（256 半庄，seed 710000–710063）",
+      "exists": true,
+      "files": 2,
+      "bytes": 10024,
+      "listing_sha256": "3e745b68245b60d3f469487cc633a0dac9ab6a2a8f934cbf48cdc353f4e5525e"
+    },
+    {
+      "experiment": "P4-M7",
+      "kind": "dir",
+      "path": "artifacts/eval/ovt_3capacity256x54_20k_vs_ext",
+      "description": "★ external 单挑 vs 3×256×54@20k（256 半庄，seed 710000–710063）",
+      "exists": true,
+      "files": 2,
+      "bytes": 10027,
+      "listing_sha256": "3c93331f36a5309b6378d969b823c403abb026ba8fb08e4a5a7cc6e969dc209d"
+    },
+    {
+      "experiment": "P4-M7",
+      "kind": "dir",
+      "path": "artifacts/eval/p4m7_comparisons",
+      "description": "★ P4-M7 paired comparison 与预注册裁决 summary",
+      "exists": true,
+      "files": 3,
+      "bytes": 6431,
+      "listing_sha256": "d27b2c1b69fc9bdb0463df2dfb81170b00d48a3fa50ce998f8019c7d464df87a"
     }
   ]
 }

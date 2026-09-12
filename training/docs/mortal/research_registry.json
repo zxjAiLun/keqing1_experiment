@@ -12,7 +12,7 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "P4 学生主线（Mortal-native 学生）：P4-M1 现成语料 external 重标注缓存已建立并关闭（18,000 半庄 / 11,487,044 行 / agreement 94.72%）；P4-M2 硬标签 192×40 学生训练 50k 完成（holdout agreement 0.9047），1v3 双向显示与 K0 无明确强弱差异、弱于 external 约 9–10 pt/半庄；P4-M3 T=1 纯 KL 软目标蒸馏 5k 监督侧改善明显但实战未获 support（参数线关闭）；P4-M4/P4-M5 诊断确认错误集中在教师 top-2 gap 小的状态，且在线（学生自走出局面）一致率与离线基本一致——状态分布偏移支不成立。P4-M6 容量候选已按授权执行完成：资源探针 microbatch128 可运行、microbatch256 被拒；fresh 256×54 纯 hard CE 从 0 训练到 20k optimizer updates（累计 10,228,528 行），holdout agreement 2k 0.8149 → 10k 0.8653 → 14k 0.8810 → 20k 0.8920。与 192×40 同阶段对照：20k 处 0.8920 vs 0.8917（+0.03pp），十个同阶段读点差值在 -0.51pp..+0.70pp 间震荡、无容量优势迹象；未做 1v3，故不产生强度裁决，也不得与成熟 50k（0.9047）直接比较。K1 仍未产生；本线尚无 promotion gate。",
+    "current_stage": "P4 学生主线（Mortal-native 学生）：P4-M1 现成语料 external 重标注缓存已建立并关闭（18,000 半庄 / 11,487,044 行 / agreement 94.72%）；P4-M2 硬标签 192×40 学生训练 50k 完成（holdout agreement 0.9047），1v3 双向显示与 K0 无明确强弱差异、弱于 external 约 9–10 pt/半庄；P4-M3 T=1 纯 KL 软目标蒸馏 5k 监督侧改善明显但实战未获 support（参数线关闭）；P4-M4/P4-M5 诊断确认错误集中在教师 top-2 gap 小的状态，且在线（学生自走出局面）一致率与离线基本一致——状态分布偏移支不成立。P4-M6 容量候选已按授权执行完成：资源探针 microbatch128 可运行、microbatch256 被拒；fresh 256×54 纯 hard CE 从 0 训练到 20k optimizer updates（累计 10,228,528 行），holdout agreement 2k 0.8149 → 10k 0.8653 → 14k 0.8810 → 20k 0.8920。与 192×40 同阶段对照：20k 处 0.8920 vs 0.8917（+0.03pp），十个同阶段读点差值在 -0.51pp..+0.70pp 间震荡、无容量优势迹象；随后执行 P4-M7 eval-only strength screen：256×54@20k 与 external 双向各 256 半庄，复用 seed 710000–710063；相对 192×40@50k 的 paired delta，候选单挑方向 -4.92 pt CI95 [-17.23,+7.21]，镜像方向 external 单挑变化 +10.02 pt CI95 [-1.41,+21.62]（均跨0，且镜像点估计反向），故 capacity strength signal not supported。P4-M6/P4-M7 容量路线正式关闭，不续训、不追加样本；后续如继续主线需上提 Astra 讨论 objective shift，不在此处预选具体 objective。K1 仍未产生；本线尚无 promotion gate。",
     "next_experiment": null,
     "next_experiment_status": "not_selected",
     "prohibitions": [
@@ -35,7 +35,8 @@
       "256×54 容量探针在正式训练前必须先做 forward+backward 资源 smoke；禁止直接沿用 batch512 开跑。",
       "不重建 P4-M1 标签缓存、不为『做显著』追加 seed 或挑选读点。",
       "不新增第三个产物根；P4 产物必须落在 artifacts/experiments/student_policy_v1/ 或 artifacts/eval/，并按结果报告 §12 目录约定登记。",
-      "P4-M6 首段（256×54 @10k）只完成资源探针与第一段训练，尚未评测：禁止把 @10k 直接与成熟 192×40 @50k 做强度裁决（预算不同，≈409 万 optimizer-update 行 vs 约 2600 万行），禁止未获新授权自动续跑到 20k/25k/50k；续跑与否由项目负责人根据首段曲线与成本另行决定。"
+      "P4-M6/P4-M7 容量路线已完成并关闭：P4-M6 已训练到 20k，P4-M7 已按固定 seed band 做双向 eval-only strength screen；禁止追加 seed、重复 K0/full-holdout/诊断，禁止续训到 25k/50k。该结果不排除所有容量路线，只关闭本具体 256×54 + BN microbatch128 + hard-CE 配方；后续方向须上提 Astra 讨论 objective shift。",
+      "P4-M7 已按预注册规则判为 capacity recipe closed / no gameplay improvement support；不得追加 seed、重跑 K0、full-holdout、supervision-gap、action topology、online-state 或续训 25k/50k；后续方向须上提 Astra 讨论 objective shift。"
     ]
   },
   "records": [
@@ -2252,7 +2253,7 @@
       "checkpoint_promotion": false,
       "closure_reason": "本线到此仍未做 1v3 强度评测，因此不产生强弱裁决；promoted_recipe/checkpoint 仍为 false。20k 同阶段对照未显示 256×54 相对 192×40 的优势迹象（差值在噪声量级震荡），但仍不得据此宣布“容量已被科学排除”：本段只覆盖约一个 epoch 的 train 数据暴露，训练预算低于成熟 50k，且存在初始化与 BN microbatch（128 vs 512）差异。禁止把本段直接与成熟 50k 做强度裁决；禁止未经新授权自动续跑到 25k/50k。",
       "predecessor": "P4-M5_online_state_diagnostic_2026_09",
-      "next_experiment": null,
+      "next_experiment": "P4-M7_capacity_strength_screen_256x54_20k_2026_09",
       "commits": [
         "423ea22",
         "a09dcf6"
@@ -2280,6 +2281,50 @@
         "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_50k训练_1v3双向评测_在线诊断_最终结果报告.md",
         "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_产物索引.json"
       ]
+    },
+    {
+      "experiment_id": "P4-M7_capacity_strength_screen_256x54_20k_2026_09",
+      "name_zh": "P4-M7 256×54@20k eval-only 双向 external 强度筛查",
+      "category": "model_candidate",
+      "parent_model": "P4-M6 256×54@20k checkpoint（仅推断；不训练）",
+      "control": "P4-M2 192×40@50k 学生，复用 hard50k vs external 的同一 seed band 710000–710063",
+      "variant": "直接使用 P4-M6 student_step_020000.pth；仅生成去除训练状态的 eval-only 权重副本，mortal/current_dqn 张量逐个验证一致；与 external_mortal 做原生 OneVsThree 双向评测",
+      "changed_variable": "评测对象：192×40@50k → 256×54@20k；无训练变量变化",
+      "fixed_variables": [
+        "seed band 710000–710063、seed_key 8192、64 seed × 4 seat rotations = 256 hanchans/方向",
+        "external checkpoint、Tenhou reference rank points、native OneVsThree backend、FP32/CUDA、batch_seeds=8、bootstrap reps=5000/seed=20260910",
+        "不新增 seed、不跑 K0、不做 full-holdout、supervision-gap、action topology、online-state、不续训"
+      ],
+      "training_seeds": [],
+      "evaluation_protocol": "candidate singleton vs 3×external 256 半庄；external singleton vs 3×candidate 256 半庄；分别与旧 192×40@50k 两方向按 seed 配对，cluster bootstrap CI95。预注册成功条件：两个方向均朝 256×54 更强，至少一个 paired CI95 不跨0，另一方向不明显反向。",
+      "status": "not_supported",
+      "primary_result": "绝对结果：256×54@20k 单挑 vs 3×external，avg rank pt -14.94，CI95 [-24.61,-5.10]；external 单挑 vs 3×256×54@20k，external avg rank pt +18.46，CI95 [+8.96,+27.60]。与 192×40@50k 同 seed 配对：候选单挑方向 delta -4.921875 pt，CI95 [-17.2265625,+7.20703125]；镜像方向 external 单挑（candidate trio 相对 hard50k trio）delta +10.01953125 pt，CI95 [-1.40625,+21.62109375]。两 CI 均跨0，且镜像方向点估计偏向 external 更强。两方向 native rank counts 均校验通过，所有批次 fresh。",
+      "promoted_data_route": false,
+      "promoted_checkpoint": false,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": "按预注册裁决为 capacity recipe closed; no gameplay improvement support。没有任何方向满足“候选更强且至少一个 CI 不跨0、另一方向不反向”；相反，候选单挑点估计较 hard50k 低 4.92 pt，镜像 external 点估计较 hard50k 高 10.02 pt。该结果不证明所有容量路线或所有 objective 都无效，但足以关闭本具体 256×54 + BN microbatch128 + hard-CE 配方及其 25k/50k 训练购买请求。不得追加样本；下一阶段若继续，应把 objective shift 上提 Astra 讨论，不由本实验预选 RL/value/具体目标。",
+      "predecessor": "P4-M6_student_capacity_probe_256x54_2026_09",
+      "next_experiment": null,
+      "commits": [
+        "2bc2ceb"
+      ],
+      "artifact_paths": [
+        "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/student_step_020000.pth",
+        "artifacts/experiments/student_policy_v1/P4-M6_capacity_256x54_hardce_10k/student_step_020000_eval_weights.pth",
+        "artifacts/eval/ovt_capacity256x54_20k_vs_3ext/",
+        "artifacts/eval/ovt_3capacity256x54_20k_vs_ext/",
+        "artifacts/eval/p4m7_comparisons/summary.json",
+        "artifacts/eval/p4m7_comparisons/solo_vs_ext_capacity_minus_hard50k.json",
+        "artifacts/eval/p4m7_comparisons/ext_vs_capacity_delta.json"
+      ],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_50k训练_1v3双向评测_在线诊断_最终结果报告.md",
+        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_产物索引.json"
+      ],
+      "preregistration": "用户授权的 eval-only experiment：固定 710000–710063；两个方向各 256 hanchans；两个方向都朝候选更强、至少一个 paired CI95 不跨0、另一方向不明显反向才支持容量强度信号，否则关闭容量路线且不追加样本。",
+      "formal_adjudication": null,
+      "promoted_k1_checkpoint": null
     }
   ]
 }

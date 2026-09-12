@@ -111,6 +111,15 @@ ENTRIES: list[tuple[str, str, str, str, bool, str]] = [
      "★ 续训资源时间序列（每 10s 一行，1150 行）", False, ""),
     ("P4-M6", "file", f"{SP}/P4-M6_capacity_256x54_hardce_10k/resource_summary_10k_to_20k.json",
      "续训资源汇总（wall 11624 s、未触发暂停）", False, ""),
+    # ---- P4-M7: eval-only strength screen -------------------------------
+    ("P4-M7", "file", f"{SP}/P4-M6_capacity_256x54_hardce_10k/student_step_020000_eval_weights.pth",
+     "★ P4-M7 eval-only 权重副本（仅去除训练状态；模型张量与 20k checkpoint 逐张量一致）", True, ""),
+    ("P4-M7", "dir", f"{EV}/ovt_capacity256x54_20k_vs_3ext",
+     "★ 256×54@20k 单挑 vs 3×external（256 半庄，seed 710000–710063）", False, "*"),
+    ("P4-M7", "dir", f"{EV}/ovt_3capacity256x54_20k_vs_ext",
+     "★ external 单挑 vs 3×256×54@20k（256 半庄，seed 710000–710063）", False, "*"),
+    ("P4-M7", "dir", f"{EV}/p4m7_comparisons",
+     "★ P4-M7 paired comparison 与预注册裁决 summary", False, "*"),
 ]
 
 
