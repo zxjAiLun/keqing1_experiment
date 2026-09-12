@@ -144,6 +144,27 @@ ENTRIES: list[tuple[str, str, str, str, bool, str]] = [
      "第 2 次重采的四项检查（独立性/稳定性复核）", False, ""),
     ("P4-M9", "file", f"{EV}/_p4m9_probe_onpolicy_contract_sample3/probe_result.json",
      "第 3 次重采的四项检查（独立性/稳定性复核）", False, ""),
+    # ---- P4-M10: first direct on-policy PG candidate -------------------------
+    ("P4-M10", "dir", f"{SP}/P4-M10_onpolicy_pg_4x256",
+     "★ P4-M10 首候选：hard50k → 直接 on-policy PG（4 cycle × 256 半庄，只评 C4；not_supported）", False, "*"),
+    ("P4-M10", "file", f"{SP}/P4-M10_onpolicy_pg_4x256/RESULT.md",
+     "★ P4-M10 训练记录（冻结配方、每 cycle 契约检查、成本、只评 C4 与不可外推声明）", False, ""),
+    ("P4-M10", "file", f"{SP}/P4-M10_onpolicy_pg_4x256/p4m10_result.json",
+     "★ 四 cycle 逐轮结果（采集/更新/重算门限/梯度/checkpoint 与解释器指纹）", False, ""),
+    ("P4-M10", "file", f"{SP}/P4-M10_onpolicy_pg_4x256/C4_eval_weights.pth",
+     "被评测的最终候选权重（652 张量与 C4.pth 逐一相同）", True, ""),
+    ("P4-M10", "dir", f"{EV}/ovt_p4m10_C4_vs_3ext",
+     "★ C4 单挑 vs 3×ext_mortal（256 半庄，greedy 部署策略）", False, "logs/metrics.json"),
+    ("P4-M10", "dir", f"{EV}/ovt_3p4m10_C4_vs_ext",
+     "★ ext_mortal 单挑 vs 3×C4（256 半庄，greedy 部署策略）", False, "logs/metrics.json"),
+    ("P4-M10", "file", f"{EV}/p4m10_comparisons/summary.json",
+     "★ P4-M10 裁决（candidate benefit 双向符号、规则判定、follow-up 禁令）", False, ""),
+    ("P4-M10", "file", f"{EV}/p4m10_comparisons/ADJUDICATION.md",
+     "★ P4-M10 裁决文档（预注册规则、原始结果、允许/不允许结论）", False, ""),
+    ("P4-M10", "file", f"{EV}/p4m10_comparisons/solo_vs_ext_c4_minus_hard50k.json",
+     "方向 A same-seed paired 差值（C4 − hard50k）", False, ""),
+    ("P4-M10", "file", f"{EV}/p4m10_comparisons/ext_vs_trio_delta.json",
+     "方向 B same-seed paired 差值（ext 面对 3×C4 − 3×hard50k）", False, ""),
 ]
 
 
