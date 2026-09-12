@@ -12,9 +12,9 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "P4 学生主线（Mortal-native 学生）：P4-M1 现成语料 external 重标注缓存已建立并关闭（18,000 半庄 / 11,487,044 行 / agreement 94.72%）；P4-M2 硬标签 192×40 学生训练 50k 完成（holdout agreement 0.9047），1v3 双向显示与 K0 无明确强弱差异、弱于 external 约 9–10 pt/半庄；P4-M3 T=1 纯 KL 软目标蒸馏 5k 监督侧改善明显但实战未获 support（参数线关闭）；P4-M4/P4-M5 诊断确认错误集中在教师 top-2 gap 小的状态，且在线（学生自走出局面）一致率与离线基本一致——状态分布偏移支不成立。P4-M6 容量候选已按授权执行完成：资源探针 microbatch128 可运行、microbatch256 被拒；fresh 256×54 纯 hard CE 从 0 训练到 20k optimizer updates（累计 10,228,528 行），holdout agreement 2k 0.8149 → 10k 0.8653 → 14k 0.8810 → 20k 0.8920。与 192×40 同阶段对照：20k 处 0.8920 vs 0.8917（+0.03pp），十个同阶段读点差值在 -0.51pp..+0.70pp 间震荡、无容量优势迹象；随后执行 P4-M7 eval-only strength screen：256×54@20k 与 external 双向各 256 半庄，复用 seed 710000–710063；相对 192×40@50k 的 paired delta，候选单挑方向 -4.92 pt CI95 [-17.23,+7.21]，镜像方向 external 单挑变化 +10.02 pt CI95 [-1.41,+21.62]（均跨0，且镜像点估计反向），故 capacity strength signal not supported（见 P4-M7 环境可比性限制：该评测使用与 2026-09-10 基线不同的解释器与原生 libriichi 二进制，严格跨运行比较未获确认；数值本身仍按各自日志自洽有效）。P4-M6/P4-M7 容量路线仍关闭，不续训、不追加样本；关闭依据是轮内同阶段 holdout 对照与资源代价，不依赖跨运行可比性。另需纠正一处推论：“容量筛查未获支持，所以下一步必须换目标函数”不成立：本轮并未观测到“已高度复刻教师却仍打不过”的证据，大模型只是尚未拟合得比成熟小模型更好。随后按负责人授权执行了 P4-M8 基线评测入口复现检查（单方向 student50k vs 3×external，seed 710000–710007、seed_key 8192、batch-seeds 8，共 32 半庄；使用原批准 venv 解释器与 V1 原生构建 19bb181e…，未做路径遮蔽或占位注入）：与历史基线首批逐事件比较 32/32 文件、33,362 条记录、游戏事件字段 0 处不一致，q_values 共 162,572 个值最大绝对差 0.0、argmax 0 处不一致，唯一差异是被排除的 eval_time_ns。裁决 REPRODUCED，即该环境能完整复现该批历史基线，评测入口已恢复；但这不追认 V3 环境下 P4-M7 与 V1 基线的可比性，也不构成强度样本（其 metrics 不得用于强弱结论）。更换训练目标需要正向理由（新目标提供现有监督之外的什么信息、为何可学、为何应影响强度），属负责人决策，不由本轮自动推出。K1 仍未产生；本线尚无 promotion gate。 另按负责人授权执行了 P4-M9（on-policy 直接策略优化前置：契约 + 资源探针，只验证不训练）：采样分布固定为 pi(a|s)=softmax(q_legal/T)（epsilon=1、T=1、top_p=1、FP32、无 latent），3 次独立采集各 32 半庄共 15,249 个策略决策。对齐完整性 PASS，但契约未完全通过：5 个决策（0.033%）采样动作未被执行，全部是合法 claim 被他人更高优先级 claim 抢先（和了 > 碰/杠 > 吃），非引擎改写；引擎改写模型动作 0 次、235 次采样 agari 全部兑现（含 3 次双响）；另有 1,167 个决策（7.65%）因 quick-eval 强制弃和从未经过模型。agari guard 在保留样本中 0 次命中，但源码机制（mortal.rs:384，生产加载器 enable_rule_based_agari_guard=True）确定存在，且在未保留的一次采集中有 1 次身份匹配签名，故按「可能发生」处理，不关闭保护、不设计修复。log-prob 可重算（同批形状 max 4.81e-07、q 逐位相同；固定分块 max 1.08e-03）；梯度路径正确（409/409 有限非零梯度、BN running stats 未变、parent sha256 不变、eval() 与 train()+freeze_bn(True) 复现采样 log-prob 而裸 train() 偏移 1.4168 nats）。成本：采集 32 半庄 69.6 s、更新全批 forward+backward 6.64-14.77 s（micro 128/256/512）、单次 optimizer step 0.084-0.238 s、峰值显存 1.06-3.87 GiB、轨迹约 23.0 GB / 1024 半庄。本轮不产出候选、不进入训练、不启动 1024 半庄预算。 随后按负责人 2026-09-12 裁定执行了 P4-M10 首候选（hard50k → 直接 on-policy policy gradient，最小 collect→one-update→checkpoint 循环，非 RL 平台）：4 cycle × 256 半庄、训练 seed 720000–720255、每 cycle 恰好一次 optimizer step（fresh Adam lr=1e-5 只创建一次并跨 cycle 保留状态、weight decay 0）、global grad norm clip 1.0（四个 cycle 均触发：preclip 15.0–20.4 → 1.0）、update microbatch 512、return = tenhou rank points /135、baseline 0、BN eval-mode。四个 cycle 的 log-prob 重算全部落在预声明容差 5e-3 内（max 1.59e-03–1.94e-03），409/409 参数每个 cycle 都拿到梯度，parent sha256 未变，累计 1024 半庄。最终只评 C4（greedy 部署策略、V1 评测环境、band 710000–710063、双向各 256 半庄）。预注册双向裁决：candidate solo 对 hard50k 的 same-seed paired 差值 -1.58 pt（CI95 [-8.61, +5.45]，跨 0），镜像方向换算成 candidate benefit 为 +8.26 pt（CI95 [-1.23, +17.93]，跨 0）——两个方向符号相反且均跨 0，两个方向均未排除零，「两个方向都为正」不满足 → P4-M10 收口为 not_supported，不追加局数、不调 lr/T/baseline、保留 C1–C4 且不改挑中间权重、不追加评测。注意两个方向量纲不同：A 为每座位量、B 为三座整体量，镜像的 +8.26 pt 折算到每个学生座位约 +2.75 pt，不得读成每座位 +8.26 pt。另更正两处表述：① 四个 cycle 均触发全局梯度裁剪，但用的是 Adam 而非 SGD，仅凭裁剪前后范数不能判断实际参数更新量或策略变化幅度，故既不能说『被 clip 卡住没学动』、也不能据此建议放宽裁剪；② 运行期 p4m10_result.json 的 guard 计数字段四个 cycle 均为 null（从未计算），经现成 reconciler 只读补记（2,129 次采样 agari、153,442 个策略决策），**证据边界**为：一例**明确的**采样→执行动作改写（cycle 3 `720188/a/dec14`）+ 一例**疑似** guard 事件（cycle 2 `720092/b/dec17`，该分类器不读取原生 guard 触发标记）——**现有记录未直接观测原生 guard 触发次数**，两类证据不得相加、不得写成『确认触发 2 次』或给出触发率。训练记账本身按 sampling-time log-prob 是正确的，但这不单独证明所有依赖当前 Q 的后处理都已获得完整的策略梯度语义验证；撤回『改写路径已完成记录/验证』的说法。项目级判断：本轮是首个更新闭环而非充分的学习效果试验（1024 半庄采集但仅 4 次 optimizer update），证明的工程事实是约半小时可完成四轮真实采集→更新→归档闭环，未证明机制有效性；采集样本量、参数更新次数、策略改变量是三个不同的量，不得把未显著累积成『又排除了一条 RL 路线』。当前最准确的阶段结论：直接策略更新闭环已经运行成功；四次更新后的候选没有获得部署收益支持，机制有效性仍未解决。 阶段收尾（2026-09-12，固定面板位移检查只读完成，commit `bc919ac`）：四次 PG update 造成**可重复观测的、总体较小的策略位移** —— 面板为 P4-M10 cycle 1 的 38,057 个 parent on-policy 采样决策，全程 **greedy flip 367/38,057 = 0.964%**、**平均 TV 0.00880**、**KL(parent‖C4) 0.001083 nats**；跨 batch 512/2048/4096 flip 数最多差 1 个决策。**主张只采用 flip/TV/KL**；raw action-score 位移（平均 |Δq| ≈ 6.90）**降级为 telemetry**，不得用于证明策略位移（DQN 为 dueling，`q_a = v + a_a − mean(a_legal)`，对同状态合法动作同加常数时 softmax/argmax 均不变）。撤回「PG 只改变 near-ties／未改写强偏好决策」的机制化表述（253/367 只是描述统计，阈值 0.07166 是面板级同权重跨批最大偏差、非逐状态噪声界，另有 114 次在阈值之上）；可靠说法只有「flip 率在多种 batch 大小下稳定；本检查没有建立这些 flip 的决策重要性」。也不做 `0.96% ÷ 9.58%` 的比例解释（两者含义不同，只保留各自定义）。面板替换已登记：实际面板**不是**原讨论的 P4-M4 固定 `≥2 legal` 面板，而是 cycle 1 训练轨迹状态 —— 其边界为：非独立 holdout（cycle 1 状态参与了 C1 训练）、非 C4 自身访问分布、非全状态泛化判断；目标不是评估泛化或强度，故不重跑。**P4-M10 最终定位：一次小幅、真实的策略更新试验，未获得部署收益支持；不是充分学习后的失败，也不是无效更新**（工程上闭环真实工作／学习上确实移动了 policy 但较温和／强度上无部署收益支持／研究上机制有效性仍 unresolved——四句之间不再互相推导）。**诊断到此停止**：不自动续训、不因本次结果跳到 PPO/critic、不预建 P4-M11/P4-M12、不预先决定 `12×256`；`next_experiment = null / not_selected` 保持。",
-    "next_experiment": null,
-    "next_experiment_status": "not_selected",
+    "current_stage": "P4 学生主线（Mortal-native 学生）：P4-M1 现成语料 external 重标注缓存已建立并关闭（18,000 半庄 / 11,487,044 行 / agreement 94.72%）；P4-M2 硬标签 192×40 学生训练 50k 完成（holdout agreement 0.9047），1v3 双向显示与 K0 无明确强弱差异、弱于 external 约 9–10 pt/半庄；P4-M3 T=1 纯 KL 软目标蒸馏 5k 监督侧改善明显但实战未获 support（参数线关闭）；P4-M4/P4-M5 诊断确认错误集中在教师 top-2 gap 小的状态，且在线（学生自走出局面）一致率与离线基本一致——状态分布偏移支不成立。P4-M6 容量候选已按授权执行完成：资源探针 microbatch128 可运行、microbatch256 被拒；fresh 256×54 纯 hard CE 从 0 训练到 20k optimizer updates（累计 10,228,528 行），holdout agreement 2k 0.8149 → 10k 0.8653 → 14k 0.8810 → 20k 0.8920。与 192×40 同阶段对照：20k 处 0.8920 vs 0.8917（+0.03pp），十个同阶段读点差值在 -0.51pp..+0.70pp 间震荡、无容量优势迹象；随后执行 P4-M7 eval-only strength screen：256×54@20k 与 external 双向各 256 半庄，复用 seed 710000–710063；相对 192×40@50k 的 paired delta，候选单挑方向 -4.92 pt CI95 [-17.23,+7.21]，镜像方向 external 单挑变化 +10.02 pt CI95 [-1.41,+21.62]（均跨0，且镜像点估计反向），故 capacity strength signal not supported（见 P4-M7 环境可比性限制：该评测使用与 2026-09-10 基线不同的解释器与原生 libriichi 二进制，严格跨运行比较未获确认；数值本身仍按各自日志自洽有效）。P4-M6/P4-M7 容量路线仍关闭，不续训、不追加样本；关闭依据是轮内同阶段 holdout 对照与资源代价，不依赖跨运行可比性。另需纠正一处推论：“容量筛查未获支持，所以下一步必须换目标函数”不成立：本轮并未观测到“已高度复刻教师却仍打不过”的证据，大模型只是尚未拟合得比成熟小模型更好。随后按负责人授权执行了 P4-M8 基线评测入口复现检查（单方向 student50k vs 3×external，seed 710000–710007、seed_key 8192、batch-seeds 8，共 32 半庄；使用原批准 venv 解释器与 V1 原生构建 19bb181e…，未做路径遮蔽或占位注入）：与历史基线首批逐事件比较 32/32 文件、33,362 条记录、游戏事件字段 0 处不一致，q_values 共 162,572 个值最大绝对差 0.0、argmax 0 处不一致，唯一差异是被排除的 eval_time_ns。裁决 REPRODUCED，即该环境能完整复现该批历史基线，评测入口已恢复；但这不追认 V3 环境下 P4-M7 与 V1 基线的可比性，也不构成强度样本（其 metrics 不得用于强弱结论）。更换训练目标需要正向理由（新目标提供现有监督之外的什么信息、为何可学、为何应影响强度），属负责人决策，不由本轮自动推出。K1 仍未产生；本线尚无 promotion gate。 另按负责人授权执行了 P4-M9（on-policy 直接策略优化前置：契约 + 资源探针，只验证不训练）：采样分布固定为 pi(a|s)=softmax(q_legal/T)（epsilon=1、T=1、top_p=1、FP32、无 latent），3 次独立采集各 32 半庄共 15,249 个策略决策。对齐完整性 PASS，但契约未完全通过：5 个决策（0.033%）采样动作未被执行，全部是合法 claim 被他人更高优先级 claim 抢先（和了 > 碰/杠 > 吃），非引擎改写；引擎改写模型动作 0 次、235 次采样 agari 全部兑现（含 3 次双响）；另有 1,167 个决策（7.65%）因 quick-eval 强制弃和从未经过模型。agari guard 在保留样本中 0 次命中，但源码机制（mortal.rs:384，生产加载器 enable_rule_based_agari_guard=True）确定存在，且在未保留的一次采集中有 1 次身份匹配签名，故按「可能发生」处理，不关闭保护、不设计修复。log-prob 可重算（同批形状 max 4.81e-07、q 逐位相同；固定分块 max 1.08e-03）；梯度路径正确（409/409 有限非零梯度、BN running stats 未变、parent sha256 不变、eval() 与 train()+freeze_bn(True) 复现采样 log-prob 而裸 train() 偏移 1.4168 nats）。成本：采集 32 半庄 69.6 s、更新全批 forward+backward 6.64-14.77 s（micro 128/256/512）、单次 optimizer step 0.084-0.238 s、峰值显存 1.06-3.87 GiB、轨迹约 23.0 GB / 1024 半庄。本轮不产出候选、不进入训练、不启动 1024 半庄预算。 随后按负责人 2026-09-12 裁定执行了 P4-M10 首候选（hard50k → 直接 on-policy policy gradient，最小 collect→one-update→checkpoint 循环，非 RL 平台）：4 cycle × 256 半庄、训练 seed 720000–720255、每 cycle 恰好一次 optimizer step（fresh Adam lr=1e-5 只创建一次并跨 cycle 保留状态、weight decay 0）、global grad norm clip 1.0（四个 cycle 均触发：preclip 15.0–20.4 → 1.0）、update microbatch 512、return = tenhou rank points /135、baseline 0、BN eval-mode。四个 cycle 的 log-prob 重算全部落在预声明容差 5e-3 内（max 1.59e-03–1.94e-03），409/409 参数每个 cycle 都拿到梯度，parent sha256 未变，累计 1024 半庄。最终只评 C4（greedy 部署策略、V1 评测环境、band 710000–710063、双向各 256 半庄）。预注册双向裁决：candidate solo 对 hard50k 的 same-seed paired 差值 -1.58 pt（CI95 [-8.61, +5.45]，跨 0），镜像方向换算成 candidate benefit 为 +8.26 pt（CI95 [-1.23, +17.93]，跨 0）——两个方向符号相反且均跨 0，两个方向均未排除零，「两个方向都为正」不满足 → P4-M10 收口为 not_supported，不追加局数、不调 lr/T/baseline、保留 C1–C4 且不改挑中间权重、不追加评测。注意两个方向量纲不同：A 为每座位量、B 为三座整体量，镜像的 +8.26 pt 折算到每个学生座位约 +2.75 pt，不得读成每座位 +8.26 pt。另更正两处表述：① 四个 cycle 均触发全局梯度裁剪，但用的是 Adam 而非 SGD，仅凭裁剪前后范数不能判断实际参数更新量或策略变化幅度，故既不能说『被 clip 卡住没学动』、也不能据此建议放宽裁剪；② 运行期 p4m10_result.json 的 guard 计数字段四个 cycle 均为 null（从未计算），经现成 reconciler 只读补记（2,129 次采样 agari、153,442 个策略决策），**证据边界**为：一例**明确的**采样→执行动作改写（cycle 3 `720188/a/dec14`）+ 一例**疑似** guard 事件（cycle 2 `720092/b/dec17`，该分类器不读取原生 guard 触发标记）——**现有记录未直接观测原生 guard 触发次数**，两类证据不得相加、不得写成『确认触发 2 次』或给出触发率。训练记账本身按 sampling-time log-prob 是正确的，但这不单独证明所有依赖当前 Q 的后处理都已获得完整的策略梯度语义验证；撤回『改写路径已完成记录/验证』的说法。项目级判断：本轮是首个更新闭环而非充分的学习效果试验（1024 半庄采集但仅 4 次 optimizer update），证明的工程事实是约半小时可完成四轮真实采集→更新→归档闭环，未证明机制有效性；采集样本量、参数更新次数、策略改变量是三个不同的量，不得把未显著累积成『又排除了一条 RL 路线』。当前最准确的阶段结论：直接策略更新闭环已经运行成功；四次更新后的候选没有获得部署收益支持，机制有效性仍未解决。 阶段收尾（2026-09-12，固定面板位移检查只读完成，commit `bc919ac`）：四次 PG update 造成**可重复观测的、总体较小的策略位移** —— 面板为 P4-M10 cycle 1 的 38,057 个 parent on-policy 采样决策，全程 **greedy flip 367/38,057 = 0.964%**、**平均 TV 0.00880**、**KL(parent‖C4) 0.001083 nats**；跨 batch 512/2048/4096 flip 数最多差 1 个决策。**主张只采用 flip/TV/KL**；raw action-score 位移（平均 |Δq| ≈ 6.90）**降级为 telemetry**，不得用于证明策略位移（DQN 为 dueling，`q_a = v + a_a − mean(a_legal)`，对同状态合法动作同加常数时 softmax/argmax 均不变）。撤回「PG 只改变 near-ties／未改写强偏好决策」的机制化表述（253/367 只是描述统计，阈值 0.07166 是面板级同权重跨批最大偏差、非逐状态噪声界，另有 114 次在阈值之上）；可靠说法只有「flip 率在多种 batch 大小下稳定；本检查没有建立这些 flip 的决策重要性」。也不做 `0.96% ÷ 9.58%` 的比例解释（两者含义不同，只保留各自定义）。面板替换已登记：实际面板**不是**原讨论的 P4-M4 固定 `≥2 legal` 面板，而是 cycle 1 训练轨迹状态 —— 其边界为：非独立 holdout（cycle 1 状态参与了 C1 训练）、非 C4 自身访问分布、非全状态泛化判断；目标不是评估泛化或强度，故不重跑。**P4-M10 最终定位：一次小幅、真实的策略更新试验，未获得部署收益支持；不是充分学习后的失败，也不是无效更新**（工程上闭环真实工作／学习上确实移动了 policy 但较温和／强度上无部署收益支持／研究上机制有效性仍 unresolved——四句之间不再互相推导）。**P4-M10 诊断到此停止**：不自动续训、不因本次结果跳到 PPO/critic、不预先决定 `12×256`。 **P4-M11 已设计完成并成为 current execution plan（selected ≠ started）**：`next_experiment = P4-M11_direct_pg_learning_budget_2026_09`、`next_experiment_status = proposal_only_not_started`；canonical plan 为 `training/docs/mortal/2026-09/2026-09-13_P4-M11_directPG学习预算与K0替代验收方案.md`。采用两级目标：**Gate A = K0_70k 实用门**（历史常规训练观测水位），**Gate B = external_mortal / EVE 门**；Mortal 3.0 仅作用户体感参照，不建立已验证对应关系。训练配方与预算不变（C4 完整状态续训 32×256 半庄，只评 U32 末端）。计划落盘**不代表训练已启动**：尚未占用 GPU、未产生候选、不影响 P4-M10 的 closure。",
+    "next_experiment": "P4-M11_direct_pg_learning_budget_2026_09",
+    "next_experiment_status": "proposal_only_not_started",
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
@@ -2433,9 +2433,7 @@
         "tests/test_p4m9_probe_contract.py"
       ],
       "report_paths": [
-        "training/docs/mortal/2026-09/2026-09-12_P4-M9_onpolicy_contract_probe.md",
-        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_50k训练_1v3双向评测_在线诊断_最终结果报告.md",
-        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_产物索引.json"
+        "training/docs/mortal/2026-09/2026-09-12_P4-M9_onpolicy_contract_probe.md"
       ],
       "preregistration": "负责人授权的有上限契约+资源探针：只允许验证采样分布一致性、log-prob 可重算性、梯度路径正确性与真实成本；不允许训练、不允许 1024 半庄预算、不允许 critic/PPO/BC/entropy/KL/replay/opponent-pool；对 agari guard 只记录与检查，若发现则报告并停在「契约未通过」，不关闭保护、不设计修复。",
       "formal_adjudication": null,
@@ -2502,9 +2500,7 @@
         "training/mortal/p4m10_guard_backfill.py"
       ],
       "report_paths": [
-        "training/docs/mortal/2026-09/2026-09-12_P4-M10_direct_onpolicy_pg.md",
-        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_50k训练_1v3双向评测_在线诊断_最终结果报告.md",
-        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_产物索引.json"
+        "training/docs/mortal/2026-09/2026-09-12_P4-M10_direct_onpolicy_pg.md"
       ],
       "preregistration": "负责人 2026-09-12 授权：一个单候选，hard50k 起点，4 cycle × 256 on-policy 半庄（上限 1024），每 cycle fresh collect + 恰好一次 PG update；冻结 lr=1e-5、clip 1.0、microbatch 512、baseline 0、return = tenhou rank points/135、eval-mode BN；不允许 critic/PPO/BC/KL/entropy/replay/opponent pool；最终只评 C4；裁决规则与 follow-up 禁令预先写定。",
       "formal_adjudication": "not_supported：两个方向换算成 candidate benefit 后 A = -1.5820 pt、B = +8.2617 pt，符号相反且两者 CI95 均跨 0，「两个方向都为正」不满足。",
@@ -2598,6 +2594,58 @@
         },
         "closing": "到这里停止诊断。guard 的限制已经留下，策略位移也已经测到；继续细分不会直接告诉我们哪个更新方向能赢。不自动续训、不因本次结果跳到 PPO/critic、不预建 P4-M11/P4-M12、不预先决定 12x256。若将来决定继续 PG，应明确购买的是一次更有学习机会、但收益未知的独立预算，而不是'根据诊断必然有效的修复'。"
       }
+    },
+    {
+      "experiment_id": "P4-M11_direct_pg_learning_budget_2026_09",
+      "name_zh": "P4-M11 direct PG 学习预算与两级验收门（K0 实用门 / external EVE 门）",
+      "category": "学习预算与验收方案",
+      "parent_model": "P4-M10 C4 完整状态",
+      "control": "P4-M10 C4（四次更新后的候选，无额外学习）",
+      "variant": "在 C4 上继续 32 cycle x 256 on-policy 半庄（新增 8,192 半庄、32 次 PG update）",
+      "changed_variable": "只增加学习周期；目标、模型、采样与优化器配方均不变",
+      "fixed_variables": [
+        "parent 固定为 P4-M10 C4 完整状态",
+        "训练配方不变（T=1/eps=1/top_p=1/FP32、BN eval、fresh Adam lr=1e-5、clip 1.0、microbatch 512）",
+        "只评 U32 末端；U08/U16/U24 不做实战、不按 telemetry 选点",
+        "Gate A 与 Gate B 分别登记，不用单一 PASS 合并"
+      ],
+      "training_seeds": [],
+      "evaluation_protocol": "固定 U32 末端顺序两级门：先 Gate A（K0_70k 实用门），通过后再挑战 Gate B（external_mortal EVE 门）；两级分别双向统计与独立登记。",
+      "status": "proposal_only_not_started",
+      "primary_result": "尚未运行。方案已落盘，训练未启动，未占用 GPU，未产生候选。",
+      "promoted_data_route": null,
+      "promoted_checkpoint": null,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": "尚未开始；本记录只登记已确定的方案、预算与两级验收门。",
+      "predecessor": "P4-M10_direct_onpolicy_pg_hard50k_4x256_2026_09",
+      "next_experiment": null,
+      "commits": [],
+      "artifact_paths": [],
+      "report_paths": [
+        "training/docs/mortal/2026-09/2026-09-13_P4-M11_directPG学习预算与K0替代验收方案.md"
+      ],
+      "preregistration": {
+        "budget": "32 cycle x 256 半庄 = 8,192 新增半庄；32 次 optimizer update；全谱系累计 36 次",
+        "gates": {
+          "Gate A": "K0_70k 历史普通训练水位（实用门，不是研究终点）",
+          "Gate B": "external_mortal 所代表的目标 EVE 强度区域（通过 Gate A 后才挑战）"
+        },
+        "selection_rule": "只评 U32 末端，不按训练 telemetry 选点",
+        "not_claimed": "计划不代表训练已启动；消费替代与 EVE 研究结论分开登记"
+      },
+      "formal_adjudication": null,
+      "promoted_k1_checkpoint": null,
+      "training_environment": null,
+      "optimizer_steps_total": null,
+      "hanchans_total": null,
+      "max_hanchans_authorised": null,
+      "record_gaps_corrected": null,
+      "project_level_judgment": null,
+      "stage_conclusion": null,
+      "review_status": null,
+      "policy_displacement_check": null,
+      "final_positioning": null
     }
   ]
 }

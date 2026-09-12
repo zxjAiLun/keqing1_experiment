@@ -53,8 +53,6 @@ Two layers, split by **responsibility** (not by file extension):
 
 ## Current execution plan (2026-09)
 
-## Current execution plan (2026-09)
-
 - [P4-M11：direct PG 学习预算、K0 实用门与 external EVE 门](2026-09/2026-09-13_P4-M11_directPG学习预算与K0替代验收方案.md)：C4 完整状态续训32×256半庄；固定U32先过K0门，再挑战external门。计划不代表训练已启动；消费替代与EVE研究结论分开登记。
 
 ## Timeline
