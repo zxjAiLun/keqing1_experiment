@@ -485,7 +485,7 @@
       "path": "artifacts/experiments/student_policy_v1/P4-M6_capacity_probe/run_capacity_resume_20k_monitored.py",
       "description": "续训到 20k 的监控运行包装脚本（含时间序列与安全暂停）",
       "exists": true,
-      "bytes": 6968
+      "bytes": 14159
     },
     {
       "experiment": "P4-M6",
@@ -538,9 +538,17 @@
       "path": "artifacts/eval/p4m7_comparisons",
       "description": "★ P4-M7 paired comparison 与预注册裁决 summary",
       "exists": true,
-      "files": 3,
-      "bytes": 6431,
-      "listing_sha256": "d27b2c1b69fc9bdb0463df2dfb81170b00d48a3fa50ce998f8019c7d464df87a"
+      "files": 4,
+      "bytes": 21742,
+      "listing_sha256": "2f20d474f20bea699820d8dbc37e077d3eca2960f49e9551833662525d3f2dfd"
+    },
+    {
+      "experiment": "P4-M7",
+      "kind": "file",
+      "path": "artifacts/eval/p4m7_comparisons/ENVIRONMENT_PROVENANCE.md",
+      "description": "★ P4-M7 原生评测环境溯源与可比性判定（未确认与基线一致）",
+      "exists": true,
+      "bytes": 11719
     }
   ]
 }

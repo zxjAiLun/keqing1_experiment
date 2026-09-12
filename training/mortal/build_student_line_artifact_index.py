@@ -120,6 +120,8 @@ ENTRIES: list[tuple[str, str, str, str, bool, str]] = [
      "★ external 单挑 vs 3×256×54@20k（256 半庄，seed 710000–710063）", False, "*"),
     ("P4-M7", "dir", f"{EV}/p4m7_comparisons",
      "★ P4-M7 paired comparison 与预注册裁决 summary", False, "*"),
+    ("P4-M7", "file", f"{EV}/p4m7_comparisons/ENVIRONMENT_PROVENANCE.md",
+     "★ P4-M7 原生评测环境溯源与可比性判定（未确认与基线一致）", False, ""),
 ]
 
 
