@@ -12,7 +12,7 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "P4 学生主线（Mortal-native 学生）：P4-M1 现成语料 external 重标注缓存已建立并关闭（18,000 半庄 / 11,487,044 行 / agreement 94.72%）；P4-M2 硬标签 192×40 学生训练 50k 完成（holdout agreement 0.9047），1v3 双向显示与 K0 无明确强弱差异、弱于 external 约 9–10 pt/半庄；P4-M3 T=1 纯 KL 软目标蒸馏 5k 监督侧改善明显但实战未获 support（参数线关闭）；P4-M4/P4-M5 诊断确认错误集中在教师 top-2 gap 小的状态，且在线（学生自走出局面）一致率与离线基本一致——状态分布偏移支不成立。P4-M6 容量候选已按授权执行完成：资源探针 microbatch128 可运行、microbatch256 被拒；fresh 256×54 纯 hard CE 从 0 训练到 20k optimizer updates（累计 10,228,528 行），holdout agreement 2k 0.8149 → 10k 0.8653 → 14k 0.8810 → 20k 0.8920。与 192×40 同阶段对照：20k 处 0.8920 vs 0.8917（+0.03pp），十个同阶段读点差值在 -0.51pp..+0.70pp 间震荡、无容量优势迹象；随后执行 P4-M7 eval-only strength screen：256×54@20k 与 external 双向各 256 半庄，复用 seed 710000–710063；相对 192×40@50k 的 paired delta，候选单挑方向 -4.92 pt CI95 [-17.23,+7.21]，镜像方向 external 单挑变化 +10.02 pt CI95 [-1.41,+21.62]（均跨0，且镜像点估计反向），故 capacity strength signal not supported（见 P4-M7 环境可比性限制：该评测使用与 2026-09-10 基线不同的解释器与原生 libriichi 二进制，严格跨运行比较未获确认；数值本身仍按各自日志自洽有效）。P4-M6/P4-M7 容量路线仍关闭，不续训、不追加样本；关闭依据是轮内同阶段 holdout 对照与资源代价，不依赖跨运行可比性。另需纠正一处推论：“容量筛查未获支持，所以下一步必须换目标函数”不成立：本轮并未观测到“已高度复刻教师却仍打不过”的证据，大模型只是尚未拟合得比成熟小模型更好。更换训练目标需要正向理由（新目标提供现有监督之外的什么信息、为何可学、为何应影响强度），属负责人决策，不由本轮自动推出。K1 仍未产生；本线尚无 promotion gate。",
+    "current_stage": "P4 学生主线（Mortal-native 学生）：P4-M1 现成语料 external 重标注缓存已建立并关闭（18,000 半庄 / 11,487,044 行 / agreement 94.72%）；P4-M2 硬标签 192×40 学生训练 50k 完成（holdout agreement 0.9047），1v3 双向显示与 K0 无明确强弱差异、弱于 external 约 9–10 pt/半庄；P4-M3 T=1 纯 KL 软目标蒸馏 5k 监督侧改善明显但实战未获 support（参数线关闭）；P4-M4/P4-M5 诊断确认错误集中在教师 top-2 gap 小的状态，且在线（学生自走出局面）一致率与离线基本一致——状态分布偏移支不成立。P4-M6 容量候选已按授权执行完成：资源探针 microbatch128 可运行、microbatch256 被拒；fresh 256×54 纯 hard CE 从 0 训练到 20k optimizer updates（累计 10,228,528 行），holdout agreement 2k 0.8149 → 10k 0.8653 → 14k 0.8810 → 20k 0.8920。与 192×40 同阶段对照：20k 处 0.8920 vs 0.8917（+0.03pp），十个同阶段读点差值在 -0.51pp..+0.70pp 间震荡、无容量优势迹象；随后执行 P4-M7 eval-only strength screen：256×54@20k 与 external 双向各 256 半庄，复用 seed 710000–710063；相对 192×40@50k 的 paired delta，候选单挑方向 -4.92 pt CI95 [-17.23,+7.21]，镜像方向 external 单挑变化 +10.02 pt CI95 [-1.41,+21.62]（均跨0，且镜像点估计反向），故 capacity strength signal not supported（见 P4-M7 环境可比性限制：该评测使用与 2026-09-10 基线不同的解释器与原生 libriichi 二进制，严格跨运行比较未获确认；数值本身仍按各自日志自洽有效）。P4-M6/P4-M7 容量路线仍关闭，不续训、不追加样本；关闭依据是轮内同阶段 holdout 对照与资源代价，不依赖跨运行可比性。另需纠正一处推论：“容量筛查未获支持，所以下一步必须换目标函数”不成立：本轮并未观测到“已高度复刻教师却仍打不过”的证据，大模型只是尚未拟合得比成熟小模型更好。随后按负责人授权执行了 P4-M8 基线评测入口复现检查（单方向 student50k vs 3×external，seed 710000–710007、seed_key 8192、batch-seeds 8，共 32 半庄；使用原批准 venv 解释器与 V1 原生构建 19bb181e…，未做路径遮蔽或占位注入）：与历史基线首批逐事件比较 32/32 文件、33,362 条记录、游戏事件字段 0 处不一致，q_values 共 162,572 个值最大绝对差 0.0、argmax 0 处不一致，唯一差异是被排除的 eval_time_ns。裁决 REPRODUCED，即该环境能完整复现该批历史基线，评测入口已恢复；但这不追认 V3 环境下 P4-M7 与 V1 基线的可比性，也不构成强度样本（其 metrics 不得用于强弱结论）。更换训练目标需要正向理由（新目标提供现有监督之外的什么信息、为何可学、为何应影响强度），属负责人决策，不由本轮自动推出。K1 仍未产生；本线尚无 promotion gate。",
     "next_experiment": null,
     "next_experiment_status": "not_selected",
     "prohibitions": [
@@ -2299,14 +2299,14 @@
       "training_seeds": [],
       "evaluation_protocol": "candidate singleton vs 3×external 256 半庄；external singleton vs 3×candidate 256 半庄；分别与旧 192×40@50k 两方向按 seed 配对，cluster bootstrap CI95。预注册成功条件：两个方向均朝 256×54 更强，至少一个 paired CI95 不跨0，另一方向不明显反向。",
       "status": "not_supported",
-      "primary_result": "绝对结果：256×54@20k 单挑 vs 3×external，avg rank pt -14.94，CI95 [-24.61,-5.10]；external 单挑 vs 3×256×54@20k，external avg rank pt +18.46，CI95 [+8.96,+27.60]。与 192×40@50k 同 seed 配对：候选单挑方向 delta -4.921875 pt，CI95 [-17.2265625,+7.20703125]；镜像方向 external 单挑（candidate trio 相对 hard50k trio）delta +10.01953125 pt，CI95 [-1.40625,+21.62109375]。两 CI 均跨0，且镜像方向点估计偏向 external 更强。两方向 native rank counts 均校验通过，所有批次 fresh。 【评测环境可比性：未确认一致】本次运行由会话转录确认为裸 `python` + `sys.path.insert(0,'third_party/Mortal/mortal')` + `FourPlayer` 占位注入启动，实际解析到 `third_party/Mortal/mortal/libriichi.pyd`（2026-07-30，sha256 05647bf7…）；而 2026-09-10 基线由项目指定 venv（keqing1/.venv-win，torch 2.12.0+cu130）启动、解析到 `.venv-win …/riichi.pyd`（2026-08-03，sha256 19bb181e…），两者为不同解释器与不同原生二进制。已用现有日志零成本验证：两轮的第一局 start_kyoku 载荷（宝牌指示牌/四家配牌/初始点数）在 64 seed × 4 座位轮换上 256/256 完全一致，即发牌与牌山 RNG 路径一致；但规则裁决与引擎调用契约是否一致仍未验证，且现有日志无法补测（没有两次运行共用同一组四台引擎）。因此绝对数值与 paired delta 仍按各自日志自洽有效，但严格跨运行比较须附此限制。详见 artifacts/eval/p4m7_comparisons/ENVIRONMENT_PROVENANCE.md。",
+      "primary_result": "绝对结果：256×54@20k 单挑 vs 3×external，avg rank pt -14.94，CI95 [-24.61,-5.10]；external 单挑 vs 3×256×54@20k，external avg rank pt +18.46，CI95 [+8.96,+27.60]。与 192×40@50k 同 seed 配对：候选单挑方向 delta -4.921875 pt，CI95 [-17.2265625,+7.20703125]；镜像方向 external 单挑（candidate trio 相对 hard50k trio）delta +10.01953125 pt，CI95 [-1.40625,+21.62109375]。两 CI 均跨0，且镜像方向点估计偏向 external 更强。两方向 native rank counts 均校验通过，所有批次 fresh。 【评测环境可比性：未确认一致】本次运行由会话转录确认为裸 `python` + `sys.path.insert(0,'third_party/Mortal/mortal')` + `FourPlayer` 占位注入启动，实际解析到 `third_party/Mortal/mortal/libriichi.pyd`（2026-07-30，sha256 05647bf7…）；而 2026-09-10 基线由项目指定 venv（keqing1/.venv-win，torch 2.12.0+cu130）启动、解析到 `.venv-win …/riichi.pyd`（2026-08-03，sha256 19bb181e…），两者为不同解释器与不同原生二进制。已用现有日志零成本验证：两轮的第一局 start_kyoku 载荷（宝牌指示牌/四家配牌/初始点数）在 64 seed × 4 座位轮换上 256/256 完全一致。**该断言的适用范围仅限被比较的那几个初始字段**，不能外推为“整座牌山一致”“后续 RNG 消耗路径一致”或“规则裁决一致”——start_kyoku 不包含这些信息。规则裁决与引擎调用契约是否一致仍未验证，且现有日志无法补测（没有两次运行共用同一组四台引擎）。因此绝对数值与 paired delta 仍按各自日志自洽有效，但严格跨运行比较须附此限制。详见 artifacts/eval/p4m7_comparisons/ENVIRONMENT_PROVENANCE.md。",
       "promoted_data_route": false,
       "promoted_checkpoint": false,
       "recipe_promotion": false,
       "checkpoint_promotion": false,
       "closure_reason": "按预注册裁决为 capacity recipe closed; no gameplay improvement support。没有任何方向满足“候选更强且至少一个 CI 不跨0、另一方向不反向”；相反，候选单挑点估计较 hard50k 低 4.92 pt，镜像 external 点估计较 hard50k 高 10.02 pt。该结果不证明所有容量路线或所有 objective 都无效，但足以关闭本具体 256×54 + BN microbatch128 + hard-CE 配方及其 25k/50k 训练购买请求。不得追加样本。需纠正一处越界推论：“容量筛查未获支持 → 下一步必须 objective-shift”不成立。本轮观察到的关系（小模型 hard50k 拟合更成熟；大模型 hard20k 拟合落后且无强度改善信号）同样可由“大模型尚未学得比成熟小模型更好，因此也没有打得更好”解释，它不是“已高度复刻教师却仍打不过”的新证据，也不是“纯策略学习走到尽头”的证据。与训练目标真正相关的已有证据是 distill5k 的监督侧改善，但其同时改了优化尾段、实战效果仍未决，不能顺手归档为“目标改造也失败”。更换训练目标需要一个正向理由（新目标提供哪些现有监督没有的信息、为何可学、为何应影响强度），属负责人决策，不由本实验推出。",
       "predecessor": "P4-M6_student_capacity_probe_256x54_2026_09",
-      "next_experiment": null,
+      "next_experiment": "P4-M8_env_reproduction_check_2026_09",
       "commits": [
         "2bc2ceb"
       ],
@@ -2333,12 +2333,64 @@
         "evidence_source": "pi session transcript (contemporaneous commands), not a re-derived fingerprint",
         "p4m7_libriichi_sha256": "05647bf7337cc451235b1c616cf9d215c01fe5fa812a7451282ce5948b3f97b1",
         "baseline_libriichi_sha256": "19bb181eaa70d0ae90417a3bd22433f6ca08d7654602f865ff3bdb102b7d9914",
-        "deal_generator_identical": "first-kyoku start_kyoku payload identical for 256/256 (seed x seat-rotation) comparisons across rounds",
+        "deal_generator_identical": "first-kyoku start_kyoku payload identical for 256/256 (seed x seat-rotation) comparisons across rounds — narrow claim, see start_kyoku_identity_scope",
         "unverified": [
           "rule adjudication (hora/yaku/ryukyoku)",
           "inference batching / engine-call contract"
         ],
-        "recheck_executed": false
+        "recheck_executed": false,
+        "start_kyoku_identity_scope": "only the compared initial fields (four haipai / dora indicator / scores); NOT full wall order, NOT later RNG consumption, NOT rule adjudication"
+      }
+    },
+    {
+      "experiment_id": "P4-M8_env_reproduction_check_2026_09",
+      "name_zh": "P4-M8 基线评测入口复现检查（同环境 32 半庄，逐事件一致 REPRODUCED）",
+      "category": "evaluation_only",
+      "parent_model": null,
+      "control": "2026-09-10 历史基线同批日志（student50k 单挑 vs 3×ext_mortal，seed 710000–710007）",
+      "variant": "用原批准解释器与原 checkpoint 重跑历史基线的第一个完整 batch，逐事件比较",
+      "changed_variable": "无训练变量；仅重复一次已存在的评测批次，用于确认测量入口",
+      "fixed_variables": [
+        "单方向 student50k vs 3×external；不做镜像方向",
+        "seed 710000–710007、seed_key 8192、batch-seeds 8 → 32 半庄（batch 形状与历史首批一致）",
+        "解释器 E:/AUbuntuProject/project/keqing1/.venv-win/Scripts/python.exe；未设置 PYTHONPATH；无占位注入",
+        "原生构建 riichi.pyd 2026-08-03 sha256 19bb181eaa70d0ae90417a3bd22433f6ca08d7654602f865ff3bdb102b7d9914",
+        "不追加 seed、不扩至 512 局、不跑容量候选、不做任何训练"
+      ],
+      "training_seeds": [],
+      "evaluation_protocol": "对历史基线 artifacts/eval/ovt_student50k_vs_3ext/logs 的 seed 710000–710007（4 座位轮换，共 32 个日志文件）重跑一次，并用 training/mortal/compare_arena_logs.py 做逐事件比较：游戏字段（全部非 meta 字段 + 决定动作的 mask_bits/is_greedy/shanten/at_furiten）必须一致；q_values 作为浮点单独记录数值差与 argmax；eval_time_ns 与 batch_size 属被排除的运行期字段，只记录不判定。首个真实分歧即停止，不重跑寻找一致。",
+      "status": "closed",
+      "primary_result": "REPRODUCED。32/32 日志文件、33,362 条记录、游戏事件字段 0 处不一致、首个分歧 none、无缺失文件；q_values 162,572 个值最大绝对差 0.0、argmax 0 处不一致；被排除字段中仅 eval_time_ns 有 15,504 条差异，batch_size 无差异。即该环境（venv 解释器 + V1 原生构建）能完整复现该批历史基线，包括浮点推理输出。成本：墙钟 170 s、32 半庄、峰值显存 649 MiB。",
+      "promoted_data_route": false,
+      "promoted_checkpoint": false,
+      "recipe_promotion": false,
+      "checkpoint_promotion": false,
+      "closure_reason": "测量入口确认完成，任务边界到此为止，不发展为原生环境审计系列。该结论仅支持“指定环境可复现该批历史基线”，不得外推为：(1) 追认 V3 环境下 P4-M7 与 V1 基线可比；(2) 整座牌山/后续 RNG/规则裁决对所有 seed 一致；(3) 把本次 32 半庄当作强度样本（其 metrics avg_rank_pt +9.84、CI95 跨 0 不得用于任何强弱结论）；(4) 声称提升了模型能力或授权了新训练目标。",
+      "predecessor": "P4-M7_capacity_strength_screen_256x54_20k_2026_09",
+      "next_experiment": null,
+      "commits": [],
+      "artifact_paths": [
+        "artifacts/eval/_envcheck_hard50k_vs_3ext_710000_710007/",
+        "artifacts/eval/_envcheck_hard50k_vs_3ext_710000_710007/RESULT.md",
+        "artifacts/eval/_envcheck_hard50k_vs_3ext_710000_710007/launch_environment.json",
+        "artifacts/eval/_envcheck_hard50k_vs_3ext_710000_710007/comparison_vs_historical_baseline.json",
+        "artifacts/eval/_envcheck_hard50k_vs_3ext_710000_710007/metrics.json",
+        "artifacts/eval/_envcheck_hard50k_vs_3ext_710000_710007/eval.stdout.log",
+        "training/mortal/compare_arena_logs.py"
+      ],
+      "report_paths": [
+        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_50k训练_1v3双向评测_在线诊断_最终结果报告.md",
+        "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_产物索引.json"
+      ],
+      "preregistration": "负责人授权的有上限检查：单方向、8 seed、32 半庄、原解释器/原 checkpoint/原推理参数、无路径遮蔽与占位注入、新目录不复用历史日志、逐事件（而非压缩字节）比较、首个分歧即停止、完成即停。",
+      "formal_adjudication": null,
+      "promoted_k1_checkpoint": null,
+      "evaluation_environment": {
+        "interpreter": "E:/AUbuntuProject/project/keqing1/.venv-win/Scripts/python.exe (CPython 3.12.6, torch 2.12.0+cu130)",
+        "pythonpath": null,
+        "native_binary_sha256": "19bb181eaa70d0ae90417a3bd22433f6ca08d7654602f865ff3bdb102b7d9914",
+        "matches_historical_baseline_build": true,
+        "fingerprint_recorded_at_launch": true
       }
     }
   ]

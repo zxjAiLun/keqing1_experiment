@@ -122,6 +122,15 @@ ENTRIES: list[tuple[str, str, str, str, bool, str]] = [
      "★ P4-M7 paired comparison 与预注册裁决 summary", False, "*"),
     ("P4-M7", "file", f"{EV}/p4m7_comparisons/ENVIRONMENT_PROVENANCE.md",
      "★ P4-M7 原生评测环境溯源与可比性判定（未确认与基线一致）", False, ""),
+    # ---- P4-M8: baseline evaluation entry-point reproduction check --------
+    ("P4-M8", "dir", f"{EV}/_envcheck_hard50k_vs_3ext_710000_710007",
+     "★ P4-M8 基线评测入口复现检查（同环境 32 半庄，逐事件一致 REPRODUCED）", False, "*"),
+    ("P4-M8", "file", f"{EV}/_envcheck_hard50k_vs_3ext_710000_710007/RESULT.md",
+     "★ P4-M8 结果记录（授权范围、实际命令、环境指纹、判定与不可外推声明）", False, ""),
+    ("P4-M8", "file", f"{EV}/_envcheck_hard50k_vs_3ext_710000_710007/launch_environment.json",
+     "启动时环境指纹（解释器/PYTHONPATH/原生二进制 sha256）", False, ""),
+    ("P4-M8", "file", f"{EV}/_envcheck_hard50k_vs_3ext_710000_710007/comparison_vs_historical_baseline.json",
+     "★ 逐事件比较结果（32/32 文件、33,362 条记录、0 处游戏字段不一致）", False, ""),
 ]
 
 

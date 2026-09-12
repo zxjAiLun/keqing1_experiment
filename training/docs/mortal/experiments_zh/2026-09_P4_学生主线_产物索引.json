@@ -539,8 +539,8 @@
       "description": "★ P4-M7 paired comparison 与预注册裁决 summary",
       "exists": true,
       "files": 4,
-      "bytes": 21742,
-      "listing_sha256": "2f20d474f20bea699820d8dbc37e077d3eca2960f49e9551833662525d3f2dfd"
+      "bytes": 24092,
+      "listing_sha256": "e2c1ded7042d88fcbe3f1f6111ea2a3d659618170a2d885f754f0f1c51e9bb63"
     },
     {
       "experiment": "P4-M7",
@@ -548,7 +548,41 @@
       "path": "artifacts/eval/p4m7_comparisons/ENVIRONMENT_PROVENANCE.md",
       "description": "★ P4-M7 原生评测环境溯源与可比性判定（未确认与基线一致）",
       "exists": true,
-      "bytes": 11719
+      "bytes": 13441
+    },
+    {
+      "experiment": "P4-M8",
+      "kind": "dir",
+      "path": "artifacts/eval/_envcheck_hard50k_vs_3ext_710000_710007",
+      "description": "★ P4-M8 基线评测入口复现检查（同环境 32 半庄，逐事件一致 REPRODUCED）",
+      "exists": true,
+      "files": 6,
+      "bytes": 27204,
+      "listing_sha256": "d18d5a0cc7eed6032ed2c94c462d5dfcb065d2464940b7bd4a848e7ef1cbcf3f"
+    },
+    {
+      "experiment": "P4-M8",
+      "kind": "file",
+      "path": "artifacts/eval/_envcheck_hard50k_vs_3ext_710000_710007/RESULT.md",
+      "description": "★ P4-M8 结果记录（授权范围、实际命令、环境指纹、判定与不可外推声明）",
+      "exists": true,
+      "bytes": 6356
+    },
+    {
+      "experiment": "P4-M8",
+      "kind": "file",
+      "path": "artifacts/eval/_envcheck_hard50k_vs_3ext_710000_710007/launch_environment.json",
+      "description": "启动时环境指纹（解释器/PYTHONPATH/原生二进制 sha256）",
+      "exists": true,
+      "bytes": 1552
+    },
+    {
+      "experiment": "P4-M8",
+      "kind": "file",
+      "path": "artifacts/eval/_envcheck_hard50k_vs_3ext_710000_710007/comparison_vs_historical_baseline.json",
+      "description": "★ 逐事件比较结果（32/32 文件、33,362 条记录、0 处游戏字段不一致）",
+      "exists": true,
+      "bytes": 14374
     }
   ]
 }
