@@ -1,5 +1,78 @@
 # Mortal research notes index
 
+## Document layout (adopted 2026-09-13)
+
+Two layers, split by **responsibility** (not by file extension):
+
+| Content | Lives in |
+| --- | --- |
+| Code / experiment tooling | `training/mortal/` |
+| Human research conclusion, design, retrospective | `training/docs/mortal/YYYY-MM/` |
+| Checkpoints, logs, JSON, obs, run data, generated evidence | `artifacts/` |
+
+**Canonical research documents**
+
+- New canonical reports live in `YYYY-MM/` (e.g. `2026-09/`).
+- Filename: `YYYY-MM-DD_<experiment>_<topic>.md`; the date is the date the
+  experiment/conclusion was formed, and must match the `date` field.
+- Every `YYYY-MM/` document starts with this front-matter:
+
+  ```yaml
+  ---
+  experiment: P4-M10
+  date: 2026-09-12
+  last_updated: 2026-09-13
+  status: closed_not_supported
+  ---
+  ```
+
+  `date` is fixed once the conclusion is formed; later substantive revisions
+  bump `last_updated` only. Editing a document must never move the experiment
+  to a later date.
+
+**Evidence**
+
+- `artifacts/` may contain **machine-generated Markdown** (`detailed_stats.md`,
+  shard audits, auto-generated `RESULT.md`, ...). That is legitimate evidence
+  and stays where it is.
+- Artifact Markdown is **not** the canonical research record. Human research
+  conclusions must not take their authoritative home under `artifacts/`
+  (`ADJUDICATION.md`, `POLICY_DISPLACEMENT.md`, ... are supporting evidence and
+  are reached from the canonical report's "Evidence" section).
+- The registry splits the two: `report_paths` = human conclusion,
+  `artifact_paths` = evidence.
+
+**Legacy**
+
+- Documents outside `YYYY-MM/` (`experiments_zh/`, the flat `2026-09-07_*` and
+  `*_2026_0X.md` files) are legacy. They remain at their historical paths until
+  touched for substantive reasons; they are not bulk-renamed, bulk-moved, or
+  bulk-backfilled with front-matter.
+- `README.md`, `研发总览_当前.md` and `research_registry.json` are living
+  documents and keep their names; the overview carries `Last updated:` instead.
+
+## Current execution plan (2026-09)
+
+## Current execution plan (2026-09)
+
+- [P4-M11：direct PG 学习预算、K0 实用门与 external EVE 门](2026-09/2026-09-13_P4-M11_directPG学习预算与K0替代验收方案.md)：C4 完整状态续训32×256半庄；固定U32先过K0门，再挑战external门。计划不代表训练已启动；消费替代与EVE研究结论分开登记。
+
+## Timeline
+
+| Date | Experiment | Result |
+| --- | --- | --- |
+| 2026-07 | V2/V3 recipe era | transition to controlled-training diagnostics |
+| 2026-08 | D1/D2/D3 | controlled-training diagnostics chapter closed |
+| 2026-09-07 | route review | mainline shift to external-teacher student |
+| 2026-09-10 | P4-M2 | hard50k student completed |
+| 2026-09-11 | P4-M3 | soft distillation not supported |
+| 2026-09-12 | P4-M9 | on-policy contract usable; log-prob and gradient contracts pass |
+| 2026-09-12 | P4-M10 | direct PG: small real policy movement, no deployment gain (`not_supported`) |
+| 2026-09-13 | P4-M11 | direct PG learning-budget plan (two-level gate), not started |
+
+Canonical reports for the 2026-09 P4 entries live in `2026-09/`; earlier
+chapters keep their historical paths.
+
 Chronological research history of the Mortal training line (keqing1
 succession). The transition chapter this directory documents first is:
 

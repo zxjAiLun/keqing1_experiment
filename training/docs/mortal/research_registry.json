@@ -2433,6 +2433,7 @@
         "tests/test_p4m9_probe_contract.py"
       ],
       "report_paths": [
+        "training/docs/mortal/2026-09/2026-09-12_P4-M9_onpolicy_contract_probe.md",
         "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_50k训练_1v3双向评测_在线诊断_最终结果报告.md",
         "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_产物索引.json"
       ],
@@ -2501,6 +2502,7 @@
         "training/mortal/p4m10_guard_backfill.py"
       ],
       "report_paths": [
+        "training/docs/mortal/2026-09/2026-09-12_P4-M10_direct_onpolicy_pg.md",
         "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_50k训练_1v3双向评测_在线诊断_最终结果报告.md",
         "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_产物索引.json"
       ],
