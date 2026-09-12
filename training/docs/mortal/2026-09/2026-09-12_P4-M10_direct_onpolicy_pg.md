@@ -180,7 +180,7 @@ argmax 部署没问题，但不可再做「Q gap = 教师估值差」的解释�
 | 训练产物（权重/records/obs/logs） | `artifacts/experiments/student_policy_v1/P4-M10_onpolicy_pg_4x256/` |
 | 结果 JSON | `.../p4m10_result.json`、`.../guard_reconciliation_backfill.json` |
 | 双向评测 | `artifacts/eval/ovt_p4m10_C4_vs_3ext/`、`artifacts/eval/ovt_3p4m10_C4_vs_ext/` |
-| 比较与位移 JSON | `artifacts/eval/p4m10_comparisons/{summary,solo_vs_ext_c4_minus_hard50k,ext_vs_trio_delta,policy_displacement}.json` |
+| 比较与位移 JSON | `artifacts/eval/p4m10_comparisons/` 下的 `summary.json`、`solo_vs_ext_c4_minus_hard50k.json`、`ext_vs_trio_delta.json`、`policy_displacement.json` |
 | 历史生成产物（降级，不再权威） | `.../P4-M10_onpolicy_pg_4x256/RESULT.md`、`p4m10_comparisons/{ADJUDICATION,POLICY_DISPLACEMENT}.md` |
 
 前置：P4-M9 on-policy 契约与资源探针 → `2026-09-12_P4-M9_onpolicy_contract_probe.md`。

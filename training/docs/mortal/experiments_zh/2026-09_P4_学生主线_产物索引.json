@@ -695,7 +695,7 @@
       "path": "artifacts/eval/p4m10_comparisons/summary.json",
       "description": "★ P4-M10 裁决（candidate benefit 双向符号、规则判定、follow-up 禁令）",
       "exists": true,
-      "bytes": 6922
+      "bytes": 11312
     },
     {
       "experiment": "P4-M10",
@@ -703,7 +703,7 @@
       "path": "artifacts/eval/p4m10_comparisons/ADJUDICATION.md",
       "description": "★ P4-M10 裁决文档（预注册规则、原始结果、允许/不允许结论）",
       "exists": true,
-      "bytes": 9788
+      "bytes": 11699
     },
     {
       "experiment": "P4-M10",
@@ -727,7 +727,7 @@
       "path": "artifacts/eval/p4m10_comparisons/policy_displacement.json",
       "description": "★ 固定面板策略位移（flip/TV/KL，parent 与相邻 cycle）——只读检查",
       "exists": true,
-      "bytes": 18768
+      "bytes": 24527
     },
     {
       "experiment": "P4-M10",
@@ -735,7 +735,7 @@
       "path": "artifacts/eval/p4m10_comparisons/POLICY_DISPLACEMENT.md",
       "description": "★ 策略位移检查说明与读数边界",
       "exists": true,
-      "bytes": 5737
+      "bytes": 9340
     },
     {
       "experiment": "P4-M10",
