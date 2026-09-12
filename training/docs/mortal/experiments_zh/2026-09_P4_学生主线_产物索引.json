@@ -641,8 +641,8 @@
       "description": "★ P4-M10 首候选：hard50k → 直接 on-policy PG（4 cycle × 256 半庄，只评 C4；not_supported）",
       "exists": true,
       "files": 13,
-      "bytes": 697429427,
-      "listing_sha256": "d001504b747a25c8d2504463a0ddea3e42212e1642d05a99ccf4b72ee434003c"
+      "bytes": 697430243,
+      "listing_sha256": "6e9bc00b8a00316a1d262624609669f19232135f7ec3fbe9d332f541984c887e"
     },
     {
       "experiment": "P4-M10",
@@ -650,7 +650,7 @@
       "path": "artifacts/experiments/student_policy_v1/P4-M10_onpolicy_pg_4x256/RESULT.md",
       "description": "★ P4-M10 训练记录（冻结配方、每 cycle 契约检查、成本、只评 C4 与不可外推声明）",
       "exists": true,
-      "bytes": 11490
+      "bytes": 12306
     },
     {
       "experiment": "P4-M10",
@@ -695,7 +695,7 @@
       "path": "artifacts/eval/p4m10_comparisons/summary.json",
       "description": "★ P4-M10 裁决（candidate benefit 双向符号、规则判定、follow-up 禁令）",
       "exists": true,
-      "bytes": 6162
+      "bytes": 6922
     },
     {
       "experiment": "P4-M10",
@@ -703,7 +703,7 @@
       "path": "artifacts/eval/p4m10_comparisons/ADJUDICATION.md",
       "description": "★ P4-M10 裁决文档（预注册规则、原始结果、允许/不允许结论）",
       "exists": true,
-      "bytes": 7724
+      "bytes": 9788
     },
     {
       "experiment": "P4-M10",
@@ -720,6 +720,22 @@
       "description": "方向 B same-seed paired 差值（ext 面对 3×C4 − 3×hard50k）",
       "exists": true,
       "bytes": 1573
+    },
+    {
+      "experiment": "P4-M10",
+      "kind": "file",
+      "path": "artifacts/eval/p4m10_comparisons/policy_displacement.json",
+      "description": "★ 固定面板策略位移（flip/TV/KL，parent 与相邻 cycle）——只读检查",
+      "exists": true,
+      "bytes": 18768
+    },
+    {
+      "experiment": "P4-M10",
+      "kind": "file",
+      "path": "artifacts/eval/p4m10_comparisons/POLICY_DISPLACEMENT.md",
+      "description": "★ 策略位移检查说明与读数边界",
+      "exists": true,
+      "bytes": 5737
     },
     {
       "experiment": "P4-M10",

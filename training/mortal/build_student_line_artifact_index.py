@@ -165,6 +165,10 @@ ENTRIES: list[tuple[str, str, str, str, bool, str]] = [
      "方向 A same-seed paired 差值（C4 − hard50k）", False, ""),
     ("P4-M10", "file", f"{EV}/p4m10_comparisons/ext_vs_trio_delta.json",
      "方向 B same-seed paired 差值（ext 面对 3×C4 − 3×hard50k）", False, ""),
+    ("P4-M10", "file", f"{EV}/p4m10_comparisons/policy_displacement.json",
+     "★ 固定面板策略位移（flip/TV/KL，parent 与相邻 cycle）——只读检查", False, ""),
+    ("P4-M10", "file", f"{EV}/p4m10_comparisons/POLICY_DISPLACEMENT.md",
+     "★ 策略位移检查说明与读数边界", False, ""),
     ("P4-M10", "file", f"{SP}/P4-M10_onpolicy_pg_4x256/guard_reconciliation_backfill.json",
      "★ agari guard / claim 抢先的只读补记（运行期字段为 null，本文件补出真实计数）", False, ""),
 ]
