@@ -131,6 +131,19 @@ ENTRIES: list[tuple[str, str, str, str, bool, str]] = [
      "启动时环境指纹（解释器/PYTHONPATH/原生二进制 sha256）", False, ""),
     ("P4-M8", "file", f"{EV}/_envcheck_hard50k_vs_3ext_710000_710007/comparison_vs_historical_baseline.json",
      "★ 逐事件比较结果（32/32 文件、33,362 条记录、0 处游戏字段不一致）", False, ""),
+    # ---- P4-M9: on-policy contract + resource probe --------------------------
+    ("P4-M9", "dir", f"{EV}/_p4m9_probe_onpolicy_contract",
+     "★ P4-M9 on-policy 契约+资源探针（32 半庄采集，契约未完全通过）", False, "*"),
+    ("P4-M9", "file", f"{EV}/_p4m9_probe_onpolicy_contract/RESULT.md",
+     "★ P4-M9 结果记录（四个问题、分歧类别、成本、不可外推声明）", False, ""),
+    ("P4-M9", "file", f"{EV}/_p4m9_probe_onpolicy_contract/probe_result.json",
+     "★ 四项检查结果（对齐/重算/BN/梯度）+ 成本 + 启动环境指纹", False, ""),
+    ("P4-M9", "file", f"{EV}/_p4m9_probe_onpolicy_contract/probe_records.jsonl",
+     "逐决策记录（mask_bits/q_legal/采样动作/log-prob，obs 偏移索引）", False, ""),
+    ("P4-M9", "file", f"{EV}/_p4m9_probe_onpolicy_contract_sample2/probe_result.json",
+     "第 2 次重采的四项检查（独立性/稳定性复核）", False, ""),
+    ("P4-M9", "file", f"{EV}/_p4m9_probe_onpolicy_contract_sample3/probe_result.json",
+     "第 3 次重采的四项检查（独立性/稳定性复核）", False, ""),
 ]
 
 

@@ -583,6 +583,56 @@
       "description": "★ 逐事件比较结果（32/32 文件、33,362 条记录、0 处游戏字段不一致）",
       "exists": true,
       "bytes": 14374
+    },
+    {
+      "experiment": "P4-M9",
+      "kind": "dir",
+      "path": "artifacts/eval/_p4m9_probe_onpolicy_contract",
+      "description": "★ P4-M9 on-policy 契约+资源探针（32 半庄采集，契约未完全通过）",
+      "exists": true,
+      "files": 5,
+      "bytes": 721532658,
+      "listing_sha256": "ad72252587b248a369db3d3ac76ce83efa56db07c43cdc1dca19790fc51b4cf8"
+    },
+    {
+      "experiment": "P4-M9",
+      "kind": "file",
+      "path": "artifacts/eval/_p4m9_probe_onpolicy_contract/RESULT.md",
+      "description": "★ P4-M9 结果记录（四个问题、分歧类别、成本、不可外推声明）",
+      "exists": true,
+      "bytes": 12188
+    },
+    {
+      "experiment": "P4-M9",
+      "kind": "file",
+      "path": "artifacts/eval/_p4m9_probe_onpolicy_contract/probe_result.json",
+      "description": "★ 四项检查结果（对齐/重算/BN/梯度）+ 成本 + 启动环境指纹",
+      "exists": true,
+      "bytes": 29748
+    },
+    {
+      "experiment": "P4-M9",
+      "kind": "file",
+      "path": "artifacts/eval/_p4m9_probe_onpolicy_contract/probe_records.jsonl",
+      "description": "逐决策记录（mask_bits/q_legal/采样动作/log-prob，obs 偏移索引）",
+      "exists": true,
+      "bytes": 3051489
+    },
+    {
+      "experiment": "P4-M9",
+      "kind": "file",
+      "path": "artifacts/eval/_p4m9_probe_onpolicy_contract_sample2/probe_result.json",
+      "description": "第 2 次重采的四项检查（独立性/稳定性复核）",
+      "exists": true,
+      "bytes": 30024
+    },
+    {
+      "experiment": "P4-M9",
+      "kind": "file",
+      "path": "artifacts/eval/_p4m9_probe_onpolicy_contract_sample3/probe_result.json",
+      "description": "第 3 次重采的四项检查（独立性/稳定性复核）",
+      "exists": true,
+      "bytes": 30071
     }
   ]
 }
