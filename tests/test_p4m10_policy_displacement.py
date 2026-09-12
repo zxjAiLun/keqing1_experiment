@@ -25,6 +25,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from training.mortal.p4m10_policy_displacement import (
+    FLIP_MARGIN_NOTE,
+    INTERPRETATION_BOUNDARIES,
+    METRIC_ROLES,
+    PANEL_SUBSTITUTION,
     legal_action_count,
     legal_mask_from_records,
     load_panel,
@@ -209,3 +213,45 @@ def test_load_panel_selects_only_explore_true_rows(tmp_path: Path):
     assert np.array_equal(panel[0], payload[0])
     assert np.array_equal(panel[1], payload[2])
     assert panel.shape == (2, 2, 1)
+
+
+# --------------------------------------------------------------------------
+# Interpretation contract.  These tests exist so that a later edit cannot
+# silently promote the raw action-score drift back into the headline result,
+# or turn the descriptive margin split into a mechanism claim.
+# --------------------------------------------------------------------------
+
+
+def test_only_flip_tv_kl_may_be_used_as_the_result():
+    """Raw action-score drift is telemetry: the dueling head is shift-invariant."""
+    assert METRIC_ROLES["primary_result"] == ["flip_rate_argmax", "tv_mean", "kl_parent_C4"]
+    assert set(METRIC_ROLES["telemetry_only"]) == {"q_delta_mean_abs", "q_delta_max_abs"}
+    # The reason must stay recorded, because it is the whole justification.
+    assert "mean(a_legal)" in METRIC_ROLES["rule"]
+    assert "model.py:221" in METRIC_ROLES["rule"]
+
+
+def test_margin_split_may_not_be_read_as_a_mechanism_claim():
+    assert "descriptive" in FLIP_MARGIN_NOTE.lower()
+    assert "not a per-state noise bound" in FLIP_MARGIN_NOTE
+    near = INTERPRETATION_BOUNDARIES["near_ties"]
+    assert "does not establish the decision importance" in near
+    assert "near-ties" in near  # named as forbidden, not as a claim
+
+
+def test_flip_rate_and_sampling_disagreement_are_not_to_be_divided():
+    note = INTERPRETATION_BOUNDARIES["no_ratio_between_flip_and_sampling_disagreement"]
+    assert "do not divide" in note
+    assert "different quantities" in note.lower() or "Different quantities" in note
+
+
+def test_panel_substitution_is_registered_with_its_boundaries():
+    assert PANEL_SUBSTITUTION["rerun_required"] is False
+    assert "P4-M4" in PANEL_SUBSTITUTION["previously_discussed"]
+    boundaries = " ".join(PANEL_SUBSTITUTION["boundaries"])
+    assert "NOT an independent holdout" in boundaries
+    assert "NOT C4's own visitation distribution" in boundaries
+
+
+def test_the_check_is_not_a_budget_rule():
+    assert "does not answer" in INTERPRETATION_BOUNDARIES["not_a_budget_rule"]

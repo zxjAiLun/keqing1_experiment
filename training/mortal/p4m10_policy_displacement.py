@@ -20,6 +20,31 @@ Scope is exactly what was authorised and nothing more:
 
 This script never writes to a training artifact and never runs a backward pass.
 
+Metric roles (owner ruling 2026-09-12, third review)
+---------------------------------------------------
+* **The result is flip / TV / KL only.** Those are the quantities that may be used
+  to characterise how far the policy moved.
+* **Raw action-score drift is TELEMETRY and must not be used as evidence.** The DQN
+  is dueling: ``q_a = v + a_a - mean(a_legal)``, so adding a constant to every legal
+  action of a state leaves both the softmax and the argmax unchanged
+  (``third_party/Mortal/mortal/model.py:221``). Raw scores can move a lot while the
+  policy barely moves. ``|dq|`` is still measured and written out; it just is not a
+  policy-displacement argument, and no value/advantage decomposition is added.
+
+The near-tie split reported below is a **descriptive statistic only**: the
+threshold is the panel-wide max same-weight cross-batching deviation, which is not
+a per-state noise bound, so it must not be used to declare a flip meaningless.
+
+Panel substitution (registered, not rerun)
+-----------------------------------------
+The previously discussed panel was the P4-M4 teacher-supervision-gap fixed sample
+(its fixed variables exclude single-legal-action states). The panel actually used
+here is P4-M10 **cycle 1**: the parent's own on-policy sampled states. It answers
+how far the updates pushed the policy inside the region the starting policy
+visited, which is what this check was scoped to. It is NOT the P4-M4 panel, NOT an
+independent holdout (cycle-1 states participated in C1's training), and NOT C4's
+own visitation distribution.
+
 Measurement honesty
 -------------------
 A batched forward is not bit-identical to the engine's own per-call batch, so
@@ -79,6 +104,72 @@ PAIRS = [
     ("C3", "C4"),
     ("parent", "C4"),
 ]
+
+FLIP_MARGIN_NOTE = (
+    "descriptive only: the threshold is the panel-wide max same-weight "
+    "cross-batching deviation, not a per-state noise bound; it must not be used to "
+    "declare a flip meaningless"
+)
+
+METRIC_ROLES = {
+    "primary_result": ["flip_rate_argmax", "tv_mean", "kl_parent_C4"],
+    "telemetry_only": ["q_delta_mean_abs", "q_delta_max_abs"],
+    "rule": (
+        "Only flip / TV / KL may be used to characterise the policy displacement. The "
+        "raw action-score drift is telemetry: the DQN is dueling "
+        "(q_a = v + a_a - mean(a_legal)), so adding a constant to every legal action of "
+        "a state leaves both the softmax and the argmax unchanged "
+        "(third_party/Mortal/mortal/model.py:221). Raw scores can move a lot while the "
+        "policy barely moves, so the two are different quantities."
+    ),
+}
+
+PANEL_SUBSTITUTION = {
+    "previously_discussed": (
+        "the P4-M4 teacher-supervision-gap fixed sample panel, whose fixed variables "
+        "exclude single-legal-action states from agreement/loss (a fixed >=2-legal panel)"
+    ),
+    "actually_used": (
+        "P4-M10 cycle 1: exploration_allowed=True decisions sampled with the PARENT "
+        "weights against 3x ext_mortal (T=1, eps=1, top_p=1)"
+    ),
+    "why_acceptable": (
+        "It answers how far the four updates pushed the policy inside the region the "
+        "starting policy actually visited, which is the question this check was scoped to."
+    ),
+    "boundaries": [
+        "NOT the P4-M4 fixed panel that was originally discussed",
+        "cycle-1 states participated in C1's training, so this is NOT an independent holdout",
+        "NOT C4's own visitation distribution, and not a generalisation claim over all states",
+    ],
+    "rerun_required": False,
+    "rerun_reason": (
+        "The goal was never generalisation or strength; registering the substitution and "
+        "its boundaries is sufficient and no second panel is forwarded."
+    ),
+}
+
+INTERPRETATION_BOUNDARIES = {
+    "near_ties": (
+        "The margin split is a DESCRIPTIVE statistic: the threshold is the max "
+        "same-weight cross-batching deviation over the panel, NOT a per-state noise "
+        "bound, so it must not be used to declare a flip meaningless and the result must "
+        "NOT be summarised as 'PG only changed near-ties' or 'no strongly preferred "
+        "decision was rewritten'. The supported statement is: the flip rate is stable "
+        "across batch sizes; this check does not establish the decision importance of "
+        "those flips."
+    ),
+    "no_ratio_between_flip_and_sampling_disagreement": (
+        "sample_vs_greedy_disagreement_rate is the probability that the parent's own T=1 "
+        "random sample deviates from the parent's own argmax; flip_rate is the rate at "
+        "which the argmax differs between two models. Different quantities: do not divide "
+        "them and do not read 'deployment moved only a tenth of the exploration amplitude'."
+    ),
+    "not_a_budget_rule": (
+        "This check answers only the size of the movement. It does not answer 'small "
+        "movement means continue' or 'large movement means close'."
+    ),
+}
 
 BOOTSTRAP_REPS = 5000
 BOOTSTRAP_SEED = 20260910
@@ -273,10 +364,11 @@ def results_from_tables(
     for a, b in PAIRS:
         metrics = pair_metrics(tables[a], tables[b], legal)
         flip_mask = metrics["flip"] > 0.5
-        # A flip is only evidence of a changed preference if the two leading
-        # actions were not already separated by less than the measured round-off
-        # of the batched forward.  Knife-edge flips are reported, not hidden.
-        decisive = flip_mask & (
+        # DESCRIPTIVE SPLIT ONLY.  q_noise_floor is the panel-wide max
+        # same-weight cross-batching deviation; it is NOT a per-state bound on
+        # when a flip stops being meaningful, so this split may not be read as
+        # "only near-ties changed" or "no strongly preferred decision changed".
+        above_threshold = flip_mask & (
             np.minimum(metrics["margin_a"], metrics["margin_b"]) > q_noise_floor
         )
         finite_delta = metrics["q_delta"][np.isfinite(metrics["q_delta"])]
@@ -300,9 +392,14 @@ def results_from_tables(
             "flip_count": int(metrics["flip"].sum()),
             "decisions": len(seeds),
             "tv_max": float(np.max(metrics["tv"])),
-            "flips_decisive": int(decisive.sum()),
-            "flips_decisive_rate": float(np.mean(decisive)),
-            "flips_knife_edge": int(flip_mask.sum() - decisive.sum()),
+            "flips_margin_above_cross_batch_deviation": int(above_threshold.sum()),
+            "flips_margin_above_cross_batch_deviation_rate": float(
+                np.mean(above_threshold)
+            ),
+            "flips_margin_below_cross_batch_deviation": int(
+                flip_mask.sum() - above_threshold.sum()
+            ),
+            "flips_margin_note": FLIP_MARGIN_NOTE,
             "q_delta_mean_abs": float(finite_delta.mean()),
             "q_delta_max_abs": float(finite_delta.max()),
         }
@@ -314,8 +411,7 @@ def print_results(results: dict[str, dict], label: str) -> None:
     print(f"-- {label}")
     for pair, entry in results.items():
         print(f"  {pair:14s} flip={entry['flip_rate']:.4%} "
-              f"({entry['flip_count']}/{entry['decisions']}, decisive "
-              f"{entry['flips_decisive']}, knife-edge {entry['flips_knife_edge']})  "
+              f"({entry['flip_count']}/{entry['decisions']})  "
               f"TV={entry['tv_mean']:.5f}  KL(a||b)={entry['kl_a_b']:.6f}  "
               f"KL(b||a)={entry['kl_b_a']:.6f}  mean|dq|={entry['q_delta_mean_abs']:.3f}")
 
@@ -519,15 +615,21 @@ def main() -> int:
             "kl_a_b": "mean per-decision KL(pi_a || pi_b) in nats, not KL of the aggregate",
             "kl_b_a": "the same in the opposite direction",
         },
+        "metric_roles": METRIC_ROLES,
+        "panel_substitution": PANEL_SUBSTITUTION,
+        "interpretation_boundaries": INTERPRETATION_BOUNDARIES,
         "panel_integrity": integrity,
         "q_noise_floor": {
             "value": q_noise_floor,
             "source": (
                 "max |q_batched - q_collection_time| on the PARENT weights over the "
                 "panel, i.e. the round-off of a batched forward vs the engine's own "
-                "per-call batch. It is a floor on how small a top-2 margin can be "
-                "before a flip stops being meaningful."
+                "per-call batch. Recorded as a measurement-credibility number and as "
+                "the descriptive split threshold, NOT as a per-state bound on how small "
+                "a margin can be before a flip stops being meaningful."
             ),
+            "is_per_state_bound": False,
+            "may_be_used_to_discount_flips": False,
             "logprob_agreement": integrity["parent_logprob_max_abs_diff"],
             "logprob_agreement_note": (
                 "same order as the P4-M10 cycle-1 recompute max_delta that the "
