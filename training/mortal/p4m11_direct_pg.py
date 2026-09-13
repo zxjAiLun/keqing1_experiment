@@ -102,6 +102,17 @@ P4M11_CONFIG: dict[str, Any] = {
     "champion_sha256": (
         "0a88ddad649804d085491b5397d895f596b0e55f30632c549ea145bb44786563"
     ),
+    # A brand new lineage must start inside the pinned environment. Resume already
+    # compares the saved environment with the current one, which catches "U01 was
+    # right, U02 changed interpreter"; it cannot catch "U01 was already wrong",
+    # because the fingerprint would simply record the wrong environment and every
+    # later resume would agree with it.
+    "required_interpreter": (
+        "E:/AUbuntuProject/project/keqing1/.venv-win/Scripts/python.exe"
+    ),
+    "required_native_sha256": (
+        "19bb181eaa70d0ae90417a3bd22433f6ca08d7654602f865ff3bdb102b7d9914"
+    ),
     "challenger_label": "p4m11_candidate",
     "champion_label": "ext_mortal",
     "architecture": "unchanged (Brain 192x40 + DQN v4, FP32)",
@@ -274,16 +285,16 @@ def completion_status(
     final_cycle: int,
     final_steps: Sequence[float],
     parent_unchanged: bool,
-    diagnostic: bool,
     total_cycles: int | None = None,
     expected_final_step: float | None = None,
 ) -> dict[str, Any]:
     """Whether the authorised endpoint has actually been reached.
 
-    Completion is locked to U32 **at Adam step 36**, from an untouched parent,
-    in a non-diagnostic run.  Anything short of that cannot present itself as the
-    final endpoint, which is what previously let a one-cycle run report U01 as
-    complete.
+    Completion is locked to U32 **at Adam step 36** from an untouched parent.
+    Anything short of that cannot present itself as the final endpoint, which is
+    what previously let a one-cycle run report U01 as complete.  There is no
+    diagnostic exemption any more: the shortened-run mode was removed, so a run
+    that is not the full U32 simply is not complete.
     """
     total = int(total_cycles if total_cycles is not None else P4M11_CONFIG["cycles"])
     want_step = float(
@@ -293,8 +304,7 @@ def completion_status(
     )
     steps = [float(value) for value in final_steps]
     complete = bool(
-        not diagnostic
-        and int(final_cycle) >= total
+        int(final_cycle) >= total
         and steps == [want_step]
         and bool(parent_unchanged)
     )
@@ -303,7 +313,6 @@ def completion_status(
         reason = (
             f"stopped at U{int(final_cycle)} with Adam step {steps}; the evaluation "
             f"endpoint is U{total} at Adam step {want_step:g}"
-            + (" (diagnostic run: never an endpoint)" if diagnostic else "")
         )
     return {
         "complete": complete,
@@ -568,6 +577,24 @@ def checkpoint_path(run_dir: Path, cycle: int) -> Path:
     return Path(run_dir) / f"U{int(cycle)}.pth"
 
 
+def _marker_cycle_from_name(marker: Path) -> int:
+    """The cycle number encoded in ``U{n}.done.json``.
+
+    The filename is part of the contract: ``U2.done.json`` must describe cycle 2.
+    A marker whose name and contents disagree means something wrote into this run
+    directory that this code did not, so it is refused rather than interpreted.
+    """
+    name = Path(marker).name
+    if not (name.startswith("U") and name.endswith(".done.json")):
+        raise P4M11ContractError(f"unexpected completion marker name {name!r}")
+    try:
+        return int(name[1 : -len(".done.json")])
+    except ValueError as error:
+        raise P4M11ContractError(
+            f"completion marker {name} does not encode a cycle number"
+        ) from error
+
+
 def committed_cycles(run_dir: Path) -> dict[int, dict[str, Any]]:
     """Every cycle whose completion marker is present AND whose hash matches.
 
@@ -576,10 +603,12 @@ def committed_cycles(run_dir: Path) -> dict[int, dict[str, Any]]:
     Resume therefore reloads the last committed state and re-runs that cycle,
     which cannot double-apply an update.
 
-    A marker that exists but is unreadable, carries no cycle number, or whose
-    checkpoint has gone missing is NOT skipped: silently ignoring it and then
-    re-collecting over that cycle would destroy the only evidence that something
-    went wrong.  Such a state is a hard error to be resolved by hand.
+    A marker that exists but is unreadable, carries no cycle number, disagrees
+    with its own filename, or whose checkpoint has gone missing is NOT skipped:
+    silently ignoring it and then re-collecting over that cycle would destroy the
+    only evidence that something went wrong.  The committed set must also be
+    contiguous from U1, so a gap or a stray marker is a hard error to be resolved
+    by hand rather than a state the runner quietly accepts.
     """
     run_dir = Path(run_dir)
     committed: dict[int, dict[str, Any]] = {}
@@ -601,6 +630,12 @@ def committed_cycles(run_dir: Path) -> dict[int, dict[str, Any]]:
             raise P4M11ContractError(
                 f"completion marker {marker.name} has no usable completed_cycles field"
             ) from error
+        named = _marker_cycle_from_name(marker)
+        if cycle != named:
+            raise P4M11ContractError(
+                f"completion marker {marker.name} declares completed_cycles={cycle}, "
+                f"but its filename says U{named}"
+            )
         path = checkpoint_path(run_dir, cycle)
         if not path.exists():
             raise P4M11ContractError(
@@ -613,6 +648,14 @@ def committed_cycles(run_dir: Path) -> dict[int, dict[str, Any]]:
                 "refusing to resume from an unverifiable state"
             )
         committed[cycle] = data
+
+    present = sorted(committed)
+    for index, cycle in enumerate(present, start=1):
+        if cycle != index:
+            raise P4M11ContractError(
+                f"committed cycles are not contiguous from U1: expected U{index}, found "
+                f"U{cycle} (present: {present})"
+            )
     return committed
 
 
@@ -673,6 +716,67 @@ def recipe_problems(
                 f"recipe[{key!r}] recorded {recorded.get(key)!r} != current {current.get(key)!r}"
             )
     return problems
+
+
+def _normalised_path(path: str | Path) -> str:
+    return os.path.normcase(os.path.abspath(str(path)))
+
+
+def assert_pinned_device(device: torch.device) -> None:
+    """This lineage is a GPU run; there is no CPU fallback.
+
+    ``--device`` defaults to ``cuda if available else cpu``, so an accidental CPU
+    interpreter would otherwise start collecting without a word.  Requiring CUDA
+    unconditionally -- rather than behind the old opt-in ``--require-cuda`` --
+    removes that silent downgrade.
+    """
+    problems: list[str] = []
+    if device.type != "cuda":
+        problems.append(f"device is {device.type!r}, not 'cuda'")
+    if not torch.cuda.is_available():
+        problems.append("torch.cuda.is_available() is False")
+    if problems:
+        raise P4M11ContractError(
+            "refusing to train without the pinned GPU: " + "; ".join(problems)
+        )
+
+
+def assert_fresh_start_environment(
+    *, device: torch.device, environment: dict[str, Any]
+) -> None:
+    """A brand new lineage starts only inside the pinned environment.
+
+    Resume compares the environment saved in the checkpoint with the current one,
+    which catches "U01 was right, U02 changed interpreter".  It cannot catch "U01
+    was already wrong": the fingerprint would just record the wrong environment
+    and every later resume would agree with it.  So the *first* cycle pins the
+    device, the interpreter and the native binary explicitly.
+    """
+    problems: list[str] = []
+    try:
+        assert_pinned_device(device)
+    except P4M11ContractError as error:
+        problems.append(str(error))
+    wanted_interpreter = str(P4M11_CONFIG["required_interpreter"])
+    if _normalised_path(sys.executable) != _normalised_path(wanted_interpreter):
+        problems.append(
+            f"interpreter is {sys.executable}, expected {wanted_interpreter}"
+        )
+    wanted_native = str(P4M11_CONFIG["required_native_sha256"])
+    native = [
+        str(value)
+        for value in environment_fingerprint(environment).get("native_sha256") or []
+    ]
+    if wanted_native not in native:
+        problems.append(
+            f"the pinned native binary {wanted_native[:12]}... is not loaded; found "
+            f"{[value[:12] for value in native]}"
+        )
+    if problems:
+        raise P4M11ContractError(
+            "fresh start refused: the pinned training environment does not match: "
+            + "; ".join(problems)
+        )
 
 
 def load_committed_checkpoint(
@@ -1643,22 +1747,13 @@ def train_cycle(
             raise P4M11ContractError("in-memory parameters changed during collection")
         obs_path = attempt_dir / "obs_fp32.bin"
         records_path = attempt_dir / "probe_records.jsonl"
-        write_json_atomic(
-            collection_manifest_path(attempt_dir),
-            {
-                **expected_manifest,
-                "schema": "keqing.mortal.p4m11_collection_manifest.v1",
-                "experiment": "P4-M11",
-                "cycle": int(cycle),
-                "attempt_dir": str(attempt_dir),
-                "decision_records": len(records),
-                "observations": len(records),
-                "records_sha256": _sha256_file(records_path),
-                "obs_bytes": int(obs_path.stat().st_size),
-                "complete": True,
-                "written_at_unix": time.time(),
-            },
-        )
+        # The manifest is deliberately NOT written here. Writing it now would
+        # advertise the attempt as reusable *before* the arena's authoritative
+        # logs have been parsed, so an attempt whose logs are short would be
+        # reported complete, fail the completeness check, and then be reused
+        # again on the next start -- failing forever on the same bad attempt
+        # instead of trying a fresh one. See the write after
+        # assert_collection_complete() below.
     report["collection_reused"] = bool(reused)
     report["attempt_dir"] = str(attempt_dir)
     if watchdog is not None:
@@ -1703,6 +1798,31 @@ def train_cycle(
         returns_by_hanchan=returns_by_hanchan,
         expected_hanchans=expected_hanchans,
     )
+
+    # Only now is the collection authoritative: the arena's own logs have been
+    # parsed and every expected hanchan has a rank. A manifest therefore means
+    # "authoritative log completeness PASSED", so a short-log attempt simply has
+    # no manifest, is never reported reusable, and the retry lands in a new
+    # attempt directory. The completion flag is written last, atomically.
+    if not reused:
+        records_path = attempt_dir / "probe_records.jsonl"
+        write_json_atomic(
+            collection_manifest_path(attempt_dir),
+            {
+                **expected_manifest,
+                "schema": "keqing.mortal.p4m11_collection_manifest.v1",
+                "experiment": "P4-M11",
+                "cycle": int(cycle),
+                "attempt_dir": str(attempt_dir),
+                "decision_records": len(records),
+                "observations": len(records),
+                "records_sha256": _sha256_file(records_path),
+                "obs_bytes": int((attempt_dir / "obs_fp32.bin").stat().st_size),
+                "authoritative_logs_verified": True,
+                "complete": True,
+                "written_at_unix": time.time(),
+            },
+        )
 
     returns = torch.tensor(
         [returns_by_hanchan[key] for key in hanchan_order],
@@ -1777,24 +1897,25 @@ def train_cycle(
     }
     checkpoint = checkpoint_path(run_dir, cycle)
     checkpoint_sha = save_checkpoint_atomic(checkpoint, payload)
-    write_json_atomic(
-        commit_marker_path(run_dir, cycle),
-        {
-            "schema": "keqing.mortal.p4m11_cycle_commit.v1",
-            "experiment": "P4-M11",
-            "completed_cycles": int(cycle),
-            "checkpoint": checkpoint.name,
-            "checkpoint_sha256": checkpoint_sha,
-            "adam_step": float(expected_step_after),
-            "seed_segment": report["seed_segment"],
-            "sampling_seed": int(sampling_seed),
-            "decisions_in_loss": int(update_report["decisions_in_loss"]),
-            "hanchans": len(hanchan_order),
-            "committed_at_unix": time.time(),
-        },
-    )
     report["checkpoint"] = str(checkpoint)
     report["checkpoint_sha256"] = checkpoint_sha
+    # The completion marker is NOT written here. It is the *last* durable step of
+    # the cycle and is written by the caller after cycles.jsonl has been appended
+    # and fsynced. Writing it here would leave "checkpoint + marker exist but
+    # cycles.jsonl has no U{cycle}" as a reachable state.
+    report["commit_marker"] = {
+        "schema": "keqing.mortal.p4m11_cycle_commit.v1",
+        "experiment": "P4-M11",
+        "completed_cycles": int(cycle),
+        "checkpoint": checkpoint.name,
+        "checkpoint_sha256": checkpoint_sha,
+        "adam_step": float(expected_step_after),
+        "seed_segment": report["seed_segment"],
+        "sampling_seed": int(sampling_seed),
+        "decisions_in_loss": int(update_report["decisions_in_loss"]),
+        "hanchans": len(hanchan_order),
+        "committed_at_unix": time.time(),
+    }
 
     # Release the per-cycle payloads: nothing big may accumulate across cycles.
     del records, policy_records, kan_select_records, returns
@@ -1844,8 +1965,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     the budget check from what the collector actually ran: ``--cycles 64
     --seeds-per-cycle 32`` passed a 32x64 budget check while the collector, which
     reads ``seeds_per_cycle`` from the frozen config, would have collected 16,384
-    hanchans.  The cycle count and seed count now come from the frozen config and
-    only the isolated diagnostic flag can shorten a run.
+    hanchans.  ``--diagnostic-cycles`` is gone too: a shortened diagnostic run
+    still wrote ``U1.pth`` / ``U1.done.json`` into the official output directory,
+    and ``committed_cycles()`` had no way to tell that U1 apart from a real one.
+    The cycle count and seed count now come from the frozen config and nothing on
+    the command line can shorten a run.
     """
     parser = argparse.ArgumentParser(
         description="P4-M11: continue direct on-policy PG from the P4-M10 C4"
@@ -1867,7 +1991,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--device", default="cuda" if torch.cuda.is_available() else "cpu"
     )
-    parser.add_argument("--require-cuda", action="store_true")
     parser.add_argument(
         "--max-active-seconds",
         type=float,
@@ -1877,17 +2000,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         "--no-reuse-collection",
         action="store_true",
         help="re-collect even when a completed collection is still valid",
-    )
-    parser.add_argument(
-        "--diagnostic-cycles",
-        type=int,
-        default=None,
-        help=(
-            "DIAGNOSTIC ONLY. Run at most this many cycles and write "
-            "p4m11_diagnostic_result.json instead of p4m11_result.json. A "
-            "diagnostic run is never reported as complete and never names an "
-            "evaluation endpoint, so a partial endpoint cannot be mistaken for U32."
-        ),
     )
     parser.add_argument(
         "--dry-run", action="store_true",
@@ -1903,10 +2015,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     # same thing, so deviations are refused rather than silently ignored.
     assert_recipe_arguments(args)
 
-    diagnostic = args.diagnostic_cycles is not None
-    planned_cycles = (
-        int(args.diagnostic_cycles) if diagnostic else int(P4M11_CONFIG["cycles"])
-    )
+    planned_cycles = int(P4M11_CONFIG["cycles"])
     if planned_cycles < 1:
         raise P4M11ContractError("cycles must be positive")
     # The per-cycle seed count is always the frozen config value, so the budget
@@ -1914,8 +2023,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     assert_within_budget(planned_cycles, int(P4M11_CONFIG["seeds_per_cycle"]))
 
     device = torch.device(args.device)
-    if args.require_cuda and device.type != "cuda":
-        raise SystemExit("CUDA required but not available")
+    # Unconditional: there is no CPU fallback for this lineage.
+    assert_pinned_device(device)
 
     run_dir = Path(args.output_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -1941,7 +2050,6 @@ def main(argv: Sequence[str] | None = None) -> None:
     result: dict[str, Any] = {
         "schema": "keqing.mortal.p4m11_direct_pg.v1",
         "created_at_unix": time.time(),
-        "diagnostic": bool(diagnostic),
         "planned_cycles": int(planned_cycles),
         "authorised_cycles": int(P4M11_CONFIG["cycles"]),
         "config": P4M11_CONFIG,
@@ -1968,6 +2076,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     result["committed_cycles_on_entry"] = sorted(committed)
 
     if last_committed == 0:
+        # A brand new lineage pins its environment before anything is collected.
+        # Resume is covered by load_committed_checkpoint's environment compare.
+        assert_fresh_start_environment(device=device, environment=environment)
         restored = restore_parent(
             parent_path,
             device=device,
@@ -2049,7 +2160,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         write_json_atomic(run_dir / "dry_run.json", result)
         print(json.dumps({
             "dry_run": True,
-            "diagnostic": bool(diagnostic),
             "resumed_from_cycle": last_committed,
             "start_cycle": start_cycle,
             "planned_cycles": int(planned_cycles),
@@ -2148,6 +2258,12 @@ def main(argv: Sequence[str] | None = None) -> None:
             "checkpoint_sha256": cycle_report["checkpoint_sha256"],
         }
         append_jsonl(run_dir / "cycles.jsonl", summary)
+        # The completion marker is the LAST durable step of the cycle, and the
+        # order is the contract: a marker implies this cycle's record is already
+        # fsynced. Only now does the cycle become visible to committed_cycles().
+        marker = dict(cycle_report["commit_marker"])
+        marker["wall_seconds"] = cycle_report["wall_seconds"]
+        write_json_atomic(commit_marker_path(run_dir, cycle), marker)
         print(json.dumps(summary, ensure_ascii=False), flush=True)
 
         if torch.cuda.is_available():
@@ -2175,7 +2291,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         final_cycle=int(final_cycle),
         final_steps=final_steps,
         parent_unchanged=bool(result["parent"]["sha256_unchanged"]),
-        diagnostic=bool(diagnostic),
     )
     result["complete"] = bool(status["complete"])
     result["evaluation_endpoint"] = (
@@ -2190,11 +2305,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     if not status["complete"]:
         result["incomplete_reason"] = status["reason"]
 
-    if diagnostic:
-        write_json_atomic(run_dir / "p4m11_diagnostic_result.json", result)
-    else:
-        write_json_atomic(run_dir / "p4m11_result.json", result)
-
+    write_json_atomic(run_dir / "p4m11_result.json", result)
     if paused_reason is not None:
         write_json_atomic(
             run_dir / "PAUSED.json",
@@ -2213,10 +2324,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f"SAFE PAUSE: {paused_reason}", flush=True)
         raise SystemExit(PAUSE_EXIT_CODE)
 
-    print(
-        f"wrote {run_dir / ('p4m11_diagnostic_result.json' if diagnostic else 'p4m11_result.json')}",
-        flush=True,
-    )
+    print(f"wrote {run_dir / 'p4m11_result.json'}", flush=True)
 
 
 if __name__ == "__main__":

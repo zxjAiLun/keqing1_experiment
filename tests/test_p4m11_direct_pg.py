@@ -18,6 +18,7 @@ contract tests: the plan is explicit that a green suite is not evidence that
 
 from __future__ import annotations
 
+import ast
 import json
 import math
 import sys
@@ -1211,6 +1212,8 @@ def test_official_cli_rejects_the_budget_bypass_flags(tmp_path: Path) -> None:
         ["--cycles", "1"],
         ["--seeds-per-cycle", "32"],
         ["--cycles", "64", "--seeds-per-cycle", "32"],
+        ["--diagnostic-cycles", "2"],
+        ["--require-cuda"],
     ):
         with pytest.raises(SystemExit):
             m11.parse_args(["--output-dir", str(tmp_path), *extra])
@@ -1218,7 +1221,12 @@ def test_official_cli_rejects_the_budget_bypass_flags(tmp_path: Path) -> None:
     args = m11.parse_args(["--output-dir", str(tmp_path)])
     assert not hasattr(args, "cycles")
     assert not hasattr(args, "seeds_per_cycle")
-    assert args.diagnostic_cycles is None
+    # The shortened diagnostic mode is gone entirely: it still wrote U1.pth and
+    # U1.done.json into the official run directory, where committed_cycles()
+    # could not tell that U1 apart from a real one.
+    assert not hasattr(args, "diagnostic_cycles")
+    # CUDA is unconditional now, so the opt-in flag no longer exists either.
+    assert not hasattr(args, "require_cuda")
 
 
 def test_budget_geometry_is_frozen_to_the_config() -> None:
@@ -1234,7 +1242,6 @@ def test_budget_geometry_is_frozen_to_the_config() -> None:
         == int(m11.P4M11_CONFIG["max_hanchans"])
     )
     with pytest.raises(m11.P4M11ContractError, match="budget exceeded"):
-        # A diagnostic run is bounded by the same authorised ceiling.
         m11.assert_within_budget(64, int(m11.P4M11_CONFIG["seeds_per_cycle"]))
 
 
@@ -1502,34 +1509,235 @@ def test_checkpoint_records_the_opponent_in_the_contract(cpu_parent: dict) -> No
     assert contract["opponent"] == m11.P4M11_CONFIG["champion"]
 
 
+
+
+# ===========================================================================
+# Round-3 closeout: manifest completeness ordering, marker-last durability,
+# and the fresh-start environment pin
+# ===========================================================================
+def _train_cycle_ast() -> ast.FunctionDef:
+    tree = ast.parse(Path(m11.__file__).read_text(encoding="utf-8"))
+    return next(
+        n for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "train_cycle"
+    )
+
+
+def _main_ast() -> ast.FunctionDef:
+    tree = ast.parse(Path(m11.__file__).read_text(encoding="utf-8"))
+    return next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+
+
+def _lines_of_calls(fn: ast.AST, predicate) -> list[int]:
+    return [
+        node.lineno
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call) and predicate(node)
+    ]
+
+
+def _writes_json_atomic_to(node: ast.Call, name: str) -> bool:
+    return (
+        getattr(node.func, "id", None) == "write_json_atomic"
+        and name in ast.unparse(node)
+        and bool(node.args)
+    )
+
+
+def test_collection_manifest_is_written_only_after_authoritative_logs() -> None:
+    """`complete=true` must not exist before the arena logs have been checked.
+
+    Otherwise an attempt with complete decision records but short arena logs is
+    advertised as reusable, fails the completeness check, and is then reused
+    again on the next start -- so the run fails forever on the same bad attempt
+    instead of collecting a fresh one.
+    """
+    fn = _train_cycle_ast()
+    manifest_writes = _lines_of_calls(
+        fn,
+        lambda n: _writes_json_atomic_to(n, "collection_manifest_path"),
+    )
+    completeness = _lines_of_calls(
+        fn, lambda n: getattr(n.func, "id", None) == "assert_collection_complete"
+    )
+    assert len(manifest_writes) == 1, "the collection manifest must be written once"
+    assert completeness, "train_cycle must still assert collection completeness"
+    assert manifest_writes[0] > completeness[0], (
+        f"the collection manifest is written at line {manifest_writes[0]}, but the "
+        f"authoritative-log completeness check runs at line {completeness[0]}"
+    )
+
+
+def test_train_cycle_does_not_write_the_completion_marker() -> None:
+    """The marker must be the last durable step, so train_cycle cannot write it.
+
+    Otherwise "checkpoint + marker exist, but cycles.jsonl has no U{cycle}" is a
+    reachable state and "completion marker last" only means "after the
+    checkpoint".
+    """
+    fn = _train_cycle_ast()
+    assert _lines_of_calls(
+        fn, lambda n: _writes_json_atomic_to(n, "commit_marker_path")
+    ) == []
+    # ...and main writes it only after the fsynced cycles.jsonl append.
+    main_fn = _main_ast()
+    append_lines = _lines_of_calls(
+        main_fn, lambda n: getattr(n.func, "id", None) == "append_jsonl"
+    )
+    marker_lines = _lines_of_calls(
+        main_fn, lambda n: _writes_json_atomic_to(n, "commit_marker_path")
+    )
+    assert append_lines, "main must append the per-cycle record"
+    assert len(marker_lines) == 1
+    assert max(append_lines) < marker_lines[0], (
+        f"cycles.jsonl is appended at line(s) {append_lines} but the marker is "
+        f"written at line {marker_lines[0]}; the marker must come last"
+    )
+
+
+def test_an_attempt_without_a_manifest_is_never_reused(tmp_path: Path) -> None:
+    """Behavioural counterpart: no manifest means no reuse, so a retry is fresh.
+
+    A truncated-log attempt now has no manifest at all (the manifest is only
+    written once completeness passes), and a doubtful one must survive rather
+    than be written over.
+    """
+    cycle = 1
+    stale = m11.next_attempt_dir(tmp_path, cycle)
+    obs = stale / "obs_fp32.bin"
+    records = stale / "probe_records.jsonl"
+    obs.write_bytes(b"OBS" * 32)
+    records.write_text(json.dumps({"explore": True}) + "\n", encoding="utf-8")
+    obs_sha, records_sha = m11._sha256_file(obs), m11._sha256_file(records)
+    # Note: deliberately no collection_manifest.json here.
+    assert not m11.collection_manifest_path(stale).exists()
+
+    expected = {"weights_sha256": "w", "hanchans": 4}
+    assert m11.find_reusable_attempt(tmp_path, cycle, expected) is None
+
+    fresh = m11.next_attempt_dir(tmp_path, cycle)
+    assert fresh.name == "attempt2"
+    assert m11._sha256_file(obs) == obs_sha
+    assert m11._sha256_file(records) == records_sha
+
+
+def test_committed_cycles_refuses_a_marker_named_for_another_cycle(
+    tmp_path: Path,
+) -> None:
+    """`U2.done.json` must describe cycle 2."""
+    m11.save_checkpoint_atomic(m11.checkpoint_path(tmp_path, 1), {"a": 1})
+    sha = m11._sha256_file(m11.checkpoint_path(tmp_path, 1))
+    m11.write_json_atomic(
+        tmp_path / "U2.done.json",
+        {"completed_cycles": 1, "checkpoint_sha256": sha},
+    )
+    with pytest.raises(m11.P4M11ContractError, match="its filename says U2"):
+        m11.committed_cycles(tmp_path)
+
+
+def test_committed_cycles_refuses_a_gap(tmp_path: Path) -> None:
+    """A missing U1 must not be silently treated as "start at U2"."""
+    for cycle in (2, 3):
+        m11.save_checkpoint_atomic(m11.checkpoint_path(tmp_path, cycle), {"a": cycle})
+        m11.write_json_atomic(
+            m11.commit_marker_path(tmp_path, cycle),
+            {
+                "completed_cycles": cycle,
+                "checkpoint_sha256": m11._sha256_file(
+                    m11.checkpoint_path(tmp_path, cycle)
+                ),
+            },
+        )
+    with pytest.raises(m11.P4M11ContractError, match="not contiguous from U1"):
+        m11.committed_cycles(tmp_path)
+
+    # Filling the gap makes the same directory acceptable again.
+    m11.save_checkpoint_atomic(m11.checkpoint_path(tmp_path, 1), {"a": 1})
+    m11.write_json_atomic(
+        m11.commit_marker_path(tmp_path, 1),
+        {
+            "completed_cycles": 1,
+            "checkpoint_sha256": m11._sha256_file(m11.checkpoint_path(tmp_path, 1)),
+        },
+    )
+    assert sorted(m11.committed_cycles(tmp_path)) == [1, 2, 3]
+
+
+def test_fresh_start_refuses_an_unpinned_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A brand new lineage may not start on a CPU device, a foreign native build
+    or an unpinned interpreter.
+
+    Resume compares the environment saved in the checkpoint with the current one;
+    that cannot catch a U01 that was already wrong, because the fingerprint would
+    simply record the wrong environment and every later resume would agree with
+    it.  So the first cycle pins all three explicitly.
+    """
+    pinned_interpreter = str(m11.P4M11_CONFIG["required_interpreter"])
+    pinned_native = str(m11.P4M11_CONFIG["required_native_sha256"])
+    assert pinned_interpreter.endswith("keqing1/.venv-win/Scripts/python.exe")
+    assert pinned_native == "19bb181eaa70d0ae90417a3bd22433f6ca08d7654602f865ff3bdb102b7d9914"
+
+    # A CPU device is refused on its own, with no --require-cuda opt-in to forget.
+    with pytest.raises(m11.P4M11ContractError, match="not 'cuda'"):
+        m11.assert_pinned_device(torch.device("cpu"))
+
+    # Snapshot the real launch environment BEFORE faking CUDA: probing the device
+    # with a faked availability trips torch's own internal assertions on a
+    # CPU-only box.  What is being tested here is the pinning logic, not the probe.
+    environment = m11._launch_environment()
+
+    # Pretend the GPU is present so the remaining pins are exercised.
+    monkeypatch.setattr(m11.torch.cuda, "is_available", lambda: True)
+
+    # A foreign native build is refused even with a CUDA device.
+    with pytest.raises(m11.P4M11ContractError, match="pinned native binary"):
+        m11.assert_fresh_start_environment(
+            device=torch.device("cuda"),
+            environment={"native_binaries": [
+                {"path": "x.pyd", "sha256": "f" * 64, "bytes": 1}
+            ]},
+        )
+
+    # So is an interpreter that is merely *a* python, not the pinned one.
+    monkeypatch.setattr(m11.sys, "executable", "C:/elsewhere/python.exe")
+    with pytest.raises(m11.P4M11ContractError, match="interpreter is"):
+        m11.assert_fresh_start_environment(
+            device=torch.device("cuda"), environment=environment
+        )
+
+    # With the interpreter restored the wrong native build is still the block,
+    # proving the checks are independent rather than one short-circuiting.
+    monkeypatch.setattr(m11.sys, "executable", pinned_interpreter)
+    with pytest.raises(m11.P4M11ContractError, match="pinned native binary"):
+        m11.assert_fresh_start_environment(
+            device=torch.device("cuda"), environment=environment
+        )
+
+
 def test_completion_requires_u32_and_adam_step_36() -> None:
     endpoint = int(m11.P4M11_CONFIG["cycles"])
     final_step = float(m11.P4M11_CONFIG["expected_final_adam_step"])
     assert (endpoint, final_step) == (32, 36.0)
 
     ok = m11.completion_status(
-        final_cycle=32, final_steps=[36.0], parent_unchanged=True, diagnostic=False
+        final_cycle=32, final_steps=[36.0], parent_unchanged=True
     )
     assert ok["complete"] is True
     assert ok["reason"] is None
 
     # A one-cycle run must never present U01 as the endpoint.
     early = m11.completion_status(
-        final_cycle=1, final_steps=[5.0], parent_unchanged=True, diagnostic=False
+        final_cycle=1, final_steps=[5.0], parent_unchanged=True
     )
     assert early["complete"] is False
     assert "U32" in early["reason"]
     assert "U1 " in early["reason"]
 
     assert not m11.completion_status(
-        final_cycle=32, final_steps=[35.0], parent_unchanged=True, diagnostic=False
+        final_cycle=32, final_steps=[35.0], parent_unchanged=True
     )["complete"]
     assert not m11.completion_status(
-        final_cycle=32, final_steps=[36.0], parent_unchanged=False, diagnostic=False
+        final_cycle=32, final_steps=[36.0], parent_unchanged=False
     )["complete"]
-    # A diagnostic run is never an endpoint, even at U32/step 36.
-    diagnostic = m11.completion_status(
-        final_cycle=32, final_steps=[36.0], parent_unchanged=True, diagnostic=True
-    )
-    assert diagnostic["complete"] is False
-    assert "diagnostic" in diagnostic["reason"]

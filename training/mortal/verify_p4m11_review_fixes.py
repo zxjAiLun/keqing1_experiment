@@ -303,7 +303,8 @@ with tempfile.TemporaryDirectory() as tmp:
 # --------------------------------------------------------------------------
 rejected = []
 for extra in (["--cycles", "64"], ["--seeds-per-cycle", "32"],
-              ["--cycles", "64", "--seeds-per-cycle", "32"], ["--cycles", "1"]):
+              ["--cycles", "64", "--seeds-per-cycle", "32"], ["--cycles", "1"],
+              ["--diagnostic-cycles", "2"], ["--require-cuda"]):
     try:
         m11.parse_args(["--output-dir", "x", *extra])
         rejected.append(f"{extra} ACCEPTED")
@@ -320,28 +321,27 @@ record(
     "4b the collector's seed count is always the frozen config",
     not hasattr(args, "cycles")
     and not hasattr(args, "seeds_per_cycle")
+    and not hasattr(args, "diagnostic_cycles")
+    and not hasattr(args, "require_cuda")
     and int(m11.P4M11_CONFIG["seeds_per_cycle"]) == 64
     and int(m11.P4M11_CONFIG["cycles"]) == 32,
-    f"only --diagnostic-cycles remains; seeds_per_cycle locked to "
+    f"nothing on the command line can shorten a run; seeds_per_cycle locked to "
     f"{m11.P4M11_CONFIG['seeds_per_cycle']} -> "
     f"{32 * 64 * 4} hanchans (the exploit produced {64 * 64 * 4})",
 )
 
 midpoint = m11.completion_status(
-    final_cycle=1, final_steps=[5.0], parent_unchanged=True, diagnostic=False
+    final_cycle=1, final_steps=[5.0], parent_unchanged=True
 )
 endpoint = m11.completion_status(
-    final_cycle=32, final_steps=[36.0], parent_unchanged=True, diagnostic=False
-)
-diag = m11.completion_status(
-    final_cycle=32, final_steps=[36.0], parent_unchanged=True, diagnostic=True
+    final_cycle=32, final_steps=[36.0], parent_unchanged=True
 )
 record(
     "4c a midpoint can never be reported as the endpoint",
-    endpoint["complete"] and not midpoint["complete"] and not diag["complete"],
+    endpoint["complete"] and not midpoint["complete"],
     f"U32/step36 complete={endpoint['complete']}; U01/step5 "
-    f"complete={midpoint['complete']} ({midpoint['reason'][:60]}...); "
-    f"U32 diagnostic complete={diag['complete']}",
+    f"complete={midpoint['complete']} ({midpoint['reason'][:60]}...); the "
+    f"shortened diagnostic mode no longer exists at all",
 )
 
 # Interrupted attempts are charged to the six-hour budget; downtime is not.
