@@ -344,21 +344,138 @@ record(
     f"U32 diagnostic complete={diag['complete']}",
 )
 
-# Interrupted attempts are charged to the six-hour budget.
+# Interrupted attempts are charged to the six-hour budget; downtime is not.
 with tempfile.TemporaryDirectory() as tmp:
     run_dir = Path(tmp)
     m11.write_json_atomic(m11.active_time_path(run_dir), {"active_seconds": 10.0})
-    m11.write_json_atomic(
-        m11.heartbeat_path(run_dir),
-        {"cycle": 1, "active_seconds_at_start": 10.0, "started_unix": time.time() - 300.0},
+    m11.begin_active_cycle(run_dir, 1)
+    payload = json.loads(
+        m11.heartbeat_path(run_dir).read_text(encoding="utf-8")
     )
+    payload["elapsed_seconds"] = 300.0
+    payload["started_unix"] = time.time() - 8 * 3600.0
+    m11.write_json_atomic(m11.heartbeat_path(run_dir), payload)
     charged = m11.accumulated_active_seconds(run_dir)
     record(
-        "4d an interrupted attempt is charged to the budget",
-        charged > 250.0,
+        "4d an interrupted attempt is charged, up to its last heartbeat",
+        charged == 310.0,
         f"a crashed cycle that never reached cycles.jsonl is charged "
-        f"{charged:.0f}s (heartbeat-based, not cycles.jsonl-based)",
+        f"{charged:.0f}s of real work (10s carried + 300s refreshed); the eight "
+        f"hours after the process died are not charged (see 6a)",
     )
+
+# --------------------------------------------------------------------------
+# Defect 5: consecutive-sample counting
+# --------------------------------------------------------------------------
+def _healthy(**over: object) -> dict:
+    snap = {
+        "label": "probe",
+        "target_disk_free_bytes": int(m11.ZERO_DISK_RESERVE_BYTES) + 1,
+        "system_available_bytes": int(m11.RESOURCE_LIMITS["min_available_ram_bytes"]) * 4,
+        "commit_headroom_bytes": int(m11.RESOURCE_LIMITS["min_commit_headroom_bytes"]) * 4,
+        "cuda_device_free_bytes": int(m11.RESOURCE_LIMITS["min_free_dedicated_vram_bytes"]) * 4,
+    }
+    snap.update(over)
+    return snap
+
+
+def _critical(**over: object) -> dict:
+    return _healthy(system_available_bytes=1, **over)
+
+
+with tempfile.TemporaryDirectory() as tmp:
+    exits: list[int] = []
+    wd = m11.ResourceWatchdog(
+        target_dir=Path(tmp), guard_limit=2, require_gpu=False,
+        sample_hook=dict, exiter=exits.append,
+    )
+    wd.observe(_critical())
+    wd.observe(_healthy())
+    wd.observe(_critical())
+    record(
+        "5a critical -> healthy -> critical does not hard-stop",
+        not wd.terminate_requested and exits == [] and wd.critical_guard.consecutive == 1,
+        f"consecutive={wd.critical_guard.consecutive}, hard stops={len(exits)} "
+        "(pre-fix this reported 2 consecutive and called os._exit(42))",
+    )
+
+with tempfile.TemporaryDirectory() as tmp:
+    wd2 = m11.ResourceWatchdog(
+        target_dir=Path(tmp), guard_limit=2, require_gpu=False,
+        sample_hook=dict, exiter=lambda code: None,
+    )
+    for _ in range(5):
+        wd2.observe(_critical(), advance=False)
+    record(
+        "5b phase-boundary snapshots do not advance the counters",
+        not wd2.terminate_requested and wd2.critical_guard.consecutive == 0
+        and len(wd2.samples) == 5,
+        f"5 boundary readings recorded, 0 counted towards the guard "
+        f"(consecutive={wd2.critical_guard.consecutive})",
+    )
+
+# --------------------------------------------------------------------------
+# Defect 6: downtime must not be charged
+# --------------------------------------------------------------------------
+with tempfile.TemporaryDirectory() as tmp:
+    run_dir = Path(tmp)
+    m11.begin_active_cycle(run_dir, 1)
+    beat = m11.heartbeat_path(run_dir)
+    payload = json.loads(beat.read_text(encoding="utf-8"))
+    payload["elapsed_seconds"] = 120.0
+    payload["started_unix"] = time.time() - 8 * 3600.0
+    m11.write_json_atomic(beat, payload)
+    charged = m11.accumulated_active_seconds(run_dir)
+    record(
+        "6a an eight-hour outage is not charged to the six-hour budget",
+        charged == 120.0,
+        f"charged {charged:.0f}s; the pre-fix formula (now - started_unix) "
+        f"reported {8 * 3600}s, i.e. the budget was already exhausted on resume",
+    )
+
+with tempfile.TemporaryDirectory() as tmp:
+    run_dir = Path(tmp)
+    m11.write_json_atomic(m11.active_time_path(run_dir), {"active_seconds": 50.0})
+    m11.begin_active_cycle(run_dir, 1)
+    time.sleep(0.2)
+    m11.end_active_cycle(run_dir)
+    total = m11.accumulated_active_seconds(run_dir)
+    record(
+        "6b a graceful finish still charges the whole cycle",
+        50.15 < total < 51.0 and not m11.heartbeat_path(run_dir).exists(),
+        f"committed {total:.2f}s (50s carried + the real cycle); heartbeat cleared",
+    )
+
+# --------------------------------------------------------------------------
+# Defect 7: the executed recipe must equal the recorded recipe
+# --------------------------------------------------------------------------
+rejections: list[str] = []
+for override in (
+    ["--champion", "somewhere/else.pth"],
+    ["--challenger-label", "other_candidate"],
+    ["--champion-label", "other_opponent"],
+    ["--micro-batch", "256"],
+    ["--grad-clip", "2.0"],
+):
+    args = m11.parse_args(["--output-dir", "x", *override])
+    try:
+        m11.assert_recipe_arguments(args)
+        rejections.append(f"{' '.join(override)} ACCEPTED")
+    except m11.P4M11ContractError:
+        rejections.append(f"{' '.join(override)} refused")
+record(
+    "7a the entry point refuses a recipe deviation",
+    all("refused" in item for item in rejections),
+    "; ".join(rejections),
+)
+
+record(
+    "7b the frozen opponent sha is pinned in the config",
+    m11.P4M11_CONFIG["champion_sha256"]
+    == "0a88ddad649804d085491b5397d895f596b0e55f30632c549ea145bb44786563",
+    "the opponent is now part of the training identity, not just of the collection "
+    "manifest, so swapping it refuses the lineage instead of silently continuing it",
+)
 
 print()
 failed = [name for name, ok, _ in RESULTS if not ok]

@@ -99,6 +99,11 @@ P4M11_CONFIG: dict[str, Any] = {
         "E:/AUbuntuProject/project/keqing1/artifacts/"
         "external_mortal_20240308_best_min.pth"
     ),
+    "champion_sha256": (
+        "0a88ddad649804d085491b5397d895f596b0e55f30632c549ea145bb44786563"
+    ),
+    "challenger_label": "p4m11_candidate",
+    "champion_label": "ext_mortal",
     "architecture": "unchanged (Brain 192x40 + DQN v4, FP32)",
     "objective": "direct_on_policy_policy_gradient",
     "sampling": dict(P4M10_CONFIG["sampling"]),
@@ -510,6 +515,8 @@ def training_contract(*, cycle: int | None, parent: dict[str, Any]) -> dict[str,
         "lineage": str(P4M11_CONFIG["lineage"]),
         "parent": str(parent["parent_path"]),
         "parent_sha256": str(parent["parent_sha256"]),
+        "opponent": str(P4M11_CONFIG["champion"]),
+        "opponent_sha256": str(P4M11_CONFIG["champion_sha256"]),
         "comment": (
             "P4-M11 cycle export; only mortal + current_dqn are consumed by the "
             "native arena. After on-policy PG these tensors are policy logits / "
@@ -675,6 +682,7 @@ def load_committed_checkpoint(
     device: torch.device,
     mortal_root: Path,
     expected_parent_sha256: str | None = None,
+    expected_opponent_sha256: str | None = None,
     expected_recipe: dict[str, Any] | None = None,
     expected_environment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -722,6 +730,25 @@ def load_committed_checkpoint(
         )
 
     contract = state.get("training_contract") or {}
+    # The frozen opponent is part of the resume identity, not merely of the
+    # collection manifest: without this, changing the opponent refuses reuse of
+    # the old rollouts but happily continues the same training lineage.
+    want_opponent_sha = (
+        expected_opponent_sha256 if expected_opponent_sha256 is not None
+        else str(P4M11_CONFIG["champion_sha256"])
+    )
+    recorded_opponent_sha = state.get("opponent_sha256") or contract.get(
+        "opponent_sha256"
+    )
+    if not recorded_opponent_sha:
+        raise P4M11ContractError(
+            f"checkpoint {path.name} does not record its frozen opponent"
+        )
+    if str(recorded_opponent_sha) != str(want_opponent_sha):
+        raise P4M11ContractError(
+            f"checkpoint {path.name} was trained against opponent "
+            f"{recorded_opponent_sha}, expected {want_opponent_sha}"
+        )
     recorded_parent_path = contract.get("parent")
     recorded_parent_sha = contract.get("parent_sha256")
     if not recorded_parent_path or not recorded_parent_sha:
@@ -1096,6 +1123,7 @@ class ResourceWatchdog:
         sample_hook: Callable[[], dict[str, Any]] | None = None,
         exiter: Callable[[int], Any] | None = None,
         on_hard_stop: Callable[[str], Any] | None = None,
+        on_tick: Callable[[], Any] | None = None,
         require_gpu: bool | None = None,
     ) -> None:
         self.target_dir = Path(target_dir)
@@ -1119,26 +1147,45 @@ class ResourceWatchdog:
         self.pause_reason: str | None = None
         self.critical_reason: str | None = None
         self.hard_stop_calls = 0
+        self.tick_errors: list[str] = []
         self._sample_hook = sample_hook or (
             lambda: resource_snapshot(target_dir=self.target_dir, label="inflight")
         )
         self._exiter = exiter or os._exit
         self._on_hard_stop = on_hard_stop
+        # Called once per periodic sample, never at a boundary. The cycle uses it
+        # to refresh its heartbeat so a crash cannot charge the downtime.
+        self._on_tick = on_tick
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
     # -- pure, thread-free logic (directly testable) ----------------------
-    def observe(self, snapshot: dict[str, Any]) -> None:
-        """Fold one sample into the pause/critical state machine."""
+    def observe(self, snapshot: dict[str, Any], *, advance: bool = True) -> None:
+        """Fold one sample into the pause/critical state machine.
+
+        ``advance=True`` is for the **periodic** samples: every one of them,
+        healthy or not, updates both consecutive-sample counters, so a healthy
+        reading really does break a run of pressure.  (Previously only a
+        breaching sample reached the critical counter, so
+        pressure -> healthy -> pressure still tripped the hard stop.)
+
+        ``advance=False`` is for the phase-boundary snapshots: they are recorded
+        and their problems are reported, but they must not push the counters.
+        Counting them would let two readings taken moments apart around a phase
+        edge masquerade as sustained pressure.
+        """
         self.samples.append(snapshot)
         if self.sample_log is not None:
             append_jsonl(self.sample_log, snapshot)
         pause = resource_violations(snapshot, require_gpu=self.require_gpu)
+        critical = critical_violations(snapshot, require_gpu=self.require_gpu)
+        if not advance:
+            return
         if self.pause_guard.observe(pause):
             self.pause_requested = True
             self.pause_reason = self.pause_reason or "; ".join(pause)
-        critical = critical_violations(snapshot, require_gpu=self.require_gpu)
-        if critical and self.critical_guard.observe(critical):
+        # Always fed, so a healthy sample resets the critical run as well.
+        if self.critical_guard.observe(critical):
             self.terminate_requested = True
             self.critical_reason = "; ".join(critical)
             self._hard_stop()
@@ -1161,6 +1208,11 @@ class ResourceWatchdog:
     # -- background sampling ----------------------------------------------
     def _loop(self) -> None:
         while not self._stop.is_set():
+            if self._on_tick is not None:
+                try:
+                    self._on_tick()
+                except Exception as error:  # noqa: BLE001 - bookkeeping must not kill the guard
+                    self.tick_errors.append(repr(error))
             try:
                 snapshot = self._sample_hook()
             except Exception as error:  # noqa: BLE001 - a probe failure is a breach
@@ -1195,10 +1247,16 @@ class ResourceWatchdog:
 def record_sample(
     run_dir: Path, *, label: str, watchdog: ResourceWatchdog | None
 ) -> dict[str, Any]:
-    """Take a labelled sample, persist it, and feed it to the watchdog."""
+    """Take a labelled phase-boundary sample and persist it.
+
+    Boundary snapshots are recorded and reported but deliberately do **not**
+    advance the consecutive-sample counters: two readings taken moments apart
+    around a phase edge are not evidence of sustained pressure.  Only the
+    periodic in-cycle samples count towards a pause or a hard stop.
+    """
     snapshot = resource_snapshot(target_dir=run_dir, label=label)
     if watchdog is not None:
-        watchdog.observe(snapshot)
+        watchdog.observe(snapshot, advance=False)
     else:
         append_jsonl(Path(run_dir) / "resource_samples.jsonl", snapshot)
     return snapshot
@@ -1217,9 +1275,14 @@ def accumulated_active_seconds(run_dir: Path) -> float:
 
     Counting only the cycles that reached ``cycles.jsonl`` would let a loop of
     crashes and restarts spend unlimited wall time while the six-hour budget
-    reported zero.  So the time is committed when a cycle *starts* (folding in
-    the elapsed time of any attempt that died), and the running attempt's clock
-    is folded back in from its heartbeat on every query.
+    reported zero, so a running cycle's time is charged too.
+
+    The running attempt is charged only up to its **last heartbeat**, which the
+    in-cycle watchdog refreshes on every tick.  Charging ``now - started_unix``
+    instead would bill the downtime: crash before shutdown, resume the next
+    morning, and the six-hour budget reports eight hours spent.  A crash
+    therefore forfeits at most one refresh interval of real work, while an
+    overnight wait costs nothing.
     """
     run_dir = Path(run_dir)
     committed = 0.0
@@ -1229,16 +1292,47 @@ def accumulated_active_seconds(run_dir: Path) -> float:
             committed = float(json.loads(path.read_text(encoding="utf-8"))["active_seconds"])
         except (OSError, ValueError, KeyError, TypeError):
             committed = 0.0
-    beat = heartbeat_path(run_dir)
-    if beat.exists():
-        try:
-            payload = json.loads(beat.read_text(encoding="utf-8"))
-            committed = float(payload["active_seconds_at_start"]) + max(
-                0.0, time.time() - float(payload["started_unix"])
-            )
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
+    payload = _read_heartbeat(run_dir)
+    if payload is not None:
+        committed = float(payload.get("active_seconds_at_start", 0.0)) + float(
+            payload.get("elapsed_seconds", 0.0)
+        )
     return committed
+
+
+def _read_heartbeat(run_dir: Path) -> dict[str, Any] | None:
+    beat = heartbeat_path(run_dir)
+    if not beat.exists():
+        return None
+    try:
+        payload = json.loads(beat.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def refresh_active_cycle(run_dir: Path) -> None:
+    """Advance the running cycle's heartbeat.
+
+    Called from the watchdog's periodic tick, so the heartbeat records how much
+    time the cycle has genuinely been running rather than how long ago it
+    started.  ``started_unix`` is left alone; only ``elapsed_seconds`` moves, and
+    it moves monotonically.
+    """
+    run_dir = Path(run_dir)
+    payload = _read_heartbeat(run_dir)
+    if payload is None:
+        return
+    try:
+        started = float(payload["started_unix"])
+    except (KeyError, TypeError, ValueError):
+        return
+    now = time.time()
+    payload["elapsed_seconds"] = max(
+        float(payload.get("elapsed_seconds", 0.0)), max(0.0, now - started)
+    )
+    payload["refreshed_unix"] = now
+    write_json_atomic(heartbeat_path(run_dir), payload)
 
 
 def begin_active_cycle(run_dir: Path, cycle: int) -> float:
@@ -1247,39 +1341,44 @@ def begin_active_cycle(run_dir: Path, cycle: int) -> float:
     Returns the running total at the moment the cycle begins.
     """
     run_dir = Path(run_dir)
-    already = accumulated_active_seconds(run_dir)  # folds in any stale heartbeat
+    already = accumulated_active_seconds(run_dir)  # charges a stale heartbeat
+    now = time.time()
     write_json_atomic(
         active_time_path(run_dir),
         {"schema": "keqing.mortal.p4m11_active_time.v1", "active_seconds": already,
-         "updated_at_unix": time.time()},
+         "updated_at_unix": now},
     )
     write_json_atomic(
         heartbeat_path(run_dir),
         {"schema": "keqing.mortal.p4m11_cycle_heartbeat.v1", "cycle": int(cycle),
-         "active_seconds_at_start": already, "started_unix": time.time()},
+         "active_seconds_at_start": already, "started_unix": now,
+         "elapsed_seconds": 0.0, "refreshed_unix": now},
     )
     return already
 
 
 def end_active_cycle(run_dir: Path) -> None:
-    """Stop timing the running attempt and commit its elapsed time."""
+    """Stop timing the running attempt and commit its elapsed time.
+
+    A graceful finish knows the process stayed alive for the whole cycle, so it
+    charges the full wall time rather than the last heartbeat.
+    """
     run_dir = Path(run_dir)
-    beat = heartbeat_path(run_dir)
-    if not beat.exists():
+    payload = _read_heartbeat(run_dir)
+    if payload is None:
         return
     try:
-        payload = json.loads(beat.read_text(encoding="utf-8"))
         total = float(payload["active_seconds_at_start"]) + max(
             0.0, time.time() - float(payload["started_unix"])
         )
-    except (OSError, ValueError, KeyError, TypeError):
+    except (KeyError, TypeError, ValueError):
         return
     write_json_atomic(
         active_time_path(run_dir),
         {"schema": "keqing.mortal.p4m11_active_time.v1", "active_seconds": total,
          "updated_at_unix": time.time()},
     )
-    beat.unlink(missing_ok=True)
+    heartbeat_path(run_dir).unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1671,6 +1770,7 @@ def train_cycle(
         ),
         "adam_step": float(expected_step_after),
         "recipe": P4M11_CONFIG,
+        "opponent_sha256": str(P4M11_CONFIG["champion_sha256"]),
         "environment": _launch_environment(),
         "rng": rng_state(),
         "written_at_unix": time.time(),
@@ -1704,6 +1804,39 @@ def train_cycle(
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+def assert_recipe_arguments(args: argparse.Namespace) -> None:
+    """The official entry point runs the approved recipe or it runs nothing.
+
+    The collector reads the recipe from the frozen config, so an override that
+    the CLI accepted but the config ignored would leave the executed run and the
+    recipe recorded in every checkpoint disagreeing -- exactly the trap that the
+    removed ``--cycles``/``--seeds-per-cycle`` flags set.  Overrides are still
+    accepted on the command line, but only when they already equal the approved
+    value, so the frozen recipe stays greppable and one authorised change is a
+    single config edit.
+    """
+    problems: list[str] = []
+
+    def compare(label: str, given: Any, approved: Any) -> None:
+        if given != approved:
+            problems.append(f"{label}: given {given!r} != approved {approved!r}")
+
+    compare("--champion", str(Path(args.champion)), str(Path(P4M11_CONFIG["champion"])))
+    compare("--challenger-label", args.challenger_label, P4M11_CONFIG["challenger_label"])
+    compare("--champion-label", args.champion_label, P4M11_CONFIG["champion_label"])
+    compare("--micro-batch", int(args.micro_batch), int(P4M11_CONFIG["update_micro_batch"]))
+    compare(
+        "--grad-clip",
+        float(args.grad_clip),
+        float(P4M11_CONFIG["gradient_clip"]["value"]),
+    )
+    if problems:
+        raise P4M11ContractError(
+            "the entry point refuses to deviate from the approved recipe: "
+            + "; ".join(problems)
+        )
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """The official entry point is deliberately not configurable.
 
@@ -1720,8 +1853,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--parent", type=Path, default=Path(P4M11_CONFIG["parent"]))
     parser.add_argument("--champion", type=Path, default=Path(P4M11_CONFIG["champion"]))
-    parser.add_argument("--challenger-label", default="p4m11_candidate")
-    parser.add_argument("--champion-label", default="ext_mortal")
+    parser.add_argument(
+        "--challenger-label", default=str(P4M11_CONFIG["challenger_label"])
+    )
+    parser.add_argument("--champion-label", default=str(P4M11_CONFIG["champion_label"]))
     parser.add_argument(
         "--micro-batch", type=int, default=int(P4M11_CONFIG["update_micro_batch"])
     )
@@ -1764,6 +1899,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 def main(argv: Sequence[str] | None = None) -> None:
     args = parse_args(argv)
     assert_recipe_matches_p4m10()
+    # The executed recipe and the recipe recorded in every checkpoint must be the
+    # same thing, so deviations are refused rather than silently ignored.
+    assert_recipe_arguments(args)
 
     diagnostic = args.diagnostic_cycles is not None
     planned_cycles = (
@@ -1790,6 +1928,12 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     environment = _launch_environment()
     champion_sha = _sha256_file(champion_path)
+    if champion_sha != str(P4M11_CONFIG["champion_sha256"]):
+        raise P4M11ContractError(
+            f"frozen opponent {champion_path} hashes to {champion_sha}, expected "
+            f"{P4M11_CONFIG['champion_sha256']}; the opponent is part of the "
+            "training identity and cannot be swapped"
+        )
 
     startup_snapshot = resource_snapshot(target_dir=run_dir, label="startup")
     survey = startup_survey(target_dir=run_dir)
@@ -1850,6 +1994,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             device=device,
             mortal_root=mortal_root,
             expected_parent_sha256=str(P4M11_CONFIG["parent_sha256"]),
+            expected_opponent_sha256=champion_sha,
             expected_recipe=P4M11_CONFIG,
             expected_environment=environment,
         )
@@ -1942,7 +2087,13 @@ def main(argv: Sequence[str] | None = None) -> None:
 
         begin_active_cycle(run_dir, cycle)
         cycle_started = time.perf_counter()
-        watchdog = ResourceWatchdog(target_dir=run_dir, sample_log=sample_log)
+        watchdog = ResourceWatchdog(
+            target_dir=run_dir,
+            sample_log=sample_log,
+            # Refreshing the heartbeat on every periodic tick is what keeps a
+            # crash from charging the downtime to the six-hour budget.
+            on_tick=lambda: refresh_active_cycle(run_dir),
+        )
         try:
             with watchdog:
                 record_sample(run_dir, label=f"cycle{cycle}_before", watchdog=watchdog)
