@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import math
 import sys
+import time
 from itertools import pairwise
 from pathlib import Path
 
@@ -235,6 +236,10 @@ def test_resume_reloads_the_last_committed_step_not_the_in_flight_one(
             "training_contract": m11.training_contract(cycle=cycle, parent=parent_ref),
             "optimizer_state": optimizer.state_dict(),
             "cycle": int(cycle),
+            "completed_cycles": int(cycle),
+            "adam_step": float(4 + int(cycle)),
+            "recipe": m11.P4M11_CONFIG,
+            "environment": m11._launch_environment(),
             "rng": m11.rng_state(),
         }
         sha = m11.save_checkpoint_atomic(m11.checkpoint_path(tmp_path, cycle), payload)
@@ -569,34 +574,37 @@ def test_resource_violations_use_the_declared_thresholds() -> None:
     assert any("disk" in problem for problem in problems)
 
 
-def test_resource_violations_ignore_unavailable_probes() -> None:
-    assert m11.resource_violations({"cuda_device_free_bytes": None}) == []
+def test_resource_violations_treat_a_missing_probe_as_a_breach() -> None:
+    """With no reading we cannot assert the host is fine, so it is not a pass."""
+    problems = m11.resource_violations({}, require_gpu=False)
+    assert problems, "an empty snapshot must not read as a healthy host"
+    assert any("unavailable" in problem for problem in problems)
+    # The GPU metric is only required when a GPU is actually in play.
+    assert not any("cuda_device_free_bytes" in problem for problem in problems)
+    assert any(
+        "cuda_device_free_bytes" in problem
+        for problem in m11.resource_violations({}, require_gpu=True)
+    )
 
 
 def test_preflight_requires_the_full_run_disk_reserve() -> None:
     reserve = int(m11.ZERO_DISK_RESERVE_BYTES)
     assert reserve == 284 * 1024**3
-    # The 64 GiB runtime floor is not enough to start a full run.
-    roomy = {"target_disk_free_bytes": reserve + 1}
-    assert m11.preflight_violations(roomy) == []
-    tight = {"target_disk_free_bytes": reserve - 1}
-    assert m11.preflight_violations(tight) == [
-        problem for problem in m11.preflight_violations(tight) if "startup reserve" in problem
-    ]
-    assert m11.preflight_violations(tight)
-    assert m11.preflight_violations(
-        {"target_disk_free_bytes": 100 * 1024**3}
-    ), "below the reserve must be refused even though it is above the 64 GiB floor"
+    healthy = {
+        "target_disk_free_bytes": reserve + 1,
+        "system_available_bytes": int(m11.RESOURCE_LIMITS["min_available_ram_bytes"]) + 1,
+        "commit_headroom_bytes": int(m11.RESOURCE_LIMITS["min_commit_headroom_bytes"]) + 1,
+    }
+    assert m11.preflight_violations(healthy, require_gpu=False) == []
+    tight = {**healthy, "target_disk_free_bytes": 100 * 1024**3}
+    problems = m11.preflight_violations(tight, require_gpu=False)
+    assert any("startup reserve" in problem for problem in problems)
 
 
-def test_preflight_also_reports_the_runtime_floors() -> None:
-    problems = m11.preflight_violations(
-        {
-            "target_disk_free_bytes": int(m11.ZERO_DISK_RESERVE_BYTES) + 1,
-            "commit_headroom_bytes": 1,
-        }
-    )
-    assert any("commit headroom" in problem for problem in problems)
+def test_preflight_rejects_an_empty_snapshot() -> None:
+    """The reviewer's check: `preflight_violations({})` must not be empty."""
+    assert m11.preflight_violations({}, require_gpu=False) != []
+    assert m11.preflight_violations({}, require_gpu=True) != []
 
 
 def test_startup_survey_records_the_environment(tmp_path: Path) -> None:
@@ -624,15 +632,33 @@ def test_resource_snapshot_reports_disk_and_ram(tmp_path: Path) -> None:
     assert snapshot["target_disk_free_bytes"] > 0
 
 
-def test_accumulated_active_seconds_sums_the_jsonl(tmp_path: Path) -> None:
+def test_accumulated_active_seconds_counts_and_commits_attempt_time(
+    tmp_path: Path,
+) -> None:
     assert m11.accumulated_active_seconds(tmp_path) == 0.0
-    for seconds in (10.0, 5.5):
-        m11.append_jsonl(tmp_path / "cycles.jsonl", {"wall_seconds": seconds})
-    assert m11.accumulated_active_seconds(tmp_path) == pytest.approx(15.5)
-    # Garbage lines must not break the budget accounting.
-    with (tmp_path / "cycles.jsonl").open("a", encoding="utf-8") as handle:
-        handle.write("not json\n")
-    assert m11.accumulated_active_seconds(tmp_path) == pytest.approx(15.5)
+
+    # A previously committed total is carried forward.
+    m11.write_json_atomic(m11.active_time_path(tmp_path), {"active_seconds": 10.0})
+    assert m11.accumulated_active_seconds(tmp_path) == pytest.approx(10.0)
+
+    # An attempt that died is charged from its heartbeat even though it never
+    # reached cycles.jsonl.
+    m11.write_json_atomic(
+        m11.heartbeat_path(tmp_path),
+        {"cycle": 3, "active_seconds_at_start": 10.0, "started_unix": time.time() - 120.0},
+    )
+    assert m11.accumulated_active_seconds(tmp_path) == pytest.approx(130.0, abs=5.0)
+
+    # Starting a new cycle folds the dead attempt's time in permanently.
+    base = m11.begin_active_cycle(tmp_path, 4)
+    assert base == pytest.approx(130.0, abs=5.0)
+    m11.write_json_atomic(m11.active_time_path(tmp_path), {"active_seconds": base})
+    assert m11.accumulated_active_seconds(tmp_path) == pytest.approx(base, abs=5.0)
+
+    # A graceful finish commits the wall time and clears the heartbeat.
+    m11.end_active_cycle(tmp_path)
+    assert not m11.heartbeat_path(tmp_path).exists()
+    assert m11.accumulated_active_seconds(tmp_path) == pytest.approx(base, abs=5.0)
 
 
 def test_atomic_writes_leave_no_temporary_file(tmp_path: Path) -> None:
@@ -652,3 +678,563 @@ def test_parent_file_is_never_modified_by_a_restore(cpu_parent: dict) -> None:
     m11.restore_parent(C4, device=torch.device("cpu"), mortal_root=MORTAL_ROOT)
     assert m11._sha256_file(C4) == before
     assert before == m11.P4M11_CONFIG["parent_sha256"]
+
+
+# ===========================================================================
+# Defect 1: resource protection must run WHILE a cycle is running
+# ===========================================================================
+def _healthy_snapshot(**overrides: object) -> dict:
+    snapshot = {
+        "label": "healthy",
+        "target_disk_free_bytes": int(m11.ZERO_DISK_RESERVE_BYTES) + 1,
+        "system_available_bytes": int(m11.RESOURCE_LIMITS["min_available_ram_bytes"]) * 4,
+        "commit_headroom_bytes": int(m11.RESOURCE_LIMITS["min_commit_headroom_bytes"]) * 4,
+        "cuda_device_free_bytes": (
+            int(m11.RESOURCE_LIMITS["min_free_dedicated_vram_bytes"]) * 4
+        ),
+    }
+    snapshot.update(overrides)
+    return snapshot
+
+
+def _pause_only_snapshot(**overrides: object) -> dict:
+    """Below a safe-pause floor but above the hard-stop floor."""
+    ram = (
+        int(m11.RESOURCE_LIMITS["min_available_ram_bytes"])
+        + int(m11.CRITICAL_LIMITS["min_available_ram_bytes"])
+    ) // 2
+    assert int(m11.CRITICAL_LIMITS["min_available_ram_bytes"]) < ram < int(
+        m11.RESOURCE_LIMITS["min_available_ram_bytes"]
+    )
+    return _healthy_snapshot(label="pause-only", system_available_bytes=ram, **overrides)
+
+
+def _critical_snapshot(**overrides: object) -> dict:
+    return _healthy_snapshot(
+        label="critical",
+        system_available_bytes=int(m11.CRITICAL_LIMITS["min_available_ram_bytes"]) // 2,
+        **overrides,
+    )
+
+
+def test_watchdog_needs_sustained_pressure_before_pausing() -> None:
+    watchdog = m11.ResourceWatchdog(
+        target_dir=Path("."), guard_limit=2, require_gpu=False,
+        sample_hook=lambda: _healthy_snapshot(),
+    )
+    watchdog.observe(_healthy_snapshot())
+    assert watchdog.pause_requested is False
+    watchdog.check()  # no-op while healthy
+
+    watchdog.observe(_pause_only_snapshot())
+    assert watchdog.pause_requested is False, "one sample must not trip the guard"
+    watchdog.observe(_pause_only_snapshot())
+    assert watchdog.pause_requested is True
+    with pytest.raises(m11.P4M11ResourceStop) as caught:
+        watchdog.check()
+    assert caught.value.critical is False
+    assert "safe-pause" in caught.value.reason
+
+    # A healthy sample resets the run of breaches.
+    reset = m11.ResourceWatchdog(target_dir=Path("."), guard_limit=2, require_gpu=False)
+    reset.observe(_pause_only_snapshot())
+    reset.observe(_healthy_snapshot())
+    reset.observe(_pause_only_snapshot())
+    assert reset.pause_requested is False
+
+
+def test_watchdog_hard_stops_on_critical_pressure() -> None:
+    exits: list[int] = []
+    reasons: list[str] = []
+    watchdog = m11.ResourceWatchdog(
+        target_dir=Path("."), guard_limit=2, require_gpu=False,
+        sample_hook=lambda: _critical_snapshot(),
+        exiter=exits.append,
+        on_hard_stop=reasons.append,
+    )
+    watchdog.observe(_critical_snapshot())
+    assert exits == [], "a single critical sample must not kill the process"
+    watchdog.observe(_critical_snapshot())
+    assert watchdog.terminate_requested is True
+    assert exits == [m11.PAUSE_EXIT_CODE]
+    assert watchdog.hard_stop_calls == 1
+    assert reasons and "critical" in reasons[0]
+    with pytest.raises(m11.P4M11ResourceStop) as caught:
+        watchdog.check()
+    assert caught.value.critical is True
+
+
+def test_watchdog_treats_missing_metrics_as_pressure() -> None:
+    """A dead probe cannot be read as a healthy host.
+
+    It escalates to a safe pause, never to a hard stop: an unreadable probe is
+    not evidence that the machine is about to fail.
+    """
+
+    def blank() -> dict:
+        return {}
+
+    watchdog = m11.ResourceWatchdog(
+        target_dir=Path("."), guard_limit=2, require_gpu=False, sample_hook=blank,
+    )
+    watchdog.observe({})
+    watchdog.observe({})
+    assert watchdog.pause_requested is True
+    assert watchdog.terminate_requested is False
+    assert m11.critical_violations({}, require_gpu=False) == []
+    with pytest.raises(m11.P4M11ResourceStop):
+        watchdog.check()
+
+
+def test_watchdog_samples_in_flight_and_persists_them(tmp_path: Path) -> None:
+    """The guard must be evaluated while the cycle runs, not only around it."""
+    log = tmp_path / "resource_samples.jsonl"
+    ticks: list[int] = []
+
+    def hook() -> dict:
+        ticks.append(1)
+        return _healthy_snapshot(label="inflight")
+
+    watchdog = m11.ResourceWatchdog(
+        target_dir=tmp_path, interval=0.02, guard_limit=2,
+        sample_hook=hook, sample_log=log, require_gpu=False,
+    )
+    with watchdog:
+        time.sleep(0.25)
+    # The background thread sampled repeatedly, well beyond the two samples that
+    # the pre/post-cycle snapshots alone would have produced.
+    assert len(ticks) >= 3
+    assert len(watchdog.samples) >= 3
+    assert log.exists()
+    lines = [line for line in log.read_text(encoding="utf-8").splitlines() if line]
+    assert len(lines) >= 3
+    assert json.loads(lines[0])["label"] == "inflight"
+    # stop() must join the thread rather than leaving it behind.
+    assert watchdog._thread is None
+
+
+def test_watchdog_survives_a_failing_probe_as_pressure(tmp_path: Path) -> None:
+    def hook() -> dict:
+        raise OSError("probe unavailable")
+
+    watchdog = m11.ResourceWatchdog(
+        target_dir=tmp_path, interval=0.02, guard_limit=2,
+        sample_hook=hook, exiter=lambda code: None, require_gpu=False,
+    )
+    with watchdog:
+        time.sleep(0.2)
+    assert watchdog.pause_requested is True
+    # A dead probe pauses the run; it never kills it outright.
+    assert watchdog.hard_stop_calls == 0
+
+
+# ===========================================================================
+# Defect 2: a resume must verify the identity it saves
+# ===========================================================================
+def _stepped_optimizer(cpu_parent: dict, total_steps: int):
+    """A fresh optimizer advanced to an absolute Adam step.
+
+    Deliberately not derived from the module-scoped optimizer, whose step other
+    tests advance; the identity check compares the step number, so the fixture
+    must be independent of test ordering.
+    """
+    parameters = list(cpu_parent["brain"].parameters()) + list(cpu_parent["dqn"].parameters())
+    optimizer = m11.build_optimizer(parameters)
+    for _ in range(int(total_steps)):
+        for parameter in parameters:
+            parameter.grad = torch.zeros_like(parameter)
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+    return optimizer
+
+
+def _write_identity_checkpoint(
+    cpu_parent: dict,
+    run_dir: Path,
+    cycle: int,
+    *,
+    recipe: object = "default",
+    environment: object = "default",
+    parent_sha256: str | None = None,
+    parent_path: str | None = None,
+    recorded_cycle: int | None = None,
+    completed_cycles: int | None = None,
+    adam_step: float | None = None,
+    optimizer: object = None,
+) -> Path:
+    """Write a self-consistent committed checkpoint at ``cycle``.
+
+    ``recorded_cycle`` forges what the payload *claims*, which is what a resume
+    must catch when it disagrees with the file it was asked to load.
+    """
+    payload_cycle = int(cycle if recorded_cycle is None else recorded_cycle)
+    parent_ref = {
+        "version": int(cpu_parent["version"]),
+        "conv_channels": int(cpu_parent["conv_channels"]),
+        "num_blocks": int(cpu_parent["num_blocks"]),
+        "parent_path": parent_path or cpu_parent["parent_path"],
+        "parent_sha256": parent_sha256 or cpu_parent["parent_sha256"],
+    }
+    if optimizer is None:
+        optimizer = _stepped_optimizer(cpu_parent, 4 + payload_cycle)
+    payload = {
+        "mortal": cpu_parent["brain"].state_dict(),
+        "current_dqn": cpu_parent["dqn"].state_dict(),
+        "training_contract": m11.training_contract(cycle=cycle, parent=parent_ref),
+        "optimizer_state": optimizer.state_dict(),
+        "cycle": payload_cycle,
+        "completed_cycles": int(
+            payload_cycle if completed_cycles is None else completed_cycles
+        ),
+        "adam_step": float(
+            4 + payload_cycle if adam_step is None else adam_step
+        ),
+        "recipe": m11.P4M11_CONFIG if recipe == "default" else recipe,
+        "environment": (
+            m11._launch_environment() if environment == "default" else environment
+        ),
+        "rng": m11.rng_state(),
+    }
+    sha = m11.save_checkpoint_atomic(m11.checkpoint_path(run_dir, cycle), payload)
+    m11.write_json_atomic(
+        m11.commit_marker_path(run_dir, cycle),
+        {"completed_cycles": int(cycle), "checkpoint_sha256": sha},
+    )
+    return m11.checkpoint_path(run_dir, cycle)
+
+
+def test_load_committed_checkpoint_accepts_a_matching_identity(
+    tmp_path: Path, cpu_parent: dict
+) -> None:
+    _write_identity_checkpoint(cpu_parent, tmp_path, 1)
+    restored = m11.load_committed_checkpoint(
+        tmp_path, 1, device=torch.device("cpu"), mortal_root=MORTAL_ROOT
+    )
+    assert m11.optimizer_steps(restored["optimizer"]) == [5.0]
+    assert restored["parent_sha256"] == cpu_parent["parent_sha256"]
+
+
+def test_load_committed_checkpoint_refuses_a_foreign_recipe(
+    tmp_path: Path, cpu_parent: dict
+) -> None:
+    foreign = dict(m11.P4M11_CONFIG)
+    foreign["cycles"] = 12
+    _write_identity_checkpoint(cpu_parent, tmp_path, 1, recipe=foreign)
+    with pytest.raises(m11.P4M11ContractError, match="different frozen recipe"):
+        m11.load_committed_checkpoint(
+            tmp_path, 1, device=torch.device("cpu"), mortal_root=MORTAL_ROOT
+        )
+
+
+def test_load_committed_checkpoint_refuses_a_foreign_environment(
+    tmp_path: Path, cpu_parent: dict
+) -> None:
+    foreign = dict(m11._launch_environment())
+    foreign["native_binaries"] = [
+        {"path": "elsewhere/riichi.pyd", "bytes": 1, "sha256": "f" * 64}
+    ]
+    _write_identity_checkpoint(cpu_parent, tmp_path, 1, environment=foreign)
+    with pytest.raises(m11.P4M11ContractError, match="different environment"):
+        m11.load_committed_checkpoint(
+            tmp_path, 1, device=torch.device("cpu"), mortal_root=MORTAL_ROOT
+        )
+
+
+def test_load_committed_checkpoint_refuses_a_missing_environment(
+    tmp_path: Path, cpu_parent: dict
+) -> None:
+    _write_identity_checkpoint(cpu_parent, tmp_path, 1, environment={})
+    with pytest.raises(m11.P4M11ContractError, match="different environment"):
+        m11.load_committed_checkpoint(
+            tmp_path, 1, device=torch.device("cpu"), mortal_root=MORTAL_ROOT
+        )
+
+
+def test_load_committed_checkpoint_refuses_a_foreign_parent(
+    tmp_path: Path, cpu_parent: dict
+) -> None:
+    _write_identity_checkpoint(cpu_parent, tmp_path, 1, parent_sha256="a" * 64)
+    with pytest.raises(m11.P4M11ContractError, match="lineage parent"):
+        m11.load_committed_checkpoint(
+            tmp_path, 1, device=torch.device("cpu"), mortal_root=MORTAL_ROOT
+        )
+
+
+def test_load_committed_checkpoint_refuses_the_wrong_cycle(
+    tmp_path: Path, cpu_parent: dict
+) -> None:
+    """The reviewer's `cycle=999` case: it must not load as if it were cycle 1."""
+    _write_identity_checkpoint(
+        cpu_parent, tmp_path, 1, recorded_cycle=999, completed_cycles=999
+    )
+    with pytest.raises(m11.P4M11ContractError, match="records cycle 999"):
+        m11.load_committed_checkpoint(
+            tmp_path, 1, device=torch.device("cpu"), mortal_root=MORTAL_ROOT
+        )
+
+
+def test_load_committed_checkpoint_refuses_mismatched_completed_cycles(
+    tmp_path: Path, cpu_parent: dict
+) -> None:
+    _write_identity_checkpoint(cpu_parent, tmp_path, 1, completed_cycles=0)
+    with pytest.raises(m11.P4M11ContractError, match="records completed_cycles 0"):
+        m11.load_committed_checkpoint(
+            tmp_path, 1, device=torch.device("cpu"), mortal_root=MORTAL_ROOT
+        )
+
+
+def test_load_committed_checkpoint_refuses_a_changed_native_binary(
+    tmp_path: Path, cpu_parent: dict
+) -> None:
+    """Forge the field the fingerprint actually reads: ``native_binaries``.
+
+    Forging a top-level ``native_sha256`` key would prove nothing, because the
+    fingerprint only ever reads ``native_binaries``; this is the directory the
+    checkpoint really stores, so this is the comparison that must bite.
+    """
+    environment = dict(m11._launch_environment())
+    environment["native_binaries"] = [
+        {"path": "elsewhere/riichi.pyd", "bytes": 1, "sha256": "f" * 64}
+    ]
+    _write_identity_checkpoint(cpu_parent, tmp_path, 1, environment=environment)
+    with pytest.raises(m11.P4M11ContractError, match="different environment"):
+        m11.load_committed_checkpoint(
+            tmp_path, 1, device=torch.device("cpu"), mortal_root=MORTAL_ROOT
+        )
+
+
+def test_environment_fingerprint_reads_native_binaries_only() -> None:
+    """Guard against a vacuous environment comparison."""
+    environment = m11._launch_environment()
+    fingerprint = m11.environment_fingerprint(environment)
+    assert fingerprint["native_sha256"] == sorted(
+        entry["sha256"] for entry in environment["native_binaries"]
+    )
+    # A forged top-level key is ignored, which is why the test above forges
+    # native_binaries and not this one.
+    decoy = dict(environment)
+    decoy["native_sha256"] = ["0" * 64]
+    assert m11.environment_fingerprint(decoy) == fingerprint
+
+
+def test_load_committed_checkpoint_refuses_a_wrong_adam_step(
+    tmp_path: Path, cpu_parent: dict
+) -> None:
+    # Claims cycle 1 (so step 5 is expected) but carries an un-advanced optimizer.
+    _write_identity_checkpoint(
+        cpu_parent, tmp_path, 1, optimizer=_stepped_optimizer(cpu_parent, 4)
+    )
+    with pytest.raises(m11.P4M11ContractError, match="should sit at Adam step"):
+        m11.load_committed_checkpoint(
+            tmp_path, 1, device=torch.device("cpu"), mortal_root=MORTAL_ROOT
+        )
+
+
+def test_environment_problems_detects_a_changed_native_binary() -> None:
+    recorded = m11._launch_environment()
+    current = m11.environment_fingerprint(recorded)
+    assert m11.environment_problems(recorded, current) == []
+
+    changed = dict(current)
+    changed["native_sha256"] = ["0" * 64]
+    assert any("native binary set changed" in p for p in m11.environment_problems(recorded, changed))
+    assert m11.environment_problems(None, current)
+
+
+def test_reuse_requires_the_champion_and_the_full_sampling_config() -> None:
+    base = {
+        "weights_sha256": "w",
+        "champion_sha256": "c",
+        "sampling": {"boltzmann_temp": 1.0},
+        "hanchans": 256,
+    }
+    manifest = {**base, "complete": True}
+    assert m11.collection_manifest_problems(manifest, base) == []
+    # A different opponent invalidates the collection even though the weights match.
+    other = {**base, "champion_sha256": "z"}
+    assert m11.collection_manifest_problems(manifest, other)
+    # So does a changed sampling configuration.
+    resampled = {**base, "sampling": {"boltzmann_temp": 2.0}}
+    assert m11.collection_manifest_problems(manifest, resampled)
+
+
+# ===========================================================================
+# Defect 3: a failed collection must survive, never be overwritten
+# ===========================================================================
+def test_every_identity_artefact_is_written_atomically(tmp_path: Path) -> None:
+    """No file another attempt or a resume trusts may be truncated in place."""
+    source = Path(m11.__file__).read_text(encoding="utf-8")
+    # The only bare torch.save lives inside the atomic helper itself.
+    assert source.count("torch.save(") == 1
+    assert "_save_torch_atomic" in source.rsplit("def _save_torch_atomic", 1)[-1]
+
+    target = tmp_path / "nested" / "weights.pth"
+    sha = m11._save_torch_atomic(target, {"a": torch.ones(3)})
+    assert target.exists()
+    assert m11._sha256_file(target) == sha
+    assert not (tmp_path / "nested" / "weights.pth.tmp").exists()
+
+
+def test_next_attempt_dir_never_reuses_a_directory(tmp_path: Path) -> None:
+    first = m11.next_attempt_dir(tmp_path, 1)
+    assert first.name == "attempt1"
+    second = m11.next_attempt_dir(tmp_path, 1)
+    assert second.name == "attempt2"
+    assert first != second
+    assert [p.name for p in m11.cycle_attempt_dirs(tmp_path, 1)] == ["attempt1", "attempt2"]
+
+
+def test_recollection_preserves_the_previous_attempt(tmp_path: Path) -> None:
+    """A doubtful collection must survive a re-collection byte for byte."""
+    cycle = 2
+    stale = m11.next_attempt_dir(tmp_path, cycle)
+    obs = stale / "obs_fp32.bin"
+    records = stale / "probe_records.jsonl"
+    obs.write_bytes(b"ORIGINAL-OBSERVATIONS" * 8)
+    records.write_text('{"explore": true}\n', encoding="utf-8")
+    obs_before = m11._sha256_file(obs)
+    records_before = m11._sha256_file(records)
+    # The manifest does not match (different weights), so it cannot be reused.
+    m11.write_json_atomic(
+        m11.collection_manifest_path(stale),
+        {"weights_sha256": "stale", "complete": True},
+    )
+
+    expected = {"weights_sha256": "fresh", "hanchans": 256}
+    assert m11.find_reusable_attempt(tmp_path, cycle, expected) is None
+
+    fresh = m11.next_attempt_dir(tmp_path, cycle)
+    assert fresh != stale
+    assert fresh.name == "attempt2"
+    # The old attempt is untouched: the frozen collector was never pointed at it.
+    assert m11._sha256_file(obs) == obs_before
+    assert m11._sha256_file(records) == records_before
+
+
+def test_find_reusable_attempt_prefers_the_newest_valid_one(tmp_path: Path) -> None:
+    cycle = 1
+    expected = {"weights_sha256": "w", "hanchans": 4}
+    for payload, name in ((b"old", "attempt1"), (b"new", "attempt2")):
+        attempt = tmp_path / f"cycle{cycle}" / name
+        attempt.mkdir(parents=True)
+        (attempt / "obs_fp32.bin").write_bytes(payload)
+        (attempt / "probe_records.jsonl").write_text(
+            json.dumps({"explore": True}) + "\n", encoding="utf-8"
+        )
+        m11.write_json_atomic(
+            m11.collection_manifest_path(attempt),
+            {
+                **expected,
+                "complete": True,
+                "decision_records": 1,
+                "records_sha256": m11._sha256_file(attempt / "probe_records.jsonl"),
+                "obs_bytes": (attempt / "obs_fp32.bin").stat().st_size,
+            },
+        )
+    found = m11.find_reusable_attempt(tmp_path, cycle, expected)
+    assert found is not None
+    attempt, records = found
+    assert attempt.name == "attempt2"
+    assert records == [{"explore": True}]
+
+
+def test_committed_cycles_refuses_a_corrupt_marker(tmp_path: Path) -> None:
+    m11.save_checkpoint_atomic(m11.checkpoint_path(tmp_path, 1), {"a": 1})
+    sha = m11._sha256_file(m11.checkpoint_path(tmp_path, 1))
+    m11.write_json_atomic(
+        m11.commit_marker_path(tmp_path, 1),
+        {"completed_cycles": 1, "checkpoint_sha256": sha},
+    )
+    assert sorted(m11.committed_cycles(tmp_path)) == [1]
+
+    # Corruption must be reported, not silently skipped so the cycle is redone
+    # on top of the evidence it refers to.
+    (tmp_path / "U1.done.json").write_text("{not json", encoding="utf-8")
+    with pytest.raises(m11.P4M11ContractError, match="unreadable"):
+        m11.committed_cycles(tmp_path)
+
+    m11.write_json_atomic(
+        m11.commit_marker_path(tmp_path, 1),
+        {"checkpoint_sha256": sha},
+    )
+    with pytest.raises(m11.P4M11ContractError, match="completed_cycles"):
+        m11.committed_cycles(tmp_path)
+
+
+def test_committed_cycles_refuses_a_missing_checkpoint(tmp_path: Path) -> None:
+    m11.write_json_atomic(
+        m11.commit_marker_path(tmp_path, 1),
+        {"completed_cycles": 1, "checkpoint_sha256": "0" * 64},
+    )
+    with pytest.raises(m11.P4M11ContractError, match="missing"):
+        m11.committed_cycles(tmp_path)
+
+
+# ===========================================================================
+# Defect 4: the official entry point cannot bypass the budget
+# ===========================================================================
+def test_official_cli_rejects_the_budget_bypass_flags(tmp_path: Path) -> None:
+    """`--cycles 64 --seeds-per-cycle 32` used to pass the budget check."""
+    for extra in (
+        ["--cycles", "64"],
+        ["--cycles", "1"],
+        ["--seeds-per-cycle", "32"],
+        ["--cycles", "64", "--seeds-per-cycle", "32"],
+    ):
+        with pytest.raises(SystemExit):
+            m11.parse_args(["--output-dir", str(tmp_path), *extra])
+
+    args = m11.parse_args(["--output-dir", str(tmp_path)])
+    assert not hasattr(args, "cycles")
+    assert not hasattr(args, "seeds_per_cycle")
+    assert args.diagnostic_cycles is None
+
+
+def test_budget_geometry_is_frozen_to_the_config() -> None:
+    assert int(m11.P4M11_CONFIG["cycles"]) == 32
+    assert int(m11.P4M11_CONFIG["seeds_per_cycle"]) == 64
+    assert int(m11.P4M11_CONFIG["splits_per_seed"]) == 4
+    assert int(m11.P4M11_CONFIG["max_hanchans"]) == 8192
+    # The honest total is 32*64*4 = 8192; the old exploit produced 16,384.
+    assert (
+        int(m11.P4M11_CONFIG["cycles"])
+        * int(m11.P4M11_CONFIG["seeds_per_cycle"])
+        * int(m11.P4M11_CONFIG["splits_per_seed"])
+        == int(m11.P4M11_CONFIG["max_hanchans"])
+    )
+    with pytest.raises(m11.P4M11ContractError, match="budget exceeded"):
+        # A diagnostic run is bounded by the same authorised ceiling.
+        m11.assert_within_budget(64, int(m11.P4M11_CONFIG["seeds_per_cycle"]))
+
+
+def test_completion_requires_u32_and_adam_step_36() -> None:
+    endpoint = int(m11.P4M11_CONFIG["cycles"])
+    final_step = float(m11.P4M11_CONFIG["expected_final_adam_step"])
+    assert (endpoint, final_step) == (32, 36.0)
+
+    ok = m11.completion_status(
+        final_cycle=32, final_steps=[36.0], parent_unchanged=True, diagnostic=False
+    )
+    assert ok["complete"] is True
+    assert ok["reason"] is None
+
+    # A one-cycle run must never present U01 as the endpoint.
+    early = m11.completion_status(
+        final_cycle=1, final_steps=[5.0], parent_unchanged=True, diagnostic=False
+    )
+    assert early["complete"] is False
+    assert "U32" in early["reason"]
+    assert "U1 " in early["reason"]
+
+    assert not m11.completion_status(
+        final_cycle=32, final_steps=[35.0], parent_unchanged=True, diagnostic=False
+    )["complete"]
+    assert not m11.completion_status(
+        final_cycle=32, final_steps=[36.0], parent_unchanged=False, diagnostic=False
+    )["complete"]
+    # A diagnostic run is never an endpoint, even at U32/step 36.
+    diagnostic = m11.completion_status(
+        final_cycle=32, final_steps=[36.0], parent_unchanged=True, diagnostic=True
+    )
+    assert diagnostic["complete"] is False
+    assert "diagnostic" in diagnostic["reason"]
