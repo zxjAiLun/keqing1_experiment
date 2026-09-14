@@ -12,9 +12,9 @@
     "operational_objective": "behavior_action_mc",
     "operational_reward": "final_rank_mc",
     "legacy_continuation_optimizer": "preserved_adam_70k_legacy_continuation",
-    "current_stage": "P4 学生主线（Mortal-native 学生）：P4-M1 现成语料 external 重标注缓存已建立并关闭（18,000 半庄 / 11,487,044 行 / agreement 94.72%）；P4-M2 硬标签 192×40 学生训练 50k 完成（holdout agreement 0.9047），1v3 双向显示与 K0 无明确强弱差异、弱于 external 约 9–10 pt/半庄；P4-M3 T=1 纯 KL 软目标蒸馏 5k 监督侧改善明显但实战未获 support（参数线关闭）；P4-M4/P4-M5 诊断确认错误集中在教师 top-2 gap 小的状态，且在线（学生自走出局面）一致率与离线基本一致——状态分布偏移支不成立。P4-M6 容量候选已按授权执行完成：资源探针 microbatch128 可运行、microbatch256 被拒；fresh 256×54 纯 hard CE 从 0 训练到 20k optimizer updates（累计 10,228,528 行），holdout agreement 2k 0.8149 → 10k 0.8653 → 14k 0.8810 → 20k 0.8920。与 192×40 同阶段对照：20k 处 0.8920 vs 0.8917（+0.03pp），十个同阶段读点差值在 -0.51pp..+0.70pp 间震荡、无容量优势迹象；随后执行 P4-M7 eval-only strength screen：256×54@20k 与 external 双向各 256 半庄，复用 seed 710000–710063；相对 192×40@50k 的 paired delta，候选单挑方向 -4.92 pt CI95 [-17.23,+7.21]，镜像方向 external 单挑变化 +10.02 pt CI95 [-1.41,+21.62]（均跨0，且镜像点估计反向），故 capacity strength signal not supported（见 P4-M7 环境可比性限制：该评测使用与 2026-09-10 基线不同的解释器与原生 libriichi 二进制，严格跨运行比较未获确认；数值本身仍按各自日志自洽有效）。P4-M6/P4-M7 容量路线仍关闭，不续训、不追加样本；关闭依据是轮内同阶段 holdout 对照与资源代价，不依赖跨运行可比性。另需纠正一处推论：“容量筛查未获支持，所以下一步必须换目标函数”不成立：本轮并未观测到“已高度复刻教师却仍打不过”的证据，大模型只是尚未拟合得比成熟小模型更好。随后按负责人授权执行了 P4-M8 基线评测入口复现检查（单方向 student50k vs 3×external，seed 710000–710007、seed_key 8192、batch-seeds 8，共 32 半庄；使用原批准 venv 解释器与 V1 原生构建 19bb181e…，未做路径遮蔽或占位注入）：与历史基线首批逐事件比较 32/32 文件、33,362 条记录、游戏事件字段 0 处不一致，q_values 共 162,572 个值最大绝对差 0.0、argmax 0 处不一致，唯一差异是被排除的 eval_time_ns。裁决 REPRODUCED，即该环境能完整复现该批历史基线，评测入口已恢复；但这不追认 V3 环境下 P4-M7 与 V1 基线的可比性，也不构成强度样本（其 metrics 不得用于强弱结论）。更换训练目标需要正向理由（新目标提供现有监督之外的什么信息、为何可学、为何应影响强度），属负责人决策，不由本轮自动推出。K1 仍未产生；本线尚无 promotion gate。 另按负责人授权执行了 P4-M9（on-policy 直接策略优化前置：契约 + 资源探针，只验证不训练）：采样分布固定为 pi(a|s)=softmax(q_legal/T)（epsilon=1、T=1、top_p=1、FP32、无 latent），3 次独立采集各 32 半庄共 15,249 个策略决策。对齐完整性 PASS，但契约未完全通过：5 个决策（0.033%）采样动作未被执行，全部是合法 claim 被他人更高优先级 claim 抢先（和了 > 碰/杠 > 吃），非引擎改写；引擎改写模型动作 0 次、235 次采样 agari 全部兑现（含 3 次双响）；另有 1,167 个决策（7.65%）因 quick-eval 强制弃和从未经过模型。agari guard 在保留样本中 0 次命中，但源码机制（mortal.rs:384，生产加载器 enable_rule_based_agari_guard=True）确定存在，且在未保留的一次采集中有 1 次身份匹配签名，故按「可能发生」处理，不关闭保护、不设计修复。log-prob 可重算（同批形状 max 4.81e-07、q 逐位相同；固定分块 max 1.08e-03）；梯度路径正确（409/409 有限非零梯度、BN running stats 未变、parent sha256 不变、eval() 与 train()+freeze_bn(True) 复现采样 log-prob 而裸 train() 偏移 1.4168 nats）。成本：采集 32 半庄 69.6 s、更新全批 forward+backward 6.64-14.77 s（micro 128/256/512）、单次 optimizer step 0.084-0.238 s、峰值显存 1.06-3.87 GiB、轨迹约 23.0 GB / 1024 半庄。本轮不产出候选、不进入训练、不启动 1024 半庄预算。 随后按负责人 2026-09-12 裁定执行了 P4-M10 首候选（hard50k → 直接 on-policy policy gradient，最小 collect→one-update→checkpoint 循环，非 RL 平台）：4 cycle × 256 半庄、训练 seed 720000–720255、每 cycle 恰好一次 optimizer step（fresh Adam lr=1e-5 只创建一次并跨 cycle 保留状态、weight decay 0）、global grad norm clip 1.0（四个 cycle 均触发：preclip 15.0–20.4 → 1.0）、update microbatch 512、return = tenhou rank points /135、baseline 0、BN eval-mode。四个 cycle 的 log-prob 重算全部落在预声明容差 5e-3 内（max 1.59e-03–1.94e-03），409/409 参数每个 cycle 都拿到梯度，parent sha256 未变，累计 1024 半庄。最终只评 C4（greedy 部署策略、V1 评测环境、band 710000–710063、双向各 256 半庄）。预注册双向裁决：candidate solo 对 hard50k 的 same-seed paired 差值 -1.58 pt（CI95 [-8.61, +5.45]，跨 0），镜像方向换算成 candidate benefit 为 +8.26 pt（CI95 [-1.23, +17.93]，跨 0）——两个方向符号相反且均跨 0，两个方向均未排除零，「两个方向都为正」不满足 → P4-M10 收口为 not_supported，不追加局数、不调 lr/T/baseline、保留 C1–C4 且不改挑中间权重、不追加评测。注意两个方向量纲不同：A 为每座位量、B 为三座整体量，镜像的 +8.26 pt 折算到每个学生座位约 +2.75 pt，不得读成每座位 +8.26 pt。另更正两处表述：① 四个 cycle 均触发全局梯度裁剪，但用的是 Adam 而非 SGD，仅凭裁剪前后范数不能判断实际参数更新量或策略变化幅度，故既不能说『被 clip 卡住没学动』、也不能据此建议放宽裁剪；② 运行期 p4m10_result.json 的 guard 计数字段四个 cycle 均为 null（从未计算），经现成 reconciler 只读补记（2,129 次采样 agari、153,442 个策略决策），**证据边界**为：一例**明确的**采样→执行动作改写（cycle 3 `720188/a/dec14`）+ 一例**疑似** guard 事件（cycle 2 `720092/b/dec17`，该分类器不读取原生 guard 触发标记）——**现有记录未直接观测原生 guard 触发次数**，两类证据不得相加、不得写成『确认触发 2 次』或给出触发率。训练记账本身按 sampling-time log-prob 是正确的，但这不单独证明所有依赖当前 Q 的后处理都已获得完整的策略梯度语义验证；撤回『改写路径已完成记录/验证』的说法。项目级判断：本轮是首个更新闭环而非充分的学习效果试验（1024 半庄采集但仅 4 次 optimizer update），证明的工程事实是约半小时可完成四轮真实采集→更新→归档闭环，未证明机制有效性；采集样本量、参数更新次数、策略改变量是三个不同的量，不得把未显著累积成『又排除了一条 RL 路线』。当前最准确的阶段结论：直接策略更新闭环已经运行成功；四次更新后的候选没有获得部署收益支持，机制有效性仍未解决。 阶段收尾（2026-09-12，固定面板位移检查只读完成，commit `bc919ac`）：四次 PG update 造成**可重复观测的、总体较小的策略位移** —— 面板为 P4-M10 cycle 1 的 38,057 个 parent on-policy 采样决策，全程 **greedy flip 367/38,057 = 0.964%**、**平均 TV 0.00880**、**KL(parent‖C4) 0.001083 nats**；跨 batch 512/2048/4096 flip 数最多差 1 个决策。**主张只采用 flip/TV/KL**；raw action-score 位移（平均 |Δq| ≈ 6.90）**降级为 telemetry**，不得用于证明策略位移（DQN 为 dueling，`q_a = v + a_a − mean(a_legal)`，对同状态合法动作同加常数时 softmax/argmax 均不变）。撤回「PG 只改变 near-ties／未改写强偏好决策」的机制化表述（253/367 只是描述统计，阈值 0.07166 是面板级同权重跨批最大偏差、非逐状态噪声界，另有 114 次在阈值之上）；可靠说法只有「flip 率在多种 batch 大小下稳定；本检查没有建立这些 flip 的决策重要性」。也不做 `0.96% ÷ 9.58%` 的比例解释（两者含义不同，只保留各自定义）。面板替换已登记：实际面板**不是**原讨论的 P4-M4 固定 `≥2 legal` 面板，而是 cycle 1 训练轨迹状态 —— 其边界为：非独立 holdout（cycle 1 状态参与了 C1 训练）、非 C4 自身访问分布、非全状态泛化判断；目标不是评估泛化或强度，故不重跑。**P4-M10 最终定位：一次小幅、真实的策略更新试验，未获得部署收益支持；不是充分学习后的失败，也不是无效更新**（工程上闭环真实工作／学习上确实移动了 policy 但较温和／强度上无部署收益支持／研究上机制有效性仍 unresolved——四句之间不再互相推导）。**P4-M10 诊断到此停止**：不自动续训、不因本次结果跳到 PPO/critic、不预先决定 `12×256`。 **P4-M11 已设计完成并成为 current execution plan（selected ≠ started）**：`next_experiment = P4-M11_direct_pg_learning_budget_2026_09`、`next_experiment_status = proposal_only_not_started`；canonical plan 为 `training/docs/mortal/2026-09/2026-09-13_P4-M11_directPG学习预算与K0替代验收方案.md`。采用两级目标：**Gate A = K0_70k 实用门**（历史常规训练观测水位），**Gate B = external_mortal / EVE 门**；Mortal 3.0 仅作用户体感参照，不建立已验证对应关系。训练配方与预算不变（C4 完整状态续训 32×256 半庄，只评 U32 末端）。计划落盘**不代表训练已启动**：尚未占用 GPU、未产生候选、不影响 P4-M10 的 closure。 **P4-M11 本地增量实现已完成（implemented ≠ started，2026-09-13）**：新薄入口 `training/mortal/p4m11_direct_pg.py` 复用 P4-M10/P4-M9 已测试 helpers（旧模块与其冻结 27 项测试未改动），实现显式 C4 model+Adam 恢复与 step=4 校验、32×256 循环、每轮原子 checkpoint + 完成标记最后写入、每轮 append+flush、cycle 边界严格 resume（只认完成标记，不重复应用 update）、采集完整性门、资源采样与安全暂停门；聚焦测试 35 项通过。启动前资源检查通过（E 盘 free 490.5 GiB ≥ 284 GiB、native 19bb181e… 与 parent/champion sha 复核一致、冻结 seed 段与 24,163 个历史 seed 零冲突）；available RAM 2.25 GiB 偏紧，由运行期安全暂停门看守。**训练仍未启动**：未占用 GPU、未产生候选、未进入正式采集；等待云端聚焦 review 通过后开始 32 轮。 **P4-M11 执行层缺陷修复（2026-09-13，review REJECT 后）**：云端聚焦 review 裁定训练方向不变，但启动前实现存在四类执行层缺陷（cycle 内资源保护未生效且缺失探针被当成通过；resume 不校验已保存身份且 parent 比较成为空操作；重采截断覆盖失败证据；CLI 可绕过固定预算并把中点报为完成端点）。四类已逐条修复并补 26 项负向测试（聚焦测试 61 项通过），独立复现脚本 19/19 通过；保留 C4+Adam 恢复、全批累积单步更新、checkpoint+完成标记结构不变。**训练仍未启动**：未采集、未 step、未产生候选、未跑门；等待复审通过后按既定 32 轮预算执行。 **P4-M11 第二轮执行缺口修复（2026-09-13）**：第一轮四类修复获认可（19/19 复现通过），复审又发现三类：严重压力计数会累计不连续样本（健康样本不清零）且阶段边界快照推进同一计数；未刷新的 heartbeat 把停机时间计入六小时预算（崩溃+隔夜 8h → 报 28,800s，无法续跑）；入口覆盖参数（--champion/--grad-clip/--micro-batch）被执行使用但未记录进 checkpoint recipe，且对手 SHA 只在采集 manifest 未入恢复契约。三类已修复并补 23 项负向测试（聚焦测试 61 → 84 项通过），独立复现脚本 19 → 25/25；方向与预算不变，不新增实验、不重做资源探针、不追加诊断。**训练仍未启动**；下一步已定：正式 U01/U02 观察跨 cycle 资源释放，健康即按既定计划续至 U32。 **P4-M11 第三轮收口（2026-09-13）**：`beaede9` 被认定为真实修复（伪连续严重压力、停机计费、配方/对手冻结），但未覆盖完上一轮放行条件，再收口三点：collection manifest 的 `complete=true` 移到 authoritative logs 校验之后（否则坏 attempt 会被永久复用）；`.done.json` 改为 `cycles.jsonl` fsync 之后的最后一步，并要求 marker 名与 `completed_cycles` 一致、committed set 从 U1 连续；fresh start 无条件钉死 CUDA device + 预注册解释器 + 预注册 native V1，并删除 `--diagnostic-cycles`。方向与预算不变。**训练仍未启动**；本轮通过后授权正式 U01/U02。",
-    "next_experiment": "P4-M11_direct_pg_learning_budget_2026_09",
-    "next_experiment_status": "implemented_not_started",
+    "current_stage": "P4 学生主线（Mortal-native 学生）：P4-M1 现成语料 external 重标注缓存已建立并关闭（18,000 半庄 / 11,487,044 行 / agreement 94.72%）；P4-M2 硬标签 192×40 学生训练 50k 完成（holdout agreement 0.9047），1v3 双向显示与 K0 无明确强弱差异、弱于 external 约 9–10 pt/半庄；P4-M3 T=1 纯 KL 软目标蒸馏 5k 监督侧改善明显但实战未获 support（参数线关闭）；P4-M4/P4-M5 诊断确认错误集中在教师 top-2 gap 小的状态，且在线（学生自走出局面）一致率与离线基本一致——状态分布偏移支不成立。P4-M6 容量候选已按授权执行完成：资源探针 microbatch128 可运行、microbatch256 被拒；fresh 256×54 纯 hard CE 从 0 训练到 20k optimizer updates（累计 10,228,528 行），holdout agreement 2k 0.8149 → 10k 0.8653 → 14k 0.8810 → 20k 0.8920。与 192×40 同阶段对照：20k 处 0.8920 vs 0.8917（+0.03pp），十个同阶段读点差值在 -0.51pp..+0.70pp 间震荡、无容量优势迹象；随后执行 P4-M7 eval-only strength screen：256×54@20k 与 external 双向各 256 半庄，复用 seed 710000–710063；相对 192×40@50k 的 paired delta，候选单挑方向 -4.92 pt CI95 [-17.23,+7.21]，镜像方向 external 单挑变化 +10.02 pt CI95 [-1.41,+21.62]（均跨0，且镜像点估计反向），故 capacity strength signal not supported（见 P4-M7 环境可比性限制：该评测使用与 2026-09-10 基线不同的解释器与原生 libriichi 二进制，严格跨运行比较未获确认；数值本身仍按各自日志自洽有效）。P4-M6/P4-M7 容量路线仍关闭，不续训、不追加样本；关闭依据是轮内同阶段 holdout 对照与资源代价，不依赖跨运行可比性。另需纠正一处推论：“容量筛查未获支持，所以下一步必须换目标函数”不成立：本轮并未观测到“已高度复刻教师却仍打不过”的证据，大模型只是尚未拟合得比成熟小模型更好。随后按负责人授权执行了 P4-M8 基线评测入口复现检查（单方向 student50k vs 3×external，seed 710000–710007、seed_key 8192、batch-seeds 8，共 32 半庄；使用原批准 venv 解释器与 V1 原生构建 19bb181e…，未做路径遮蔽或占位注入）：与历史基线首批逐事件比较 32/32 文件、33,362 条记录、游戏事件字段 0 处不一致，q_values 共 162,572 个值最大绝对差 0.0、argmax 0 处不一致，唯一差异是被排除的 eval_time_ns。裁决 REPRODUCED，即该环境能完整复现该批历史基线，评测入口已恢复；但这不追认 V3 环境下 P4-M7 与 V1 基线的可比性，也不构成强度样本（其 metrics 不得用于强弱结论）。更换训练目标需要正向理由（新目标提供现有监督之外的什么信息、为何可学、为何应影响强度），属负责人决策，不由本轮自动推出。K1 仍未产生；本线尚无 promotion gate。 另按负责人授权执行了 P4-M9（on-policy 直接策略优化前置：契约 + 资源探针，只验证不训练）：采样分布固定为 pi(a|s)=softmax(q_legal/T)（epsilon=1、T=1、top_p=1、FP32、无 latent），3 次独立采集各 32 半庄共 15,249 个策略决策。对齐完整性 PASS，但契约未完全通过：5 个决策（0.033%）采样动作未被执行，全部是合法 claim 被他人更高优先级 claim 抢先（和了 > 碰/杠 > 吃），非引擎改写；引擎改写模型动作 0 次、235 次采样 agari 全部兑现（含 3 次双响）；另有 1,167 个决策（7.65%）因 quick-eval 强制弃和从未经过模型。agari guard 在保留样本中 0 次命中，但源码机制（mortal.rs:384，生产加载器 enable_rule_based_agari_guard=True）确定存在，且在未保留的一次采集中有 1 次身份匹配签名，故按「可能发生」处理，不关闭保护、不设计修复。log-prob 可重算（同批形状 max 4.81e-07、q 逐位相同；固定分块 max 1.08e-03）；梯度路径正确（409/409 有限非零梯度、BN running stats 未变、parent sha256 不变、eval() 与 train()+freeze_bn(True) 复现采样 log-prob 而裸 train() 偏移 1.4168 nats）。成本：采集 32 半庄 69.6 s、更新全批 forward+backward 6.64-14.77 s（micro 128/256/512）、单次 optimizer step 0.084-0.238 s、峰值显存 1.06-3.87 GiB、轨迹约 23.0 GB / 1024 半庄。本轮不产出候选、不进入训练、不启动 1024 半庄预算。 随后按负责人 2026-09-12 裁定执行了 P4-M10 首候选（hard50k → 直接 on-policy policy gradient，最小 collect→one-update→checkpoint 循环，非 RL 平台）：4 cycle × 256 半庄、训练 seed 720000–720255、每 cycle 恰好一次 optimizer step（fresh Adam lr=1e-5 只创建一次并跨 cycle 保留状态、weight decay 0）、global grad norm clip 1.0（四个 cycle 均触发：preclip 15.0–20.4 → 1.0）、update microbatch 512、return = tenhou rank points /135、baseline 0、BN eval-mode。四个 cycle 的 log-prob 重算全部落在预声明容差 5e-3 内（max 1.59e-03–1.94e-03），409/409 参数每个 cycle 都拿到梯度，parent sha256 未变，累计 1024 半庄。最终只评 C4（greedy 部署策略、V1 评测环境、band 710000–710063、双向各 256 半庄）。预注册双向裁决：candidate solo 对 hard50k 的 same-seed paired 差值 -1.58 pt（CI95 [-8.61, +5.45]，跨 0），镜像方向换算成 candidate benefit 为 +8.26 pt（CI95 [-1.23, +17.93]，跨 0）——两个方向符号相反且均跨 0，两个方向均未排除零，「两个方向都为正」不满足 → P4-M10 收口为 not_supported，不追加局数、不调 lr/T/baseline、保留 C1–C4 且不改挑中间权重、不追加评测。注意两个方向量纲不同：A 为每座位量、B 为三座整体量，镜像的 +8.26 pt 折算到每个学生座位约 +2.75 pt，不得读成每座位 +8.26 pt。另更正两处表述：① 四个 cycle 均触发全局梯度裁剪，但用的是 Adam 而非 SGD，仅凭裁剪前后范数不能判断实际参数更新量或策略变化幅度，故既不能说『被 clip 卡住没学动』、也不能据此建议放宽裁剪；② 运行期 p4m10_result.json 的 guard 计数字段四个 cycle 均为 null（从未计算），经现成 reconciler 只读补记（2,129 次采样 agari、153,442 个策略决策），**证据边界**为：一例**明确的**采样→执行动作改写（cycle 3 `720188/a/dec14`）+ 一例**疑似** guard 事件（cycle 2 `720092/b/dec17`，该分类器不读取原生 guard 触发标记）——**现有记录未直接观测原生 guard 触发次数**，两类证据不得相加、不得写成『确认触发 2 次』或给出触发率。训练记账本身按 sampling-time log-prob 是正确的，但这不单独证明所有依赖当前 Q 的后处理都已获得完整的策略梯度语义验证；撤回『改写路径已完成记录/验证』的说法。项目级判断：本轮是首个更新闭环而非充分的学习效果试验（1024 半庄采集但仅 4 次 optimizer update），证明的工程事实是约半小时可完成四轮真实采集→更新→归档闭环，未证明机制有效性；采集样本量、参数更新次数、策略改变量是三个不同的量，不得把未显著累积成『又排除了一条 RL 路线』。当前最准确的阶段结论：直接策略更新闭环已经运行成功；四次更新后的候选没有获得部署收益支持，机制有效性仍未解决。 阶段收尾（2026-09-12，固定面板位移检查只读完成，commit `bc919ac`）：四次 PG update 造成**可重复观测的、总体较小的策略位移** —— 面板为 P4-M10 cycle 1 的 38,057 个 parent on-policy 采样决策，全程 **greedy flip 367/38,057 = 0.964%**、**平均 TV 0.00880**、**KL(parent‖C4) 0.001083 nats**；跨 batch 512/2048/4096 flip 数最多差 1 个决策。**主张只采用 flip/TV/KL**；raw action-score 位移（平均 |Δq| ≈ 6.90）**降级为 telemetry**，不得用于证明策略位移（DQN 为 dueling，`q_a = v + a_a − mean(a_legal)`，对同状态合法动作同加常数时 softmax/argmax 均不变）。撤回「PG 只改变 near-ties／未改写强偏好决策」的机制化表述（253/367 只是描述统计，阈值 0.07166 是面板级同权重跨批最大偏差、非逐状态噪声界，另有 114 次在阈值之上）；可靠说法只有「flip 率在多种 batch 大小下稳定；本检查没有建立这些 flip 的决策重要性」。也不做 `0.96% ÷ 9.58%` 的比例解释（两者含义不同，只保留各自定义）。面板替换已登记：实际面板**不是**原讨论的 P4-M4 固定 `≥2 legal` 面板，而是 cycle 1 训练轨迹状态 —— 其边界为：非独立 holdout（cycle 1 状态参与了 C1 训练）、非 C4 自身访问分布、非全状态泛化判断；目标不是评估泛化或强度，故不重跑。**P4-M10 最终定位：一次小幅、真实的策略更新试验，未获得部署收益支持；不是充分学习后的失败，也不是无效更新**（工程上闭环真实工作／学习上确实移动了 policy 但较温和／强度上无部署收益支持／研究上机制有效性仍 unresolved——四句之间不再互相推导）。**P4-M10 诊断到此停止**：不自动续训、不因本次结果跳到 PPO/critic、不预先决定 `12×256`。 **P4-M11 已设计完成并成为 current execution plan（selected ≠ started）**：`next_experiment = P4-M11_direct_pg_learning_budget_2026_09`、`next_experiment_status = proposal_only_not_started`；canonical plan 为 `training/docs/mortal/2026-09/2026-09-13_P4-M11_directPG学习预算与K0替代验收方案.md`。采用两级目标：**Gate A = K0_70k 实用门**（历史常规训练观测水位），**Gate B = external_mortal / EVE 门**；Mortal 3.0 仅作用户体感参照，不建立已验证对应关系。训练配方与预算不变（C4 完整状态续训 32×256 半庄，只评 U32 末端）。计划落盘**不代表训练已启动**：尚未占用 GPU、未产生候选、不影响 P4-M10 的 closure。 **P4-M11 本地增量实现已完成（implemented ≠ started，2026-09-13）**：新薄入口 `training/mortal/p4m11_direct_pg.py` 复用 P4-M10/P4-M9 已测试 helpers（旧模块与其冻结 27 项测试未改动），实现显式 C4 model+Adam 恢复与 step=4 校验、32×256 循环、每轮原子 checkpoint + 完成标记最后写入、每轮 append+flush、cycle 边界严格 resume（只认完成标记，不重复应用 update）、采集完整性门、资源采样与安全暂停门；聚焦测试 35 项通过。启动前资源检查通过（E 盘 free 490.5 GiB ≥ 284 GiB、native 19bb181e… 与 parent/champion sha 复核一致、冻结 seed 段与 24,163 个历史 seed 零冲突）；available RAM 2.25 GiB 偏紧，由运行期安全暂停门看守。**训练仍未启动**：未占用 GPU、未产生候选、未进入正式采集；等待云端聚焦 review 通过后开始 32 轮。 **P4-M11 执行层缺陷修复（2026-09-13，review REJECT 后）**：云端聚焦 review 裁定训练方向不变，但启动前实现存在四类执行层缺陷（cycle 内资源保护未生效且缺失探针被当成通过；resume 不校验已保存身份且 parent 比较成为空操作；重采截断覆盖失败证据；CLI 可绕过固定预算并把中点报为完成端点）。四类已逐条修复并补 26 项负向测试（聚焦测试 61 项通过），独立复现脚本 19/19 通过；保留 C4+Adam 恢复、全批累积单步更新、checkpoint+完成标记结构不变。**训练仍未启动**：未采集、未 step、未产生候选、未跑门；等待复审通过后按既定 32 轮预算执行。 **P4-M11 第二轮执行缺口修复（2026-09-13）**：第一轮四类修复获认可（19/19 复现通过），复审又发现三类：严重压力计数会累计不连续样本（健康样本不清零）且阶段边界快照推进同一计数；未刷新的 heartbeat 把停机时间计入六小时预算（崩溃+隔夜 8h → 报 28,800s，无法续跑）；入口覆盖参数（--champion/--grad-clip/--micro-batch）被执行使用但未记录进 checkpoint recipe，且对手 SHA 只在采集 manifest 未入恢复契约。三类已修复并补 23 项负向测试（聚焦测试 61 → 84 项通过），独立复现脚本 19 → 25/25；方向与预算不变，不新增实验、不重做资源探针、不追加诊断。**训练仍未启动**；下一步已定：正式 U01/U02 观察跨 cycle 资源释放，健康即按既定计划续至 U32。 **P4-M11 第三轮收口（2026-09-13）**：`beaede9` 被认定为真实修复（伪连续严重压力、停机计费、配方/对手冻结），但未覆盖完上一轮放行条件，再收口三点：collection manifest 的 `complete=true` 移到 authoritative logs 校验之后（否则坏 attempt 会被永久复用）；`.done.json` 改为 `cycles.jsonl` fsync 之后的最后一步，并要求 marker 名与 `completed_cycles` 一致、committed set 从 U1 连续；fresh start 无条件钉死 CUDA device + 预注册解释器 + 预注册 native V1，并删除 `--diagnostic-cycles`。方向与预算不变。**训练仍未启动**；本轮通过后授权正式 U01/U02。 **P4-M11 已执行完毕并按预注册协议完成两级门裁决（2026-09-14）**：训练 32/32 cycle 全部提交（8,192 半庄、32 次 PG update、Adam step 36.0、无 OOM/无真实异常），冻结 U32 末端完成两个方向的两级门评测。**Gate A（K0 实用门）= supported**（G = +2.6367 [CI95 +0.2930, +4.9294]，阈值 +2.0；S +3.7793、−O/3 +1.4941）；**Gate B（external EVE 门）= not_supported**（G = −5.0317 [CI95 −7.5515, −2.4976]；S −8.7451、O +3.9551）。两门用不同 seed band（740xxx / 741xxx），分别登记、不合并、不池化；不追加对局、不换 checkpoint、不继续训练。**阶段结论：U32 通过 K0 实用替代门、未通过 external EVE 目标门** —— 不是整轮失败，也不是项目最终成功。U32 因此获得 K0 替代候选的工程验收资格；play/review 工程验收仍 pending，默认模型仍为 K0，K1 仍未产生。另外登记一处已解决的评测导出兼容问题：U32.pth 是训练 checkpoint（weights_only=True 拒绝其 TorchVersion），实际评测文件为同目录 U32_eval_weights.pth（纯重新封装，652 个张量逐位一致，非换模型、非评测污染）。",
+    "next_experiment": null,
+    "next_experiment_status": null,
     "prohibitions": [
       "不启动 reviewer/NAGA/4.1b 硬标签训练。",
       "不继续 broad reward、optimizer、objective、LR、CQL 网格。",
@@ -2597,7 +2597,7 @@
     },
     {
       "experiment_id": "P4-M11_direct_pg_learning_budget_2026_09",
-      "name_zh": "P4-M11 direct PG 学习预算与两级验收门（K0 实用门 / external EVE 门）",
+      "name_zh": "P4-M11 direct PG 学习预算与两级验收门（K0 实用门 supported / external EVE 门 not_supported）",
       "category": "学习预算与验收方案",
       "parent_model": "P4-M10 C4 完整状态",
       "control": "P4-M10 C4（四次更新后的候选，无额外学习）",
@@ -2609,21 +2609,34 @@
         "只评 U32 末端；U08/U16/U24 不做实战、不按 telemetry 选点",
         "Gate A 与 Gate B 分别登记，不用单一 PASS 合并"
       ],
-      "training_seeds": [],
+      "training_seeds": [
+        "730000-732047"
+      ],
       "evaluation_protocol": "固定 U32 末端顺序两级门：先 Gate A（K0_70k 实用门），通过后再挑战 Gate B（external_mortal EVE 门）；两级分别双向统计与独立登记。",
-      "status": "implemented_not_started",
-      "primary_result": "训练尚未启动（未占用 GPU、未产生候选、无采集记录）。本地增量实现已完成并落在 `training/mortal/p4m11_direct_pg.py`：显式恢复 C4 的 model + Adam optimizer_state 并校验继承 step=4（拒绝 eval-weights + fresh Adam）、32×256 循环、每轮原子 checkpoint（model/optimizer/RNG/已完成轮号/下一 seed 段/配方与环境身份）以完成标记最后写入、每轮 append+flush、cycle 边界严格 resume（只认完成标记，绝不重复应用同一次 update）、采集完整性门与四类 fail-close 沿用 P4-M10、资源采样与安全暂停门。聚焦测试 35 项通过（含恢复 optimizer、防重复更新、采集不完整拒绝 step、全批梯度累积等价、保存后恢复、parent 未被修改、P4-M10 冻结预算未放宽）；P4-M10 既有 27 项测试不变。启动前资源检查（§5.1）通过：E 盘 free 490.5 GiB ≥ 284 GiB 预留、commit headroom 12.74 GiB、available RAM 2.25 GiB（高于 1 GiB 下限但偏紧，运行期由安全暂停门看守）、native riichi.pyd sha256 19bb181e… 与 parent/ champion sha 全部逐位复核一致、冻结 seed 段（730000–732047 / 740000–740255 / 741000–741255）与 144,856 份历史 arena 日志、24,163 个已用 seed（10000–3100127）零冲突。当前等待云端对本次增量的聚焦 review；通过后才开始 32 轮正式采集。 **2026-09-13 执行层缺陷修复（review REJECT 后，训练仍未启动）**：① 资源保护改为运行期生效——新增 `ResourceWatchdog` 守护线程按 `sample_interval_seconds` 在 cycle 运行期间采样并逐条落盘 `resource_samples.jsonl`，样本折叠进安全暂停/硬停状态机；关键指标缺失**视为违约**（`preflight_violations({})` 不再返回空）；硬停只对**读得到的**低于硬停阈值的值生效，探针读不到只升级为安全暂停；cycle 内三处安全点均 check。② resume 只读 checkpoint **自身记录**并与本进程比较（recipe / environment / lineage parent 路径+SHA / cycle / completed_cycles / Adam step），返回值携带记录的 parent 而非当前配置；新增 `environment_fingerprint` 绑定 interpreter/python/torch/cuda_available/**native 二进制 sha 集合**，native 构建变化即拒绝恢复；采集复用 manifest 补齐 champion SHA 与路径、完整采样配置、seed 段/seed key/sampling_seed/splits_per_seed/return_baseline/native sha/interpreter。③ 每次采集写入不可变的 `cycle{N}/attempt{K}/`（绝不复用已存在 attempt），采集产物与 manifest 均在 attempt 目录内，cycle 根目录只剩确定性的 `collection_weights.pth`；损坏完成标记与缺失 checkpoint 直接报错不再跳过；所有 torch 写入统一走 `_save_torch_atomic`（模块内不再有裸 `torch.save`）。④ 官方入口删除 `--cycles`/`--seeds-per-cycle`，每轮 seed 数恒取冻结配置；诊断必须走 `--diagnostic-cycles` 并写 `p4m11_diagnostic_result.json`；完成由纯函数 `completion_status()` 锁定为 U32/Adam step 36/parent 未改/非诊断，否则 `evaluation_endpoint = null`；六小时计时改为 heartbeat 记账，中断的尝试也计入。验证：聚焦测试 **61 项通过**（新增 26 项负向）；`verify_p4m11_review_fixes.py` **19/19**；相关冻结测试合计 **146 项通过**；仓库默认 allowlist 套件 **291 passed / 5 pre-existing failures**（与基线一致；P4-M11/M10/M9 测试文件按既有惯例不在该 allowlist 内）。复现脚本首次运行 2c FAIL，暴露环境指纹只读 `native_binaries` 而伪造的顶层 `native_sha256` 被忽略，已改为伪造真实字段并补测试。**未启动训练**：未采集、未 step、未产生 U32、未跑门、未碰 workbench 默认。 **2026-09-13 第二轮执行缺口修复（review 复审后，训练仍未启动）**：① 严重压力计数不再累计不连续样本 —— `observe(..., advance=True)` 无条件喂入两个 guard（健康样本真正清零），`advance=False` 用于阶段边界快照（记录并落盘但不推进计数，守卫已触发时 `check()` 仍会报），`record_sample()` 一律 advance=False。② 停机时间不再计入六小时预算 —— heartbeat 新增 `elapsed_seconds` 并由 in-cycle watchdog 的 `on_tick` 每次定时采样刷新；`accumulated_active_seconds()` 只计 `active_seconds_at_start + elapsed_seconds`（最后一次心跳），不计进程死亡后的间隔；`end_active_cycle()` 因进程全程存活而按 `now - started_unix` 足额计入（崩溃最多少计一个刷新间隔，隔夜等待零计费）。③ 执行配方与记录配方不再可能漂移 —— 新增 `assert_recipe_arguments()`，官方入口只在覆盖值等于批准值时接受 `--champion`/`--challenger-label`/`--champion-label`/`--micro-batch`/`--grad-clip`，任一偏离即拒绝；`P4M11_CONFIG` 新增 `champion_sha256`（冻结 external SHA）与两个 label，main 额外校验实际 champion 文件哈希；`training_contract()` 与 checkpoint payload 新增 `opponent`/`opponent_sha256`，`load_committed_checkpoint()` 读并校验记录的对手，缺失或不符即拒绝恢复。验证：聚焦测试 **61 → 84 项通过**（新增 23 项）；`verify_p4m11_review_fixes.py` **19 → 25/25**（新增 5a/5b/6a/6b/7a/7b）；相关冻结测试合计 **174 项通过**；仓库默认 allowlist 套件 **291 passed / 5 pre-existing failures**（与基线一致）；`--dry-run`（mandated 解释器）preflight 空、C4 cycle 4 / Adam step 4.0 非 fresh、32 轮、E 盘 490.5 GiB；真实 CLI `--micro-batch 256` 被拒。首次运行中验证脚本 4d 与既有测试 `test_accumulated_active_seconds_counts_and_commits_attempt_time` 同时失败——它们断言的是被本轮修正的旧语义，已改按新契约。**未启动训练**：未采集、未 step、未产生 U32、未跑门、未碰 workbench 默认；下一步已定：正式 U01/U02 观察资源释放，健康即续至 U32。 **2026-09-13 第三轮收口（二次复审后，训练仍未启动）**：① collection manifest 的 `complete=true` 移到 `hanchan_returns_from_logs` + `assert_collection_complete` PASS 之后原子写入——因此 manifest 存在即等价于「authoritative log completeness 已通过」，残缺 logs 的 attempt 没有 manifest、永不被复用，重采落到新 attempt 目录，不再出现「坏 attempt 被反复复用、永不产生 attempt2」。② `train_cycle()` 不再写完成标记，改为返回 `commit_marker` payload；`main()` 固定顺序为 **append cycles.jsonl（flush+fsync）→ 最后写 `Ux.done.json`**，消除「checkpoint+marker 存在但 cycles.jsonl 无该轮」的可达状态；同时收紧 `committed_cycles()`：marker 文件名必须与 `completed_cycles` 一致（`U2.done.json` 必须声明 2），且 committed set 必须从 U1 起连续，缺口即报错。③ fresh start 钉死环境：新增 `assert_pinned_device()` 无条件要求 device==cuda 且 CUDA 可用（删除 `--require-cuda`，不再存在 CPU fallback）；新增 `assert_fresh_start_environment()` 在 `last_committed==0` 时额外钉死 `sys.executable` == 预注册的 keqing1/.venv-win 解释器，且 native 二进制集合必须含预注册 V1 `19bb181e…`（resume 由 `load_committed_checkpoint` 的环境比较负责）。④ `--diagnostic-cycles` 整体删除（含 `p4m11_diagnostic_result.json` 与 `completion_status` 的 `diagnostic` 参数），因为它仍会向正式 output dir 写 `U1.pth`/`U1.done.json`。验证：聚焦测试 **84 → 90 项通过**（新增 6 项负向）；`verify_p4m11_review_fixes.py` **25/25**（规模未扩）；相关冻结测试 **180 项通过**；allowlist 套件 **291 passed / 5 pre-existing failures** 不变；dry-run（mandated 解释器）PASS，而同一个 dry-run 用错误 CPU 解释器被 **REFUSED**（`refusing to train without the pinned GPU: device is 'cpu', not 'cuda'`）。**未启动训练**：未采集、未 step、未产生 U32、未跑门、未碰 workbench 默认。",
+      "status": "training_completed",
+      "primary_result": "训练已按冻结预算执行完毕（32/32 cycle、8,192 半庄、32 次 PG update、Adam step 5.0→36.0 连续、grad_finite 32/32、log-prob 重算最大偏差 2.52e-03 < 5e-3、parent 未变），并在冻结 U32 末端按 §6 预注册协议完成两个方向的两级门评测。**Gate A（K0 实用门）= supported**：256 seeds × 4 座位轮换 = 1,024 半庄/方向，seeds 740000–740255、seed_key 8192、batch-seeds 8、FP32、greedy、V1 native；S（U32 单挑 vs 3×K0）+3.7793 [CI95 −0.4395, +7.9552]、O（K0 单挑 vs 3×U32）−4.4824 [−9.4482, +0.4834]、镜像侧候选收益 −O/3 +1.4941 [−0.1611, +3.1494]、**G=(S−O/3)/2 = +2.6367 [CI95 +0.2930, +4.9294]**，三重条件（两方向收益均正 / G CI 下界 > 0 / mean(G) ≥ +2.0）全部满足。**Gate B（external EVE 门）= not_supported**：同一不可变端点（sha256 3703c943…）vs external_mortal （0a88ddad…）、seeds 741000–741255、其余口径相同；S −8.7451 [−13.4044, −4.1748]、O +3.9551 [−0.2197, +8.2178]、−O/3 −1.3184 [−2.7393, +0.0732]、**G = −5.0317 [CI95 −7.5515, −2.4976]**，三重条件全部不满足。两方向均 exit=0、1,024/1,024 日志、reused_seed_count=0、ranks_match_native=true。两门使用预注册的不同 seed band（740xxx / 741xxx），分别登记、不合并、不池化；Gate A 优势幅度不大但满足冻结条件，不追加样本、不事后提高门槛。同一 U32 对 K0 的 solo 均值 +3.78、对 external −8.75。",
       "promoted_data_route": null,
       "promoted_checkpoint": null,
       "recipe_promotion": false,
       "checkpoint_promotion": false,
-      "closure_reason": "尚未开始训练；本记录登记已确定的方案、已完成的本地增量实现与启动前资源检查，尚未占用 GPU、尚未进入正式采集。",
+      "closure_reason": "训练与两级门评测均已按预注册预算与协议完成并裁决，研究侧流程到此关闭。剩余为工程交付（workbench 候选接入与 smoke，见 consumer_acceptance）。不追加对局、不换 checkpoint、不继续训练、不改默认模型、不登记 K1。",
       "predecessor": "P4-M10_direct_onpolicy_pg_hard50k_4x256_2026_09",
       "next_experiment": null,
       "commits": [],
       "artifact_paths": [
         "artifacts/experiments/student_policy_v1/P4-M11_direct_pg_C4_plus32/",
-        "artifacts/experiments/student_policy_v1/P4-M11_direct_pg_C4_plus32/dry_run.json"
+        "artifacts/experiments/student_policy_v1/P4-M11_direct_pg_C4_plus32/dry_run.json",
+        "artifacts/experiments/student_policy_v1/P4-M11_direct_pg_C4_plus32/U32.pth",
+        "artifacts/experiments/student_policy_v1/P4-M11_direct_pg_C4_plus32/U32_eval_weights.pth",
+        "artifacts/experiments/student_policy_v1/P4-M11_direct_pg_C4_plus32/U32_eval_weights.provenance.json",
+        "artifacts/experiments/student_policy_v1/P4-M11_direct_pg_C4_plus32/cycles.jsonl",
+        "artifacts/experiments/student_policy_v1/P4-M11_direct_pg_C4_plus32/p4m11_result.json",
+        "artifacts/eval/p4m11_gateA_verdict.json",
+        "artifacts/eval/p4m11_gateB_verdict.json",
+        "artifacts/eval/ovt_p4m11_gateA_solo/",
+        "artifacts/eval/ovt_p4m11_gateA_mirror/",
+        "artifacts/eval/ovt_p4m11_gateB_solo/",
+        "artifacts/eval/ovt_p4m11_gateB_mirror/"
       ],
       "report_paths": [
         "training/docs/mortal/2026-09/2026-09-13_P4-M11_directPG学习预算与K0替代验收方案.md"
@@ -2638,7 +2651,131 @@
         "not_claimed": "计划不代表训练已启动；消费替代与 EVE 研究结论分开登记",
         "implementation": "training/mortal/p4m11_direct_pg.py（新薄入口，复用 P4-M10/P4-M9 已测试 helpers，不修改旧模块与其冻结测试） + tests/test_p4m11_direct_pg.py（90 项，含针对三轮 review 的执行层负向测试） + training/mortal/verify_p4m11_review_fixes.py（review 证据脚本：25 项独立复现，不训练/不采集/不用 GPU）"
       },
-      "formal_adjudication": null,
+      "formal_adjudication": {
+        "schema": "keqing.mortal.p4m11_two_gate_adjudication.v1",
+        "adjudicated_at": "2026-09-14",
+        "preregistered": true,
+        "verdict": "practical_progress / EVE_target_not_supported",
+        "protocol": "固定 U32 末端，顺序两级门；每门双向各 1,024 半庄（256 seeds × 4 座位轮换），逐 seed 配对、两方向联合重采样 5,000 次、bootstrap seed 20260913、双侧 95% 百分位 CI；阈值 +2.0 rank pt/候选座位/半庄。两门使用不同 seed band，分别登记、不合并、不池化。",
+        "candidate_endpoint": {
+          "training_checkpoint": "artifacts/experiments/student_policy_v1/P4-M11_direct_pg_C4_plus32/U32.pth",
+          "training_checkpoint_sha256": "511be9adba1e0a38a093cb59b498c6a7e7be031d0f5e09afb06f4b361690b9cd",
+          "adam_step": 36,
+          "evaluated_file": "artifacts/experiments/student_policy_v1/P4-M11_direct_pg_C4_plus32/U32_eval_weights.pth",
+          "evaluated_file_sha256": "3703c943a64a00ca128f4a5f5f989d446dc5814c7e70dc50527d2756039a8add",
+          "identity_verified": "同一模型的评测封装：mortal 650 + current_dqn 2 = 652 个张量逐位一致、模型契约一致，且由评测器自身 loader 接受（cuda / FP32）。"
+        },
+        "gates": {
+          "practical_gate": {
+            "opponent": "K0 promoted 70k (artifacts/mortal_training/checkpoints/mortal_default_70k_promoted_candidate.pth, sha256 6c0e70058644e02671440ddf7dd2b41c637ae7c2132c9154595593ab690d49e0)",
+            "seed_band": "740000-740255",
+            "hanchans_per_direction": 1024,
+            "seeds": {
+              "seed_start": 740000,
+              "seed_count": 256,
+              "seed_key": 8192
+            },
+            "S": {
+              "mean": 3.7793,
+              "ci95": [
+                -0.4395,
+                7.9552
+              ]
+            },
+            "O": {
+              "mean": -4.4824,
+              "ci95": [
+                -9.4482,
+                0.4834
+              ]
+            },
+            "mirror_candidate_benefit": {
+              "mean": 1.4941,
+              "ci95": [
+                -0.1611,
+                3.1494
+              ]
+            },
+            "G": {
+              "mean": 2.6367,
+              "ci95": [
+                0.293,
+                4.9294
+              ],
+              "threshold": 2.0
+            },
+            "conditions": {
+              "both_directions_positive": true,
+              "G_ci_lower_above_zero": true,
+              "mean_G_at_least_2.0": true
+            },
+            "verdict": "supported",
+            "verdict_json": "artifacts/eval/p4m11_gateA_verdict.json",
+            "verdict_sha256": "9645660257bfe51f5137ea359e22a06519677f0bff5fd88599941528d28cbb4c",
+            "bootstrap": {
+              "reps": 5000,
+              "seed": 20260913,
+              "ci": "two-sided 95% percentile"
+            }
+          },
+          "eve_gate": {
+            "opponent": "external_mortal (artifacts/external_mortal_20240308_best_min.pth, sha256 0a88ddad649804d085491b5397d895f596b0e55f30632c549ea145bb44786563)",
+            "seed_band": "741000-741255",
+            "hanchans_per_direction": 1024,
+            "seeds": {
+              "seed_start": 741000,
+              "seed_count": 256,
+              "seed_key": 8192
+            },
+            "S": {
+              "mean": -8.7451,
+              "ci95": [
+                -13.4044,
+                -4.1748
+              ]
+            },
+            "O": {
+              "mean": 3.9551,
+              "ci95": [
+                -0.2197,
+                8.2178
+              ]
+            },
+            "mirror_candidate_benefit": {
+              "mean": -1.3184,
+              "ci95": [
+                -2.7393,
+                0.0732
+              ]
+            },
+            "G": {
+              "mean": -5.0317,
+              "ci95": [
+                -7.5515,
+                -2.4976
+              ],
+              "threshold": 2.0
+            },
+            "conditions": {
+              "both_directions_positive": false,
+              "G_ci_lower_above_zero": false,
+              "mean_G_at_least_2.0": false
+            },
+            "verdict": "not_supported",
+            "verdict_json": "artifacts/eval/p4m11_gateB_verdict.json",
+            "verdict_sha256": "3c15b15df72f7254ed97391e34cb2273e9d5a15c3a1d7055a7000a5a7fe5d9c1",
+            "bootstrap": {
+              "reps": 5000,
+              "seed": 20260913,
+              "ci": "two-sided 95% percentile"
+            }
+          }
+        },
+        "recipe_promotion": false,
+        "checkpoint_promotion": false,
+        "promoted_k1_checkpoint": null,
+        "not_claimed": "Gate A 通过不等于 U32 可替代 K0（尚缺 play/review 工程验收），也不等于达到/超过 external Mortal；本轮验证的是最终产物，没有同条件父模型（C4）对照来隔离增益来源。"
+      },
       "promoted_k1_checkpoint": null,
       "training_environment": {
         "interpreter": "E:/AUbuntuProject/project/keqing1/.venv-win/Scripts/python.exe (CPython 3.12.6, torch 2.12.0+cu130)",
@@ -2646,15 +2783,28 @@
         "native_binary_sha256": "19bb181eaa70d0ae90417a3bd22433f6ca08d7654602f865ff3bdb102b7d9914",
         "fingerprint_recorded_at_launch": true
       },
-      "optimizer_steps_total": null,
-      "hanchans_total": null,
+      "optimizer_steps_total": 36,
+      "hanchans_total": 8192,
       "max_hanchans_authorised": 8192,
-      "record_gaps_corrected": null,
-      "project_level_judgment": null,
-      "stage_conclusion": null,
-      "review_status": "cloud_review_REJECT_2026_09_13 -> repaired (757651c) -> round-2 gaps repaired (beaede9) -> round-3 closeout. beaede9 was accepted as a real repair (critical-guard pseudo-consecutiveness closed; crash downtime no longer charged; recipe/opponent freeze largely done) but the reviewer had to hold U01 again: it had only partially covered the Repair-2 release list. Three narrow execution points, now closed: ① collection manifest wrote complete=true BEFORE the authoritative arena logs were parsed, so a short-log attempt was advertised reusable, failed completeness, and was then reused again on restart -- failing forever on the same bad attempt instead of collecting a fresh one. The manifest is now written only AFTER hanchan_returns_from_logs + assert_collection_complete pass, so its existence means authoritative completeness passed and a short-log attempt simply has no manifest. ② the .done.json marker was written inside train_cycle, before cycles.jsonl was appended, leaving 'checkpoint + marker exist but cycles.jsonl lacks U{cycle}' reachable. train_cycle now returns the marker payload and main writes it LAST, after the fsynced cycles.jsonl append; committed_cycles() additionally requires the filename and completed_cycles to agree (U2.done.json must say 2) and the committed set to be contiguous from U1. ③ a fresh start could begin on a CPU interpreter: --device defaulted to 'cuda if available else cpu' and CUDA was only enforced behind the opt-in --require-cuda, while the environment fingerprint records rather than pins on a first cycle. Fresh start now pins device==cuda + torch.cuda.is_available() unconditionally (--require-cuda removed), sys.executable == the registered keqing1/.venv-win interpreter, and the native binary set containing the registered V1 19bb181e. --diagnostic-cycles is deleted outright: it still wrote U1.pth/U1.done.json into the official output directory, where committed_cycles() could not tell that U1 from a real one. No algorithm change, no budget change, no new experiment, no resource-probe rework. Training still NOT started; U01/U02 are authorised once this closeout passes.",
+      "record_gaps_corrected": {
+        "evaluation_endpoint_export": "首次启动 Gate A 时两方向立即 exit=1：_pickle.UnpicklingError（weights_only=True 拒绝 torch.torch_version.TorchVersion）。原因：U32.pth 是训练 checkpoint，而 P4-M11 只写采集前权重（cycle{N}/collection_weights.pth；实测其模型摘要等于 U31.pth / Adam step 35），不像 P4-M10 那样写 C{cycle}_eval_weights.pth，故 U32 缺 arena 可加载表示。处置：按与 C4.pth→C4_eval_weights.pth 同一关系做纯重新封装（去掉 optimizer_state / cycle），核验 652 个张量一致且评测器自身 loader 接受后才使用；未改训练代码、未重训、未改任何统计量。已登记为**已解决的评测导出兼容问题**，不是换模型、不是评测污染。",
+        "verdict_json_sha_fields": "两份裁决 JSON 的 solo_checkpoint_sha256 / opponent_trio_sha256 原为 null，已从已核验的 run_identity.json 补齐；补齐后逐字段比对确认统计量（G / conditions / verdict / S / −O/3）与补齐前完全一致 —— 未重跑对局、未改统计数字。",
+        "wording": "训练连续完成的表述更正为『关闭资源强制门后的正式运行连续完成』；前三次自动中止仍是历史事实，不得写成『全程零中止』。"
+      },
+      "project_level_judgment": "本轮有实际进展但既非整轮失败也非项目最终成功。三条轴分开：工程交付（Gate A 通过 → U32 获得 K0 替代候选的工程验收资格）、强度结论（对 K0 略优、对 external 明显落后）、研究机制（未解决——没有同条件父模型对照，无法把增益归因于 PG）。不得把 EVE 门未通过当成 Gate A 未通过，也不得把 Gate A 通过当成项目成功。",
+      "stage_conclusion": "practical_progress / EVE_target_not_supported",
+      "review_status": "cloud_review x3 + closeout (implemented, not started) -> training executed 32/32 (completed 2026-09-14 18:56:33) -> two-gate adjudication completed 2026-09-14 23:35. reviewed_by_owner_2026_09_14 (two-gate results): 裁定『这轮有实际进展：U32 按预先约定的双向协议，通过了“优于 70k”的验收；但仍未达到 external 门槛。不是整轮失败，也不是项目最终成功』，并核对两份裁决 JSON 与报告数字一致；Gate A 优势幅度不大但确实满足冻结条件——不追加样本，也不事后提高门槛。要求：① 流程状态/强度结论/交付状态分三条轴登记，不混成一个字段；② 现在不写『U32 可替代 K0』（还差工程消费验证），也不写『PG 已被证明带来这些增益』（无同条件父模型对照）；③ 导出事实必须记录，但登记为已解决的评测导出兼容问题，不写成换模型或评测污染；④ 两份 verdict 的摘要 SHA 从已核验 run_identity.json 补齐，不重跑对局、不改统计数字；⑤ 下一步不是只写文档后停下：登记后直接做 workbench 候选接入 + smoke 工程验收，PG 输出按动作分数处理、依赖校准 Q 差的『收益损失/错误严重度』功能禁用或标注不适用；不自动切默认、不自动登记 K1。",
       "policy_displacement_check": null,
-      "final_positioning": null
+      "final_positioning": "U32 是通过 K0 实用替代门的候选（Gate A supported），但未通过 external EVE 目标门（Gate B not_supported）。定位：**可进入 K0 replacement candidate 工程验收的可用替代候选**，不是已验收的默认模型，也不是项目最终成功。默认模型仍为 K0；K1 未产生。",
+      "execution_repairs": "以下为训练启动前的三轮执行层修复记录（原文保留；其『尚未启动训练』的表述仅对当时成立）。训练尚未启动（未占用 GPU、未产生候选、无采集记录）。本地增量实现已完成并落在 `training/mortal/p4m11_direct_pg.py`：显式恢复 C4 的 model + Adam optimizer_state 并校验继承 step=4（拒绝 eval-weights + fresh Adam）、32×256 循环、每轮原子 checkpoint（model/optimizer/RNG/已完成轮号/下一 seed 段/配方与环境身份）以完成标记最后写入、每轮 append+flush、cycle 边界严格 resume（只认完成标记，绝不重复应用同一次 update）、采集完整性门与四类 fail-close 沿用 P4-M10、资源采样与安全暂停门。聚焦测试 35 项通过（含恢复 optimizer、防重复更新、采集不完整拒绝 step、全批梯度累积等价、保存后恢复、parent 未被修改、P4-M10 冻结预算未放宽）；P4-M10 既有 27 项测试不变。启动前资源检查（§5.1）通过：E 盘 free 490.5 GiB ≥ 284 GiB 预留、commit headroom 12.74 GiB、available RAM 2.25 GiB（高于 1 GiB 下限但偏紧，运行期由安全暂停门看守）、native riichi.pyd sha256 19bb181e… 与 parent/ champion sha 全部逐位复核一致、冻结 seed 段（730000–732047 / 740000–740255 / 741000–741255）与 144,856 份历史 arena 日志、24,163 个已用 seed（10000–3100127）零冲突。当前等待云端对本次增量的聚焦 review；通过后才开始 32 轮正式采集。 **2026-09-13 执行层缺陷修复（review REJECT 后，训练仍未启动）**：① 资源保护改为运行期生效——新增 `ResourceWatchdog` 守护线程按 `sample_interval_seconds` 在 cycle 运行期间采样并逐条落盘 `resource_samples.jsonl`，样本折叠进安全暂停/硬停状态机；关键指标缺失**视为违约**（`preflight_violations({})` 不再返回空）；硬停只对**读得到的**低于硬停阈值的值生效，探针读不到只升级为安全暂停；cycle 内三处安全点均 check。② resume 只读 checkpoint **自身记录**并与本进程比较（recipe / environment / lineage parent 路径+SHA / cycle / completed_cycles / Adam step），返回值携带记录的 parent 而非当前配置；新增 `environment_fingerprint` 绑定 interpreter/python/torch/cuda_available/**native 二进制 sha 集合**，native 构建变化即拒绝恢复；采集复用 manifest 补齐 champion SHA 与路径、完整采样配置、seed 段/seed key/sampling_seed/splits_per_seed/return_baseline/native sha/interpreter。③ 每次采集写入不可变的 `cycle{N}/attempt{K}/`（绝不复用已存在 attempt），采集产物与 manifest 均在 attempt 目录内，cycle 根目录只剩确定性的 `collection_weights.pth`；损坏完成标记与缺失 checkpoint 直接报错不再跳过；所有 torch 写入统一走 `_save_torch_atomic`（模块内不再有裸 `torch.save`）。④ 官方入口删除 `--cycles`/`--seeds-per-cycle`，每轮 seed 数恒取冻结配置；诊断必须走 `--diagnostic-cycles` 并写 `p4m11_diagnostic_result.json`；完成由纯函数 `completion_status()` 锁定为 U32/Adam step 36/parent 未改/非诊断，否则 `evaluation_endpoint = null`；六小时计时改为 heartbeat 记账，中断的尝试也计入。验证：聚焦测试 **61 项通过**（新增 26 项负向）；`verify_p4m11_review_fixes.py` **19/19**；相关冻结测试合计 **146 项通过**；仓库默认 allowlist 套件 **291 passed / 5 pre-existing failures**（与基线一致；P4-M11/M10/M9 测试文件按既有惯例不在该 allowlist 内）。复现脚本首次运行 2c FAIL，暴露环境指纹只读 `native_binaries` 而伪造的顶层 `native_sha256` 被忽略，已改为伪造真实字段并补测试。**未启动训练**：未采集、未 step、未产生 U32、未跑门、未碰 workbench 默认。 **2026-09-13 第二轮执行缺口修复（review 复审后，训练仍未启动）**：① 严重压力计数不再累计不连续样本 —— `observe(..., advance=True)` 无条件喂入两个 guard（健康样本真正清零），`advance=False` 用于阶段边界快照（记录并落盘但不推进计数，守卫已触发时 `check()` 仍会报），`record_sample()` 一律 advance=False。② 停机时间不再计入六小时预算 —— heartbeat 新增 `elapsed_seconds` 并由 in-cycle watchdog 的 `on_tick` 每次定时采样刷新；`accumulated_active_seconds()` 只计 `active_seconds_at_start + elapsed_seconds`（最后一次心跳），不计进程死亡后的间隔；`end_active_cycle()` 因进程全程存活而按 `now - started_unix` 足额计入（崩溃最多少计一个刷新间隔，隔夜等待零计费）。③ 执行配方与记录配方不再可能漂移 —— 新增 `assert_recipe_arguments()`，官方入口只在覆盖值等于批准值时接受 `--champion`/`--challenger-label`/`--champion-label`/`--micro-batch`/`--grad-clip`，任一偏离即拒绝；`P4M11_CONFIG` 新增 `champion_sha256`（冻结 external SHA）与两个 label，main 额外校验实际 champion 文件哈希；`training_contract()` 与 checkpoint payload 新增 `opponent`/`opponent_sha256`，`load_committed_checkpoint()` 读并校验记录的对手，缺失或不符即拒绝恢复。验证：聚焦测试 **61 → 84 项通过**（新增 23 项）；`verify_p4m11_review_fixes.py` **19 → 25/25**（新增 5a/5b/6a/6b/7a/7b）；相关冻结测试合计 **174 项通过**；仓库默认 allowlist 套件 **291 passed / 5 pre-existing failures**（与基线一致）；`--dry-run`（mandated 解释器）preflight 空、C4 cycle 4 / Adam step 4.0 非 fresh、32 轮、E 盘 490.5 GiB；真实 CLI `--micro-batch 256` 被拒。首次运行中验证脚本 4d 与既有测试 `test_accumulated_active_seconds_counts_and_commits_attempt_time` 同时失败——它们断言的是被本轮修正的旧语义，已改按新契约。**未启动训练**：未采集、未 step、未产生 U32、未跑门、未碰 workbench 默认；下一步已定：正式 U01/U02 观察资源释放，健康即续至 U32。 **2026-09-13 第三轮收口（二次复审后，训练仍未启动）**：① collection manifest 的 `complete=true` 移到 `hanchan_returns_from_logs` + `assert_collection_complete` PASS 之后原子写入——因此 manifest 存在即等价于「authoritative log completeness 已通过」，残缺 logs 的 attempt 没有 manifest、永不被复用，重采落到新 attempt 目录，不再出现「坏 attempt 被反复复用、永不产生 attempt2」。② `train_cycle()` 不再写完成标记，改为返回 `commit_marker` payload；`main()` 固定顺序为 **append cycles.jsonl（flush+fsync）→ 最后写 `Ux.done.json`**，消除「checkpoint+marker 存在但 cycles.jsonl 无该轮」的可达状态；同时收紧 `committed_cycles()`：marker 文件名必须与 `completed_cycles` 一致（`U2.done.json` 必须声明 2），且 committed set 必须从 U1 起连续，缺口即报错。③ fresh start 钉死环境：新增 `assert_pinned_device()` 无条件要求 device==cuda 且 CUDA 可用（删除 `--require-cuda`，不再存在 CPU fallback）；新增 `assert_fresh_start_environment()` 在 `last_committed==0` 时额外钉死 `sys.executable` == 预注册的 keqing1/.venv-win 解释器，且 native 二进制集合必须含预注册 V1 `19bb181e…`（resume 由 `load_committed_checkpoint` 的环境比较负责）。④ `--diagnostic-cycles` 整体删除（含 `p4m11_diagnostic_result.json` 与 `completion_status` 的 `diagnostic` 参数），因为它仍会向正式 output dir 写 `U1.pth`/`U1.done.json`。验证：聚焦测试 **84 → 90 项通过**（新增 6 项负向）；`verify_p4m11_review_fixes.py` **25/25**（规模未扩）；相关冻结测试 **180 项通过**；allowlist 套件 **291 passed / 5 pre-existing failures** 不变；dry-run（mandated 解释器）PASS，而同一个 dry-run 用错误 CPU 解释器被 **REFUSED**（`refusing to train without the pinned GPU: device is 'cpu', not 'cuda'`）。**未启动训练**：未采集、未 step、未产生 U32、未跑门、未碰 workbench 默认。",
+      "consumer_acceptance": {
+        "status": "pending",
+        "scope": "以新稳定 model ID 将同一不可变 checkpoint SHA 接入现有 workbench（play/review），不覆盖 K0 文件/别名/默认设置；用既有小型 smoke 验证加载、动作合法、play 完成回合、review 展示动作排序与来源模型。不新建平台或大评测。",
+        "pg_output_semantics": "PG 之后 DQN 输出是 policy logits / action scores，不是校准收益 Q。review 可消费动作建议/概率/排序，但依赖 Q 差的『收益损失 / 错误严重度』或跨模型统一分值功能必须先明确禁用或标注不适用；K0 可保留为明确标注的旧估值来源，不得混用后声称同一模型。",
+        "default_model": "K0（未切换）",
+        "k1_registration": "未发生；K1 仍为 null",
+        "gated_by": "负责人最终验收（不自动切默认、不自动登记 K1）"
+      }
     }
   ]
 }

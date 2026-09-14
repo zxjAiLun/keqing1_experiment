@@ -53,6 +53,7 @@ ALLOWED_STATUSES = {
     "not_supported",
     "implemented_not_started",
     "dataset_materialized_training_not_started",
+    "training_completed",
 }
 
 
@@ -136,6 +137,7 @@ def status_text(status: str) -> str:
         "not_supported": "已结束（不晋级）",
         "implemented_not_started": "已实现，未启动",
         "dataset_materialized_training_not_started": "数据已物化，训练未启动",
+        "training_completed": "训练完成（两级门分别裁决）",
     }[status]
 
 
@@ -160,7 +162,11 @@ def render_block(registry: dict[str, Any]) -> str:
         lines.append(f"| `{record['experiment_id']}` | {record['category']} | {status_text(record['status'])} | {result} |")
     lines.extend([
         "",
-        f"- 下一实验提案：`{state['next_experiment'] or '尚未选择'}`（{state['next_experiment_status']}）。",
+        (
+            f"- 下一实验提案：`{state['next_experiment']}`（{state['next_experiment_status']}）。"
+            if state["next_experiment"]
+            else "- 下一实验提案：尚未选择（本线研究侧流程已结束，剩余为工程交付）。"
+        ),
         "- 当前禁止事项：",
     ])
     lines.extend(f"  - {item}" for item in state["prohibitions"])
