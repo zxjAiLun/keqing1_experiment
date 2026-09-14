@@ -2803,7 +2803,22 @@
         "pg_output_semantics": "PG 之后 DQN 输出是 policy logits / action scores，不是校准收益 Q。review 可消费动作建议/概率/排序，但依赖 Q 差的『收益损失 / 错误严重度』或跨模型统一分值功能必须先明确禁用或标注不适用；K0 可保留为明确标注的旧估值来源，不得混用后声称同一模型。",
         "default_model": "K0（未切换）",
         "k1_registration": "未发生；K1 仍为 null",
-        "gated_by": "负责人最终验收（不自动切默认、不自动登记 K1）"
+        "gated_by": "负责人最终验收（不自动切默认、不自动登记 K1）",
+        "integration": {
+          "status": "integrated_optional",
+          "target": "keqing-workbench",
+          "model_id": "p4m11_u32",
+          "commits": [
+            "eaaaece",
+            "f5f7f17"
+          ],
+          "bundle": "keqing-data/mortal/authoritative/P4M11_U32_2026_09/models/P4M11_U32/U32_eval_weights.pth",
+          "bundle_sha256": "3703c943a64a00ca128f4a5f5f989d446dc5814c7e70dc50527d2756039a8add",
+          "default_unchanged": "K0 仍是默认与全部别名；未登记 K1",
+          "q_dependent_features": "对 action_score 模型判为不适用：服务端 q_loss 置空并在载荷中携带 score_semantics；前端分数列改标「动作分数」、Q 归一化 Rating 判为不适用、错误严重度高亮不再由 q_loss 触发",
+          "smoke": "tests/test_p4m11_u32_candidate.py（加载 / 合法动作 / 跑完真实牌谱 / 动作排序 / 报告语义）；共享模型根缺失时干净 skip，不 fail",
+          "acceptance": "pending（负责人最终验收）"
+        }
       }
     }
   ]
