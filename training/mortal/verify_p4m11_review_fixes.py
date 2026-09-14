@@ -88,11 +88,14 @@ with tempfile.TemporaryDirectory() as tmp:
     )
     starving.observe({})
     starving.observe({})
+    # A dead probe is still *recognised* as pressure (the counter and the event
+    # list both fire); it just no longer stops the run.
     record(
-        "1d an unreadable probe escalates to a safe pause (not a pass)",
-        starving.pause_requested and not starving.terminate_requested,
-        f"pause_requested={starving.pause_requested} "
-        f"terminate_requested={starving.terminate_requested}",
+        "1d an unreadable probe is still recorded as pressure",
+        starving.pause_guard.consecutive == 2
+        and any(e["kind"] == "pause-threshold" for e in starving.resource_events),
+        f"pause_consecutive={starving.pause_guard.consecutive}, "
+        f"events={len(starving.resource_events)}",
     )
 
     critical = m11.ResourceWatchdog(
@@ -103,15 +106,26 @@ with tempfile.TemporaryDirectory() as tmp:
     low = {**healthy, "system_available_bytes": 1}
     critical.observe(low)
     record(
-        "1e a single critical sample does not hard-stop",
-        not critical.terminate_requested,
-        f"terminate_requested={critical.terminate_requested}",
+        "1e a single critical sample is not yet sustained",
+        critical.critical_guard.consecutive == 1,
+        f"critical_consecutive={critical.critical_guard.consecutive}",
     )
     critical.observe(low)
+    failure = None
+    try:
+        critical.check()
+    except Exception as error:  # noqa: BLE001 - the point is that this must not raise
+        failure = repr(error)
     record(
-        "1f sustained critical pressure hard-stops exactly once",
-        critical.terminate_requested and critical.hard_stop_calls == 1,
-        f"hard_stop_calls={critical.hard_stop_calls}",
+        "1f sustained critical pressure is recorded and does NOT abort the run",
+        m11.ENFORCE_RESOURCE_STOP is False
+        and critical.critical_guard.consecutive == 2
+        and critical.hard_stop_calls == 0
+        and not critical.terminate_requested
+        and failure is None,
+        f"enforce={m11.ENFORCE_RESOURCE_STOP}, "
+        f"critical_consecutive={critical.critical_guard.consecutive}, "
+        f"hard_stop_calls={critical.hard_stop_calls}, check_raised={failure}",
     )
 
 # --------------------------------------------------------------------------

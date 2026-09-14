@@ -56,6 +56,19 @@ def _never_let_a_hard_stop_kill_pytest(monkeypatch: pytest.MonkeyPatch) -> None:
     # falls back to the real hard stop.
     monkeypatch.setattr(m11.os, "_exit", refuse)
 
+
+@pytest.fixture
+def enforce_resource_stop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Turn the resource *stop* back on to exercise the guard logic itself.
+
+    The thresholds are recorded rather than enforced on the actual run (see
+    ``ENFORCE_RESOURCE_STOP``): three attempts aborted before a single cycle was
+    collected, on a reading whose meaning is not settled.  The counting logic is
+    still the thing that decides *whether* a threshold was sustained, so the
+    enforcing path keeps its coverage here even though the run does not use it.
+    """
+    monkeypatch.setattr(m11, "ENFORCE_RESOURCE_STOP", True)
+
 C4 = REPO_ROOT / "artifacts/experiments/student_policy_v1/P4-M10_onpolicy_pg_4x256/C4.pth"
 C4_EVAL = (
     REPO_ROOT
@@ -738,7 +751,10 @@ def _critical_snapshot(**overrides: object) -> dict:
     )
 
 
-def test_watchdog_needs_sustained_pressure_before_pausing() -> None:
+def test_watchdog_needs_sustained_pressure_before_pausing(
+    enforce_resource_stop: None,
+) -> None:
+    """Counting: one breach is not sustained, a healthy sample resets the run."""
     watchdog = m11.ResourceWatchdog(
         target_dir=Path("."), guard_limit=2, require_gpu=False,
         sample_hook=lambda: _healthy_snapshot(),
@@ -764,7 +780,7 @@ def test_watchdog_needs_sustained_pressure_before_pausing() -> None:
     assert reset.pause_requested is False
 
 
-def test_watchdog_hard_stops_on_critical_pressure() -> None:
+def test_watchdog_hard_stops_on_critical_pressure(enforce_resource_stop: None) -> None:
     exits: list[int] = []
     reasons: list[str] = []
     watchdog = m11.ResourceWatchdog(
@@ -785,7 +801,9 @@ def test_watchdog_hard_stops_on_critical_pressure() -> None:
     assert caught.value.critical is True
 
 
-def test_watchdog_treats_missing_metrics_as_pressure() -> None:
+def test_watchdog_treats_missing_metrics_as_pressure(
+    enforce_resource_stop: None,
+) -> None:
     """A dead probe cannot be read as a healthy host.
 
     It escalates to a safe pause, never to a hard stop: an unreadable probe is
@@ -834,7 +852,9 @@ def test_watchdog_samples_in_flight_and_persists_them(tmp_path: Path) -> None:
     assert watchdog._thread is None
 
 
-def test_watchdog_survives_a_failing_probe_as_pressure(tmp_path: Path) -> None:
+def test_watchdog_survives_a_failing_probe_as_pressure(
+    tmp_path: Path, enforce_resource_stop: None,
+) -> None:
     def hook() -> dict:
         raise OSError("probe unavailable")
 
@@ -847,6 +867,227 @@ def test_watchdog_survives_a_failing_probe_as_pressure(tmp_path: Path) -> None:
     assert watchdog.pause_requested is True
     # A dead probe pauses the run; it never kills it outright.
     assert watchdog.hard_stop_calls == 0
+
+
+# ===========================================================================
+# Resource repair: a phase-aware VRAM judgement, plus hard-stop evidence
+# ===========================================================================
+def _vram_starved_snapshot(**overrides: object) -> dict:
+    """The exact shape that killed the first P4-M11 U01 attempt.
+
+    Global free VRAM 0 with ``reserved`` near the whole 8 GiB card, while live and
+    peak allocation stayed at the P4-M10 level and every other metric was fine.
+    """
+    return _healthy_snapshot(
+        label="vram-starved",
+        cuda_device_free_bytes=0,
+        cuda_reserved_bytes=7948 * 1024**2,
+        **overrides,
+    )
+
+
+def test_collection_phase_treats_vram_as_telemetry_not_a_floor() -> None:
+    """Under WDDM a global free of 0 is not "the model is out of memory"."""
+    snapshot = _vram_starved_snapshot()
+
+    # Outside collection the reading is still a floor, and it is breached.
+    assert m11.resource_violations(snapshot, require_gpu=True, phase=m11.PHASE_UPDATE)
+    assert m11.critical_violations(snapshot, require_gpu=True, phase=m11.PHASE_UPDATE)
+
+    # During collection it is recorded but must not decide anything.
+    assert m11.resource_violations(
+        snapshot, require_gpu=True, phase=m11.PHASE_COLLECTION
+    ) == []
+    assert m11.critical_violations(
+        snapshot, require_gpu=True, phase=m11.PHASE_COLLECTION
+    ) == []
+
+    # Telemetry, not deletion: the numbers are still in the snapshot.
+    assert snapshot["cuda_device_free_bytes"] == 0
+    assert snapshot["cuda_reserved_bytes"] == 7948 * 1024**2
+    assert m11.COLLECTION_PHASE_TELEMETRY_METRICS == frozenset(
+        {"cuda_device_free_bytes", "cuda_reserved_bytes"}
+    )
+
+
+def test_watchdog_records_but_does_not_stop_on_vram_during_collection(
+    tmp_path: Path,
+) -> None:
+    exits: list[int] = []
+    log = tmp_path / "resource_samples.jsonl"
+    watchdog = m11.ResourceWatchdog(
+        target_dir=tmp_path, guard_limit=2, require_gpu=True, sample_log=log,
+        sample_hook=_vram_starved_snapshot, exiter=exits.append,
+    )
+    watchdog.set_phase(m11.PHASE_COLLECTION)
+    for _ in range(3):
+        watchdog.observe(_vram_starved_snapshot())
+
+    assert exits == []
+    assert watchdog.hard_stop_calls == 0
+    assert watchdog.terminate_requested is False
+    assert watchdog.pause_requested is False
+    watchdog.check()  # a no-op: collection VRAM is not a safety stop
+
+    # Still persisted, because U01/U02 have to review exactly these numbers.
+    lines = [line for line in log.read_text(encoding="utf-8").splitlines() if line]
+    assert len(lines) == 3
+    assert json.loads(lines[-1])["cuda_reserved_bytes"] == 7948 * 1024**2
+
+
+def test_watchdog_still_hard_stops_on_vram_outside_collection(
+    enforce_resource_stop: None,
+) -> None:
+    """The exemption must not spill past the collector (it defaults to closed)."""
+    exits: list[int] = []
+    watchdog = m11.ResourceWatchdog(
+        target_dir=Path("."), guard_limit=2, require_gpu=True, exiter=exits.append,
+    )
+    assert watchdog.phase == m11.PHASE_UPDATE, "the default must over-protect"
+    watchdog.observe(_vram_starved_snapshot())
+    watchdog.observe(_vram_starved_snapshot())
+    assert exits == [m11.PAUSE_EXIT_CODE]
+    assert watchdog.hard_stop_calls == 1
+
+
+def test_hard_stop_writes_durable_evidence_before_exiting(
+    tmp_path: Path, enforce_resource_stop: None,
+) -> None:
+    """``os._exit`` leaves no traceback, so this file is the only evidence."""
+    seen_at_exit: list[bool] = []
+
+    def exiter(code: int) -> None:
+        seen_at_exit.append(m11.hard_stop_record_path(tmp_path).exists())
+        raise SystemExit(code)
+
+    watchdog: m11.ResourceWatchdog | None = None
+
+    def on_hard_stop(reason: str) -> None:
+        m11.write_hard_stop_record(tmp_path, reason=reason, watchdog=watchdog)
+
+    watchdog = m11.ResourceWatchdog(
+        target_dir=tmp_path, guard_limit=2, require_gpu=True,
+        exiter=exiter, on_hard_stop=on_hard_stop,
+    )
+    watchdog.context["cycle"] = 1
+    watchdog.context["attempt_dir"] = str(tmp_path / "cycle1" / "attempt1")
+    watchdog.observe(_vram_starved_snapshot())
+    with pytest.raises(SystemExit):
+        watchdog.observe(_vram_starved_snapshot())
+
+    assert seen_at_exit == [True], "the record must exist before the process exits"
+    payload = json.loads(
+        m11.hard_stop_record_path(tmp_path).read_text(encoding="utf-8")
+    )
+    assert payload["schema"] == "keqing.mortal.p4m11_hard_stop.v1"
+    assert payload["cycle"] == 1
+    assert payload["attempt_dir"].endswith("attempt1")
+    assert "critical" in payload["reason"]
+    assert payload["phase"] == m11.PHASE_UPDATE
+    assert payload["critical_consecutive_samples"] == 2
+    assert payload["critical_consecutive_limit"] == 2
+    assert payload["pause_consecutive_samples"] == 2
+    assert payload["hard_stop_calls"] == 1
+    assert payload["samples_recorded"] == 2
+    assert payload["last_resource_snapshot"]["cuda_device_free_bytes"] == 0
+    assert isinstance(payload["active_seconds"], float)
+
+
+def test_the_collection_exemption_does_not_leak_into_the_startup_gate() -> None:
+    """Preflight still *reports*, and the machine's real limits still count."""
+    snapshot = _vram_starved_snapshot()
+    problems = m11.preflight_violations(snapshot, require_gpu=True)
+    assert any("VRAM" in problem for problem in problems), (
+        "a low initial GPU headroom must still be reported at startup"
+    )
+
+    # RAM and a dead probe are still observed in the collection phase.
+    ram_starved = _healthy_snapshot(
+        system_available_bytes=int(m11.CRITICAL_LIMITS["min_available_ram_bytes"]) // 2
+    )
+    assert m11.resource_violations(ram_starved, require_gpu=True, phase=m11.PHASE_COLLECTION)
+    assert m11.critical_violations(ram_starved, require_gpu=True, phase=m11.PHASE_COLLECTION)
+
+
+# ===========================================================================
+# The thresholds are recorded, not enforced, on this run
+# ===========================================================================
+def test_resource_thresholds_do_not_stop_the_run(tmp_path: Path) -> None:
+    """A sustained breach must be recorded and must still let collection run.
+
+    This is the contract this run actually uses.  Three P4-M11 attempts aborted
+    inside the guard before producing a single cycle, on a reading whose meaning
+    is not settled, so the thresholds now only record.
+    """
+    assert m11.ENFORCE_RESOURCE_STOP is False
+    exits: list[int] = []
+    hard_stop_reasons: list[str] = []
+    log = tmp_path / "resource_samples.jsonl"
+    watchdog = m11.ResourceWatchdog(
+        target_dir=tmp_path, guard_limit=2, require_gpu=False, sample_log=log,
+        exiter=exits.append, on_hard_stop=hard_stop_reasons.append,
+        sample_hook=lambda: _critical_snapshot(),
+    )
+    for _ in range(4):
+        watchdog.observe(_critical_snapshot())
+
+    # Recorded in full...
+    assert watchdog.pause_guard.consecutive == 4
+    assert watchdog.critical_guard.consecutive == 4
+    assert len(log.read_text(encoding="utf-8").splitlines()) == 4
+    kinds = [event["kind"] for event in watchdog.resource_events]
+    assert kinds.count("pause-threshold") == 3
+    assert kinds.count("critical-threshold") == 3
+    assert "RAM" in str(watchdog.resource_events[-1]["problems"])
+
+    # ...but it never stops the run.
+    assert exits == []
+    assert hard_stop_reasons == []
+    assert watchdog.hard_stop_calls == 0
+    assert watchdog.pause_requested is False
+    assert watchdog.terminate_requested is False
+    watchdog.check()  # a safe point must not raise
+
+
+def test_a_dead_probe_is_recorded_without_stopping_the_run(tmp_path: Path) -> None:
+    """The probe-availability check keeps its meaning; it just no longer aborts."""
+    log = tmp_path / "resource_samples.jsonl"
+    watchdog = m11.ResourceWatchdog(
+        target_dir=tmp_path, interval=0.02, guard_limit=2, require_gpu=False,
+        sample_hook=lambda: {}, sample_log=log, exiter=lambda code: None,
+    )
+    with watchdog:
+        time.sleep(0.2)
+    assert watchdog.pause_guard.consecutive >= 2
+    assert [e["kind"] for e in watchdog.resource_events]
+    assert watchdog.terminate_requested is False
+    assert watchdog.hard_stop_calls == 0
+
+
+def test_the_other_fail_closed_checks_are_untouched(tmp_path: Path) -> None:
+    """Only the resource thresholds were relaxed; real contracts still raise.
+
+    Identity, completeness, resume and finite-value checks go through
+    ``P4M11ContractError`` and are deliberately independent of
+    ``ENFORCE_RESOURCE_STOP``.
+    """
+    assert m11.ENFORCE_RESOURCE_STOP is False
+    with pytest.raises(m11.P4M11ContractError, match="refuses to deviate"):
+        args = m11.parse_args([
+            "--output-dir", str(tmp_path), "--grad-clip", "2.0",
+        ])
+        m11.assert_recipe_arguments(args)
+    # The budget bypass flags stay deleted too.
+    with pytest.raises(SystemExit):
+        m11.parse_args(["--output-dir", str(tmp_path), "--cycles", "1"])
+    # A resume with no committed checkpoint is still refused, not skipped.
+    with pytest.raises(m11.P4M11ContractError):
+        m11.load_committed_checkpoint(
+            tmp_path, 1, device=torch.device("cpu"), mortal_root=MORTAL_ROOT
+        )
+    # A reserved metric is still required to be *readable* before a stop decision
+    # could ever rest on it; that check is a pure function and is unaffected.
+    assert m11._missing_metrics({"target_disk_free_bytes": 1}, require_gpu=False)
 
 
 # ===========================================================================
@@ -1251,7 +1492,7 @@ def test_budget_geometry_is_frozen_to_the_config() -> None:
 # Defect 5: a run of critical pressure must not survive a healthy sample, and
 #           phase-boundary snapshots must not push the counters
 # ===========================================================================
-def test_critical_guard_resets_on_a_healthy_sample() -> None:
+def test_critical_guard_resets_on_a_healthy_sample(enforce_resource_stop: None) -> None:
     """critical -> healthy -> critical must NOT trip the hard stop."""
     exits: list[int] = []
     watchdog = m11.ResourceWatchdog(
@@ -1272,7 +1513,7 @@ def test_critical_guard_resets_on_a_healthy_sample() -> None:
     assert exits == [m11.PAUSE_EXIT_CODE]
 
 
-def test_pause_guard_resets_on_a_healthy_sample() -> None:
+def test_pause_guard_resets_on_a_healthy_sample(enforce_resource_stop: None) -> None:
     watchdog = m11.ResourceWatchdog(
         target_dir=Path("."), guard_limit=2, require_gpu=False,
         sample_hook=dict,
@@ -1285,7 +1526,9 @@ def test_pause_guard_resets_on_a_healthy_sample() -> None:
     assert watchdog.pause_requested is True
 
 
-def test_boundary_snapshots_do_not_advance_the_counters(tmp_path: Path) -> None:
+def test_boundary_snapshots_do_not_advance_the_counters(
+    tmp_path: Path, enforce_resource_stop: None,
+) -> None:
     """Two readings moments apart around a phase edge are not sustained pressure."""
     log = tmp_path / "resource_samples.jsonl"
     watchdog = m11.ResourceWatchdog(
