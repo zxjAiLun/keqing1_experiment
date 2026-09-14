@@ -10,7 +10,11 @@ from pathlib import Path
 import sys
 from typing import Any
 
-from training.mortal import eval_metrics
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from training.mortal import eval_metrics  # noqa: E402
 
 DEFAULT_RANK_PTS = eval_metrics.TENHOU_RANK_POINTS
 
@@ -176,6 +180,7 @@ def build_stat_report(
     mortal_root: str | Path = Path("third_party/Mortal"),
     rank_pts: Sequence[int | float] = DEFAULT_RANK_PTS,
     rank_points_profile: str = "custom",
+    require_games: bool = False,
 ) -> dict[str, Any]:
     stat_cls = import_stat_class(mortal_root)
     player_stats: dict[str, dict[str, Any]] = {}
@@ -185,6 +190,16 @@ def build_stat_report(
             "player_name": str(player_name),
             **stat_to_metrics(stat, rank_pts=rank_pts),
         }
+    if require_games:
+        # A wrong log dir or a mismatched player name makes libriichi return an
+        # empty Stat (~0 games) instead of failing, which silently produces a
+        # report full of zeros.  A report request that found nothing is an error.
+        empty = [label for label, stats in player_stats.items() if not int(stats["raw"]["game"])]
+        if empty:
+            raise RuntimeError(
+                f"no games found under {log_dir} for {empty}: the log dir is empty or those "
+                "names never appear in a start_game event"
+            )
     return {
         "schema": "keqing.mortal.libriichi.stat.v1",
         "backend": "libriichi.stat.Stat.from_dir",
@@ -204,6 +219,7 @@ def write_stat_report(
     mortal_root: str | Path = Path("third_party/Mortal"),
     rank_pts: Sequence[int | float] = DEFAULT_RANK_PTS,
     rank_points_profile: str = "custom",
+    require_games: bool = False,
 ) -> dict[str, Any]:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -213,6 +229,7 @@ def write_stat_report(
         mortal_root=mortal_root,
         rank_pts=rank_pts,
         rank_points_profile=rank_points_profile,
+        require_games=require_games,
     )
     (output_path / "detailed_stats.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + "\n",
@@ -297,6 +314,7 @@ def main() -> None:
         mortal_root=args.mortal_root,
         rank_pts=rank_pts,
         rank_points_profile=_profile,
+        require_games=True,
     )
     print(format_markdown_report(report), end="")
 

@@ -45,6 +45,7 @@ from training.mortal.eval_metrics import (  # noqa: E402
     summarize_rank_counts,
 )
 from training.mortal.four_player_native import _load_engine  # noqa: E402
+from training.mortal.stat_report import write_stat_report  # noqa: E402
 
 # Log split letter -> challenger seat.  libriichi writes one file per rotation
 # in the order the agent index table declares them.
@@ -143,6 +144,62 @@ def _stat_rank_count(stat: Any, rank: int) -> int:
     """`rank_N` is an attribute getter; tolerate a method on other builds."""
     value = getattr(stat, f"rank_{rank}")
     return int(value() if callable(value) else value)
+
+
+# Fields carried into metrics.json next to the full detailed_stats.json/md the
+# report writer leaves on disk.  Rank counts alone are not a match report.
+_DETAILED_STATS_KEYS = (
+    "rank_1_rate",
+    "rank_2_rate",
+    "rank_3_rate",
+    "rank_4_rate",
+    "avg_rank",
+    "agari_rate",
+    "houjuu_rate",
+    "fuuro_rate",
+    "riichi_rate",
+    "ryukyoku_rate",
+    "avg_point_per_agari",
+    "avg_agari_jun",
+    "avg_houjuu_jun",
+    "avg_point_per_game",
+    "total_rank_pt",
+    "avg_rank_pt",
+)
+
+
+def _detailed_stats_summary(
+    report: dict[str, Any],
+    *,
+    challenger_label: str,
+    champion_label: str,
+    hanchans: int,
+) -> dict[str, Any]:
+    """Compact view of the full report, with the sample basis spelled out."""
+    return {
+        "report_schema": report["schema"],
+        "json": "detailed_stats.json",
+        "markdown": "detailed_stats.md",
+        "sample_basis": {
+            "challenger": f"1 seat x {hanchans} hanchans",
+            "trio": f"3 seats x {hanchans} hanchans",
+            "note": (
+                "per-seat rates. The champion label covers all three trio seats, so its "
+                "counts are 3x the challenger's over the same hanchans; compare rates, not "
+                "counts. ryukyoku_rate is a table-level property and is identical for both sides."
+            ),
+        },
+        "players": {
+            label: {
+                "role": "challenger" if label == challenger_label else "trio_seat",
+                "player_name": stats["player_name"],
+                "game": stats["raw"]["game"],
+                "round": stats["raw"]["round"],
+                **{key: stats["derived"][key] for key in _DETAILED_STATS_KEYS},
+            }
+            for label, stats in report["players"].items()
+        },
+    }
 
 
 def _seed_ranks(log_dir: Path, seed: int, seed_key: int) -> list[int]:
@@ -378,6 +435,25 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         },
     }
 
+    # ---- full match report (same writer the 4-player arena already used) -----
+    # The rank counts above are not a match report.  This reads the logs the run
+    # just wrote, so it costs no GPU time and no extra games.
+    detailed_stats = write_stat_report(
+        output_dir=args.output_dir,
+        log_dir=log_dir,
+        players={challenger_label: challenger_label, champion_label: champion_label},
+        mortal_root=args.mortal_root,
+        rank_pts=rank_points,
+        rank_points_profile=rank_points_profile,
+        require_games=True,
+    )
+    document["detailed_stats"] = _detailed_stats_summary(
+        detailed_stats,
+        challenger_label=challenger_label,
+        champion_label=champion_label,
+        hanchans=games,
+    )
+
     (args.output_dir / "metrics.json").write_text(json.dumps(document, ensure_ascii=False, indent=2), encoding="utf-8")
     if ranks_match_native is False:
         print("[one_vs_three] WARNING: log-derived ranks disagree with native counts", flush=True)
@@ -404,6 +480,7 @@ def main() -> None:
         "avg_pt_ci95": document["cluster_statistics"]["challenger_avg_pt"]["seed_cluster_bootstrap_ci95"],
         "throughput": document["throughput"],
         "ranks_match_native": document["integrity"]["ranks_match_native"],
+        "detailed_stats": document.get("detailed_stats", {}).get("markdown"),
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
 

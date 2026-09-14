@@ -744,6 +744,161 @@
       "description": "★ agari guard / claim 抢先的只读补记（运行期字段为 null，本文件补出真实计数）",
       "exists": true,
       "bytes": 24749
+    },
+    {
+      "experiment": "P4-M11",
+      "kind": "dir",
+      "path": "artifacts/experiments/student_policy_v1/P4-M11_direct_pg_C4_plus32",
+      "description": "★ P4-M11 单一线系 hard50k → C4 → U32（32 cycle × 256 on-policy 半庄）；此条目只计顶层 *.pth",
+      "exists": true,
+      "files": 33,
+      "bytes": 4227198330,
+      "listing_sha256": "c13602d1c24134ad23c0c417b527f36d3dbe1c869165e029612fbeab0355c728"
+    },
+    {
+      "experiment": "P4-M11",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M11_direct_pg_C4_plus32/RESULT.md",
+      "description": "★ P4-M11 运行目录内结果副本（两门结论、优势来源、可用模型、复现入口）",
+      "exists": true,
+      "bytes": 3334
+    },
+    {
+      "experiment": "P4-M11",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M11_direct_pg_C4_plus32/p4m11_result.json",
+      "description": "★ 32 cycle 运行级结果（完成态、最终 Adam step、评测端点）",
+      "exists": true,
+      "bytes": 41113
+    },
+    {
+      "experiment": "P4-M11",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M11_direct_pg_C4_plus32/cycles.jsonl",
+      "description": "逐 cycle 记录（采集/更新/Adam step/checkpoint 身份）",
+      "exists": true,
+      "bytes": 20817
+    },
+    {
+      "experiment": "P4-M11",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M11_direct_pg_C4_plus32/U32.pth",
+      "description": "训练端点（含 optimizer_state/cycle，130 MB）；**不可直接加载评测**，评测请用 U32_eval_weights.pth",
+      "exists": true,
+      "bytes": 130736062
+    },
+    {
+      "experiment": "P4-M11",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M11_direct_pg_C4_plus32/U32_eval_weights.pth",
+      "description": "★ 被评测的候选权重（U32.pth 去掉 optimizer/cycle 的纯重封装，650+2 张量逐位一致）",
+      "exists": true,
+      "bytes": 43701393,
+      "sha256": "3703c943a64a00ca128f4a5f5f989d446dc5814c7e70dc50527d2756039a8add"
+    },
+    {
+      "experiment": "P4-M11",
+      "kind": "file",
+      "path": "artifacts/experiments/student_policy_v1/P4-M11_direct_pg_C4_plus32/U32_eval_weights.provenance.json",
+      "description": "★ 上述导出的来源与校验记录（源 sha256、张量一致性、arena loader 接受）",
+      "exists": true,
+      "bytes": 962,
+      "sha256": "bd8bdd70a8faaf2ebcb4eda294c9b0145e7688709038fa3a7777c7f4da552075"
+    },
+    {
+      "experiment": "P4-M11",
+      "kind": "dir",
+      "path": "artifacts/eval/ovt_p4m11_gateA_solo",
+      "description": "★ Gate A 方向 1：U32 单挑 vs 3×K0_70k（256 seeds × 4 座位；含 metrics/run_identity/detailed_stats）",
+      "exists": true,
+      "files": 1024,
+      "bytes": 40753265,
+      "listing_sha256": "1e7ab4bdc1d2c9d5881e149b3e5063d5f7e41fd203f17c63b9a652ce38cb54c5"
+    },
+    {
+      "experiment": "P4-M11",
+      "kind": "dir",
+      "path": "artifacts/eval/ovt_p4m11_gateA_mirror",
+      "description": "★ Gate A 方向 2：K0_70k 单挑 vs 3×U32",
+      "exists": true,
+      "files": 1024,
+      "bytes": 40980972,
+      "listing_sha256": "e35de83796a92d8c00c6a1ae3c83a8e75ebf6312e1d99e8d0c052e2379ec0aec"
+    },
+    {
+      "experiment": "P4-M11",
+      "kind": "dir",
+      "path": "artifacts/eval/ovt_p4m11_gateB_solo",
+      "description": "★ Gate B 方向 1：U32 单挑 vs 3×ext_mortal",
+      "exists": true,
+      "files": 1024,
+      "bytes": 40255102,
+      "listing_sha256": "4209493c99510b8201d7929611254fe427f32183887260866a7b43cd31191c0c"
+    },
+    {
+      "experiment": "P4-M11",
+      "kind": "dir",
+      "path": "artifacts/eval/ovt_p4m11_gateB_mirror",
+      "description": "★ Gate B 方向 2：ext_mortal 单挑 vs 3×U32",
+      "exists": true,
+      "files": 1024,
+      "bytes": 39918201,
+      "listing_sha256": "dac4be27621a151541f08563e78d9e4b169f9d8b36da0d2fe678b3287b3f2d0e"
+    },
+    {
+      "experiment": "P4-M11",
+      "kind": "file",
+      "path": "artifacts/eval/p4m11_gateA_verdict.json",
+      "description": "★ Gate A 裁决（practical_gate = supported，G = +2.6367 [+0.2930, +4.9294]）",
+      "exists": true,
+      "bytes": 3812,
+      "sha256": "9645660257bfe51f5137ea359e22a06519677f0bff5fd88599941528d28cbb4c"
+    },
+    {
+      "experiment": "P4-M11",
+      "kind": "file",
+      "path": "artifacts/eval/p4m11_gateB_verdict.json",
+      "description": "★ Gate B 裁决（eve_gate = not_supported，G = -5.0317 [-7.5515, -2.4976]）",
+      "exists": true,
+      "bytes": 3838,
+      "sha256": "3c15b15df72f7254ed97391e34cb2273e9d5a15c3a1d7055a7000a5a7fe5d9c1"
+    },
+    {
+      "experiment": "P4-M11",
+      "kind": "file",
+      "path": "artifacts/eval/p4m11_gate_stats_zh.md",
+      "description": "★ 中文双向详细统计摘要（四个方向、逐座比率、双方样本口径）",
+      "exists": true,
+      "bytes": 4531,
+      "sha256": "c9716018a7246cc42712b880822a1d20b20559fb36936140327f6db9d3fabccf"
+    },
+    {
+      "experiment": "P4-M11",
+      "kind": "file",
+      "path": "artifacts/eval/p4m11_gate_stats_zh.json",
+      "description": "同上，机器可读版",
+      "exists": true,
+      "bytes": 23485,
+      "sha256": "637b94f98d0c9136ada7657450870804130859a5d04c20cfd84c3200c8a43b5c"
+    },
+    {
+      "experiment": "P4-M11",
+      "kind": "file",
+      "path": "training/docs/mortal/2026-09/2026-09-14_P4-M11_结果总览与交付索引.md",
+      "description": "★ P4-M11 **唯一结果入口**（训练/两门/详细统计/模型来源+sha/复现/目录约定）",
+      "exists": true,
+      "bytes": 12606,
+      "sha256": "7761b19aa376fd1929f0dd4d29a3b26c50fd212de571eca42fb466926dcec0dd"
+    },
+    {
+      "experiment": "P4-M11",
+      "kind": "dir",
+      "path": "artifacts/eval/_p4m11_gateA_logs",
+      "description": "临时目录（前缀 _）：启动脚本、原始日志、失败启动与自检输出；正式脚本已移入 training/mortal/",
+      "exists": true,
+      "files": 27,
+      "bytes": 212513,
+      "listing_sha256": "a02510b2b30608c2817f805cf0f91e886ec67cccc1100d90cd800a50b1848e6d"
     }
   ]
 }
