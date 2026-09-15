@@ -39,6 +39,10 @@ import numpy as np
 
 DEFAULT_SCHEMA = "keqing.mortal.ovt_gate_verdict.v1"
 
+# One seed is four seat rotations -- the gate protocol, frozen in the plan.
+HANCHANS_PER_SEED = 4
+VALID_RANKS = (1, 2, 3, 4)
+
 
 def percentile(values: list[float], quantile: float) -> float:
     ordered = sorted(values)
@@ -71,6 +75,79 @@ def seed_pt(document: dict[str, Any]) -> dict[int, float]:
 def band(document: dict[str, Any]) -> tuple[str, int, int]:
     payload = document.get("seeds") or {}
     return str(payload.get("seed_start")), int(payload.get("seed_count", -1)), int(payload.get("seed_key", -1))
+
+
+def _as_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def data_problems(
+    name: str,
+    document: dict[str, Any],
+    *,
+    expected_start: int,
+    expected_count: int,
+    per_seed: int = HANCHANS_PER_SEED,
+) -> list[str]:
+    """Problems with the records that *exist*, not with the declared metadata.
+
+    ``seeds``/``hanchans`` are claims the run writes about itself.  A truncated
+    run can keep a 256-seed / 1024-hanchan header while recording one seed, and
+    adjudicating that would print a gate verdict computed on a fraction of the
+    data.  So the per-seed rank lists are checked against the declared band:
+    every expected seed present, no extras, exactly one rank per seat rotation,
+    and every rank a real finishing place.
+    """
+    ranks_by_seed = (document.get("integrity") or {}).get("per_seed_ranks") or {}
+    problems: list[str] = []
+
+    expected = list(range(expected_start, expected_start + expected_count))
+    actual = sorted(seed for seed in (_as_int(key) for key in ranks_by_seed) if seed is not None)
+    if len(actual) != len(ranks_by_seed):
+        problems.append(f"{name}: per_seed_ranks has non-integer seed keys")
+    if actual != expected:
+        if not actual:
+            problems.append(
+                f"{name}: per_seed_ranks is empty; expected {expected_count} seeds {expected_start}..{expected[-1]}"
+            )
+        else:
+            problems.append(
+                f"{name}: per_seed_ranks covers {len(actual)} seeds {actual[0]}..{actual[-1]}; "
+                f"expected {expected_count} seeds {expected_start}..{expected[-1]}"
+            )
+
+    wrong_length = sorted(
+        str(seed) for seed, ranks in ranks_by_seed.items() if len(ranks) != per_seed
+    )
+    if wrong_length:
+        problems.append(
+            f"{name}: {len(wrong_length)} seeds do not hold exactly {per_seed} ranks "
+            f"(e.g. {wrong_length[:3]})"
+        )
+
+    invalid: list[str] = []
+    for seed, ranks in ranks_by_seed.items():
+        for rank in ranks:
+            if isinstance(rank, bool) or not isinstance(rank, int) or rank not in VALID_RANKS:
+                invalid.append(str(seed))
+                break
+    if invalid:
+        problems.append(
+            f"{name}: {len(invalid)} seeds hold a rank outside {list(VALID_RANKS)} (e.g. {sorted(invalid)[:3]})"
+        )
+
+    recorded = sum(len(ranks) for ranks in ranks_by_seed.values())
+    declared = document.get("hanchans")
+    if recorded != declared:
+        problems.append(f"{name}: {recorded} recorded hanchans but the metadata declares {declared}")
+    if declared != expected_count * per_seed:
+        problems.append(
+            f"{name}: {declared} declared hanchans != {expected_count} seeds x {per_seed}"
+        )
+    return problems
 
 
 def identity_of(metrics_path: Path, document: dict[str, Any], role: str) -> dict[str, Any]:
@@ -166,6 +243,17 @@ def main(argv: list[str] | None = None) -> int:
         reused = [b for b in document["integrity"].get("native_batches", []) if b.get("reused")]
         if reused:
             problems.append(f"{name}: {len(reused)} reused native batches")
+        # The declared band above is a claim; these are the records that exist.
+        expected_start = args.expect_seed_start if args.expect_seed_start is not None else _as_int(start)
+        if expected_start is None:
+            problems.append(
+                f"{name}: seed_start is {start!r}, so the recorded seed range cannot be checked "
+                "(pass --expect-seed-start)"
+            )
+        else:
+            problems += data_problems(
+                name, document, expected_start=expected_start, expected_count=args.expect_seeds
+            )
 
     # One artifact as the candidate (solo seat in one direction, trio in the other),
     # one as the reference.  A differing path or digest means the two directions did

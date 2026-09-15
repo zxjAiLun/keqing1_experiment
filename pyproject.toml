@@ -36,6 +36,7 @@ python_files = [
     "test_mortal_eval_metrics.py",
     "test_mortal_objective.py",
     "test_normal_progress.py",
+    "test_p4m11_delivery.py",
     "test_progress_oracle_rust.py",
     "test_replay_aux_targets.py",
     "test_replay_final_rank_targets.py",

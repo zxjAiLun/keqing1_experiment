@@ -2837,9 +2837,43 @@
             "training/mortal/export_eval_weights.py",
             "training/mortal/publish_authoritative_bundle.py"
           ],
-          "tests": "tests/test_p4m11_delivery.py（24 项；不在 pyproject python_files 白名单内，需显式运行）",
+          "tests": "tests/test_p4m11_delivery.py（33 项；**已纳入 pyproject.toml 的 python_files 白名单**，默认 pytest -q 即 CI 会收集；无原生模块的项 skip，sys.path 契约项用 stub 在任何环境都真正运行）",
           "run_dir_record": "artifacts/experiments/student_policy_v1/P4-M11_direct_pg_C4_plus32/RESULT.md",
-          "artifact_index": "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_产物索引.json（已含 P4-M11 条目）"
+          "artifact_index": "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_产物索引.json（已含 P4-M11 条目）",
+          "closure_repairs": {
+            "review_basis": "两轮合并验收（2026-09-15）：结果与详细报告通过；U32 候选接入基本通过，另列三项小修补。",
+            "status": "all_three_applied",
+            "items": [
+              {
+                "id": "integrity",
+                "gap": "adjudicate_ovt_gate.py 只核对头部声明的 seeds/hanchans，不核对实际记录；保留 256/1024 头部而把数据缩成 1 个 seed 仍能完成裁决。",
+                "fix": "新增 data_problems()：实际 seed 集合须恰好等于预期区间、每 seed 恰好 4 个名次、名次 ∈ {1,2,3,4}、实际记录数与声明一致；不符即拒绝且不写 verdict。",
+                "control": "撤回接线后 4 项新测试全部变红；正例两门 verdict 仍逐字节一致。"
+              },
+              {
+                "id": "native_shadowing",
+                "gap": "stat_report.import_stat_class 默认把 third_party/Mortal/mortal 插到 sys.path 最前，干净进程中被遮蔽成仓库构建（05647bf7…）而非钉住的 19bb181e…。",
+                "fix": "默认不碰 sys.path，仅在显式传入 root 时遮蔽；报告新增 native 字段记录原生模块路径 + sha256 + 解释器 + 是否改写 sys.path。",
+                "control": "撤回默认值后 3 项测试变红（含顺序无关的 stub 契约测试，该测试已修正一处会被同进程污染掩盖的假绿）。",
+                "numbers_unchanged": "去遮蔽后在指定 venv 重算 gateA_solo，players 与既有报告完全一致。"
+              },
+              {
+                "id": "play_acceptance",
+                "gap": "原 play 测试调用 run_replay_single_raw，沿存量牌谱推进，未证明真实 play 中 U32 动作被执行。",
+                "fix": "补真实 play 冒烟：走 /battle/start_4bot 与 /battle/advance 同一条 BotDriver.take_turn 路径，动作经 validate_and_apply 应用到 room.state。",
+                "control": "对照实验发现 driver 在 bot 返回 none 时仍会替模型弃牌，故『出现弃牌』不可归因；可归属证据为『被打出的牌 == 模型请求的牌』，两类断言均已固定。"
+              }
+            ],
+            "test_suites": {
+              "keqing1_experiment_default": "324 passed / 5 pre-existing failures（原 291/5；新增 33 项已进 CI 套件）",
+              "workbench_full": "1066 passed / 4 failed / 2 skipped（失败集与既有 4 项完全相同）",
+              "workbench_ci_like": "空 model root：4 passed / 5 skipped；真实 play 冒烟的 CPU 对照在 CI 内运行"
+            },
+            "not_done": [
+              "play/review 候选验收仍为 pending，由负责人最终验收（默认模型仍为 K0，K1 未登记）。",
+              "未为验收搬动或删除 173 GB 历史产物。"
+            ]
+          }
         }
       }
     }

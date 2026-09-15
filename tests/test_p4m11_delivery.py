@@ -13,18 +13,24 @@ rather than the training recipe itself:
   ``adjudicate_ovt_gate`` -- the promoted reproduction scripts.  Each must refuse
   to touch an existing artifact it disagrees with.
 
-Like the other P4-M9/M10/M11 test files this one is not in the pyproject
-``python_files`` allowlist, so the default suite does not collect it.  Run it
-explicitly:
+Like most P4-M9/M10/M11 test files this one is not in the pyproject
+``python_files`` allowlist for the training recipe itself -- but the tests for
+*these* tools are, deliberately: they guard reproduction entry points, so a
+regression has to surface in CI rather than at the next write-up.
 
     python -m pytest tests/test_p4m11_delivery.py -q
+
+The native-module tests skip where libriichi is absent (CI); the sys.path
+contract tests use a stub so they run everywhere.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 import sys
+import types
 
 import pytest
 
@@ -32,10 +38,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from training.mortal import stat_report  # noqa: E402
 from training.mortal import summarize_ovt_gate_stats as summary  # noqa: E402
 from training.mortal.adjudicate_ovt_gate import (  # noqa: E402
     artifact_id,
     band,
+    data_problems,
     identity_of,
     percentile,
     seed_pt,
@@ -171,11 +179,9 @@ def test_parse_gate_spec():
 
 
 def _require_stat_class():
-    from training.mortal import stat_report  # noqa: PLC0415
-
     try:
-        stat_report.import_stat_class(REPO_ROOT / "third_party" / "Mortal")
-    except Exception as exc:  # pragma: no cover - depends on a built extension
+        stat_report.import_stat_class()
+    except Exception as exc:  # pragma: no cover - depends on a native build
         pytest.skip(f"libriichi Stat is unavailable: {exc}")
     return stat_report
 
@@ -197,6 +203,83 @@ def test_stat_report_default_keeps_the_old_tolerant_behaviour(tmp_path: Path):
     empty.mkdir()
     report = stat_report.build_stat_report(log_dir=empty, players={"a": "a"})
     assert report["players"]["a"]["raw"]["game"] == 0
+
+
+# --------------------------------------------------------------------------
+# stat_report: the standalone entry must not shadow the environment's native module
+# --------------------------------------------------------------------------
+
+
+def test_stat_class_search_path_is_empty_by_default_and_opt_in_otherwise(tmp_path: Path):
+    assert stat_report.stat_class_search_path(None) == []
+    assert stat_report.stat_class_search_path(tmp_path) == [str((tmp_path / "mortal").resolve())]
+
+
+def _stub_libriichi(monkeypatch):
+    """Install a fake libriichi so the path-shaping contract runs without a native build."""
+    package = types.ModuleType("libriichi")
+    stat_module = types.ModuleType("libriichi.stat")
+    stat_module.Stat = object  # type: ignore[attr-defined]
+    package.stat = stat_module  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "libriichi", package)
+    monkeypatch.setitem(sys.modules, "libriichi.stat", stat_module)
+    return stat_module
+
+
+def test_import_stat_class_does_not_touch_sys_path_by_default(monkeypatch):
+    """The repair: defaulting to third_party silently replaced the venv's native build.
+
+    Any pre-existing ``third_party`` entry is removed first: otherwise an earlier
+    test in the same process can leave the path behind, ``sys.path.insert``
+    becomes a no-op, and this control passes even with the bug restored.
+    """
+    stat_module = _stub_libriichi(monkeypatch)
+    saved = list(sys.path)
+    sys.path[:] = [entry for entry in sys.path if "third_party" not in entry.replace("\\", "/")]
+    try:
+        before = list(sys.path)
+        assert stat_report.import_stat_class() is stat_module.Stat
+        assert sys.path == before, "the standalone entry point rewrote sys.path"
+    finally:
+        sys.path[:] = saved
+
+
+def test_import_stat_class_shadows_only_when_a_root_is_given(monkeypatch, tmp_path: Path):
+    """Negative control: the opt-in path still has to work."""
+    _stub_libriichi(monkeypatch)
+    root = tmp_path / "third_party" / "Mortal"
+    (root / "mortal").mkdir(parents=True)
+    expected = str((root / "mortal").resolve())
+    try:
+        stat_report.import_stat_class(root)
+        assert sys.path[0] == expected
+    finally:
+        while expected in sys.path:
+            sys.path.remove(expected)
+
+
+def test_standalone_cli_loads_the_launched_interpreter_native_module():
+    """End-to-end: a clean process must not pick up ``third_party``'s libriichi.
+
+    Skipped where the native module is absent (CI), which is the only place this
+    cannot be observed.
+    """
+    probe = (
+        "import json, sys, pathlib; sys.path.insert(0, '.');"
+        "from training.mortal import stat_report;"
+        "stat_report.import_stat_class();"
+        "import libriichi;"
+        "print(json.dumps({'file': str(pathlib.Path(libriichi.__file__).resolve()),"
+        " 'sys_path0': sys.path[0]}))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], cwd=str(REPO_ROOT), capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        pytest.skip(f"the native libriichi is unavailable: {result.stderr.strip()[:200]}")
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert "third_party" not in payload["file"].replace("\\", "/")
+    assert "third_party" not in payload["sys_path0"].replace("\\", "/")
 
 
 # --------------------------------------------------------------------------
@@ -440,3 +523,81 @@ def test_adjudicate_refuses_a_wrong_seed_band(tmp_path: Path):
             "--candidate-label", CANDIDATE, "--reference-label", "k0_70k",
             "--expect-seeds", "4", "--expect-hanchans", "16", "--expect-seed-start", "999999",
         ])
+
+
+def _adj_args(solo: Path, mirror: Path, out: Path | None = None) -> list[str]:
+    args = [
+        "--solo-metrics", str(solo), "--mirror-metrics", str(mirror),
+        "--candidate-label", CANDIDATE, "--reference-label", "k0_70k",
+        "--expect-seeds", "4", "--expect-hanchans", "16", "--expect-seed-start", "740000",
+        "--reps", "200",
+    ]
+    if out is not None:
+        args += ["--output", str(out)]
+    return args
+
+
+def _edit_document(path: Path, mutate) -> None:
+    document = json.loads(path.read_text(encoding="utf-8"))
+    mutate(document)
+    path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+
+
+# The next four are the integrity checks added after review: the tool used to
+# trust the declared ``seeds``/``hanchans`` header, so a run truncated to one seed
+# still adjudicated and printed a gate verdict.
+
+
+def test_adjudicate_refuses_a_run_truncated_under_a_full_header(tmp_path: Path):
+    solo, mirror = _pair(tmp_path)
+
+    def _keep_one(document):
+        per_seed = document["integrity"]["per_seed_ranks"]
+        for seed in sorted(per_seed)[1:]:
+            del per_seed[seed]
+
+    _edit_document(solo, _keep_one)
+    _edit_document(mirror, _keep_one)
+    out = tmp_path / "verdict.json"
+    with pytest.raises(SystemExit, match="per_seed_ranks covers 1 seeds"):
+        adjudicate_main(_adj_args(solo, mirror, out))
+    assert not out.exists(), "a verdict was written for a truncated run"
+
+
+def test_adjudicate_refuses_a_seed_without_exactly_four_ranks(tmp_path: Path):
+    solo, mirror = _pair(tmp_path)
+    _edit_document(solo, lambda d: d["integrity"]["per_seed_ranks"]["740000"].pop())
+    _edit_document(mirror, lambda d: d["integrity"]["per_seed_ranks"]["740001"].pop())
+    with pytest.raises(SystemExit, match="do not hold exactly 4 ranks"):
+        adjudicate_main(_adj_args(solo, mirror))
+
+
+def test_adjudicate_refuses_an_impossible_rank(tmp_path: Path):
+    solo, mirror = _pair(tmp_path)
+    _edit_document(solo, lambda d: d["integrity"]["per_seed_ranks"]["740000"].__setitem__(0, 5))
+    _edit_document(mirror, lambda d: d["integrity"]["per_seed_ranks"]["740000"].__setitem__(1, 0))
+    with pytest.raises(SystemExit, match="rank outside"):
+        adjudicate_main(_adj_args(solo, mirror))
+
+
+def test_adjudicate_refuses_records_that_contradict_the_declared_count(tmp_path: Path):
+    solo, mirror = _pair(tmp_path)
+    _edit_document(solo, lambda d: d.__setitem__("hanchans", 1024))
+    _edit_document(mirror, lambda d: d.__setitem__("hanchans", 1024))
+    with pytest.raises(SystemExit, match="recorded hanchans"):
+        adjudicate_main(_adj_args(solo, mirror))
+
+
+def test_data_problems_accepts_the_real_shape():
+    """A seed is four seat rotations for ONE player, so ranks need not be a permutation."""
+    document = {
+        "hanchans": 8,
+        "integrity": {
+            "per_seed_ranks": {
+                "740000": [3, 1, 3, 3],
+                "740001": [1, 2, 3, 4],
+            }
+        },
+    }
+    assert data_problems("solo", document, expected_start=740000, expected_count=2) == []
+    assert data_problems("solo", document, expected_start=740001, expected_count=2) != []

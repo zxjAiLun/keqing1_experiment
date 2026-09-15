@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 import argparse
+import hashlib
+import importlib
 import json
 from math import isfinite
 from pathlib import Path
 import sys
 from typing import Any
+
+_NATIVE_SUFFIXES = {".pyd", ".so", ".dll"}
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(_REPO_ROOT) not in sys.path:
@@ -137,13 +141,102 @@ DISPLAY_ROWS = (
 )
 
 
-def import_stat_class(mortal_root: str | Path = Path("third_party/Mortal")) -> Any:
-    mortal_python_dir = (Path(mortal_root) / "mortal").resolve()
-    if str(mortal_python_dir) not in sys.path:
-        sys.path.insert(0, str(mortal_python_dir))
+def stat_class_search_path(mortal_root: str | Path | None) -> list[str]:
+    """The ``sys.path`` entry ``import_stat_class`` would add; ``[]`` means "add none".
+
+    Kept separate so the decision is testable without a native module present:
+    the default must never move ``sys.path``, and passing a root must.
+    """
+    if mortal_root is None:
+        return []
+    return [str((Path(mortal_root) / "mortal").resolve())]
+
+
+def import_stat_class(mortal_root: str | Path | None = None) -> Any:
+    """Import ``libriichi.stat.Stat`` from the *active environment*.
+
+    ``mortal_root`` used to default to ``third_party/Mortal`` and pushed
+    ``<root>/mortal`` to the front of ``sys.path``.  That silently shadowed the
+    environment's own native module: in a clean process started with the
+    mandated venv, ``libriichi`` resolved to the repository copy (``05647bf7…``
+    instead of the pinned ``19bb181e…``), so this "standalone" entry point was not
+    running the interpreter it was launched with.
+
+    It is now opt-in.  Pass a root only when you *specifically* want the
+    repository build; the report records which module actually loaded
+    (``native_provenance``) so a cross-run comparison can be checked.
+    """
+    for entry in stat_class_search_path(mortal_root):
+        if entry not in sys.path:
+            sys.path.insert(0, entry)
     from libriichi.stat import Stat  # noqa: PLC0415
 
     return Stat
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def native_provenance(mortal_root: str | Path | None = None) -> dict[str, Any]:
+    """Which native module this process actually loaded, and whether we moved ``sys.path``.
+
+    The registry carries a hard constraint for cross-run comparisons: record the
+    interpreter, the libriichi/native module path and sha256, and whether
+    ``sys.path`` was rewritten.  A report that says which binary produced it can
+    be compared; one that does not cannot.
+
+    ``libriichi`` is only a shim (``from riichi.stat import *``); the identity that
+    matters is the compiled ``riichi`` extension, so that is what is hashed.
+    """
+    import libriichi  # noqa: PLC0415
+
+    shim_file = Path(libriichi.__file__).resolve()
+    native: list[Path] = []
+    try:
+        riichi = importlib.import_module("riichi")
+    except ImportError:
+        riichi = None
+    riichi_file = Path(getattr(riichi, "__file__", "") or "").resolve() if riichi else None
+    if riichi_file and riichi_file.suffix.lower() in _NATIVE_SUFFIXES:
+        native.append(riichi_file)
+
+    binaries: list[Path] = [*native]
+    if shim_file.suffix.lower() in _NATIVE_SUFFIXES:
+        binaries.append(shim_file)
+    if not binaries:
+        # A pure-python package layout with the extension somewhere beside it.
+        for directory in {shim_file.parent, *(p.parent for p in native)}:
+            for pattern in ("*.pyd", "*.so", "*.dll"):
+                binaries.extend(sorted(directory.glob(pattern)))
+
+    seen: set[str] = set()
+    recorded: list[dict[str, Any]] = []
+    for path in binaries:
+        key = str(path).lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            recorded.append(
+                {"name": path.name, "path": str(path), "bytes": path.stat().st_size, "sha256": _sha256_file(path)}
+            )
+        except OSError:  # pragma: no cover - an unreadable binary is not fatal here
+            continue
+    return {
+        "module_file": str(shim_file),
+        "module_dir": str(shim_file.parent),
+        "native_module_file": str(riichi_file) if riichi_file else None,
+        "native_module_sha256": next((b["sha256"] for b in recorded if b.get("name") == (riichi_file.name if riichi_file else "")), None),
+        "binaries": recorded,
+        "interpreter": sys.executable,
+        "sys_path_rewritten": mortal_root is not None,
+        "requested_mortal_root": str(mortal_root) if mortal_root is not None else None,
+    }
 
 
 def parse_player_specs(specs: Sequence[str]) -> dict[str, str]:
@@ -177,7 +270,7 @@ def build_stat_report(
     *,
     log_dir: str | Path,
     players: Mapping[str, str],
-    mortal_root: str | Path = Path("third_party/Mortal"),
+    mortal_root: str | Path | None = None,
     rank_pts: Sequence[int | float] = DEFAULT_RANK_PTS,
     rank_points_profile: str = "custom",
     require_games: bool = False,
@@ -203,6 +296,7 @@ def build_stat_report(
     return {
         "schema": "keqing.mortal.libriichi.stat.v1",
         "backend": "libriichi.stat.Stat.from_dir",
+        "native": native_provenance(mortal_root),
         "log_dir": str(log_dir),
         "rank_points_profile": str(rank_points_profile),
         "rank_points_values": [float(value) for value in rank_pts],
@@ -216,7 +310,7 @@ def write_stat_report(
     output_dir: str | Path,
     log_dir: str | Path,
     players: Mapping[str, str],
-    mortal_root: str | Path = Path("third_party/Mortal"),
+    mortal_root: str | Path | None = None,
     rank_pts: Sequence[int | float] = DEFAULT_RANK_PTS,
     rank_points_profile: str = "custom",
     require_games: bool = False,
@@ -290,7 +384,16 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export detailed libriichi Stat report from Mortal logs")
     parser.add_argument("--log-dir", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--mortal-root", type=Path, default=Path("third_party/Mortal"))
+    parser.add_argument(
+        "--mortal-root",
+        type=Path,
+        default=None,
+        help=(
+            "opt-in shadowing: prepends <root>/mortal to sys.path so the repository "
+            "libriichi is used instead of the active environment's. Leave unset to run "
+            "against the interpreter you launched."
+        ),
+    )
     parser.add_argument(
         "--player",
         action="append",
