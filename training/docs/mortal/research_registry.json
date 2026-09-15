@@ -2803,7 +2803,7 @@
       "final_positioning": "U32 是通过 K0 实用替代门的候选（Gate A supported），但未通过 external EVE 目标门（Gate B not_supported）。定位：**可进入 K0 replacement candidate 工程验收的可用替代候选**，不是已验收的默认模型，也不是项目最终成功。默认模型仍为 K0；K1 未产生。",
       "execution_repairs": "三轮执行层修复（2026-09-13，review REJECT 后 ×2 + 第三轮收口）已全部落地：运行期资源守护线程 + 关键指标缺失视为违约；resume 只读 checkpoint 自身记录并与本进程比较（recipe/环境指纹/lineage parent/cycle/Adam step，native 二进制 SHA 变化即拒绝）；每轮采集写入不可变 attempt{N} 目录；官方入口删除 `--cycles`/`--seeds-per-cycle` 并钉死 device 与解释器；collection manifest 存在即等价于采集完整性已通过；完成标记最后写；六小时预算只计活跃时间。验证：聚焦测试 90 项、`verify_p4m11_review_fixes.py` 25/25、仓库默认 allowlist 套件 291 passed / 5 pre-existing failures（与基线一致）。**这些是执行层过程记录，不是本实验的结果描述。** 原文逐字保留（含当时“训练尚未启动”等只对当时成立的表述）见 `training/docs/mortal/2026-09/2026-09-14_P4-M11_执行层修复历史.md`。",
       "consumer_acceptance": {
-        "status": "pending",
+        "status": "integration_accepted",
         "scope": "以新稳定 model ID 将同一不可变 checkpoint SHA 接入现有 workbench（play/review），不覆盖 K0 文件/别名/默认设置；用既有小型 smoke 验证加载、动作合法、play 完成回合、review 展示动作排序与来源模型。不新建平台或大评测。",
         "pg_output_semantics": "PG 之后 DQN 输出是 policy logits / action scores，不是校准收益 Q。review 可消费动作建议/概率/排序，但依赖 Q 差的『收益损失 / 错误严重度』或跨模型统一分值功能必须先明确禁用或标注不适用；K0 可保留为明确标注的旧估值来源，不得混用后声称同一模型。",
         "default_model": "K0（未切换）",
@@ -2842,7 +2842,7 @@
           "artifact_index": "training/docs/mortal/experiments_zh/2026-09_P4_学生主线_产物索引.json（已含 P4-M11 条目）",
           "closure_repairs": {
             "review_basis": "两轮合并验收（2026-09-15）：结果与详细报告通过；U32 候选接入基本通过，另列三项小修补。",
-            "status": "all_three_applied",
+            "status": "all_three_applied_and_accepted",
             "items": [
               {
                 "id": "integrity",
@@ -2874,9 +2874,11 @@
             "not_done": [
               "play/review 候选验收仍为 pending，由负责人最终验收（默认模型仍为 K0，K1 未登记）。",
               "未为验收搬动或删除 173 GB 历史产物。"
-            ]
+            ],
+            "acceptance": "负责人（2026-09-15）核对 workbench 2d6ebc1 与 88f0628 后裁定：『P4-M11 的 play/review 工程接入验证已闭合』。已重跑可选模型检查与 fallback 负向对照（2 passed）；本次未重跑 GPU 冒烟，真实 U32 运行结果依据本地执行记录。裁定明确：通过的是既定候选接入验收，不声称覆盖所有复杂局面与前端交互；不再要求补更多回合/更多诊断/全量 GUI 验证；不加第三轮 play smoke、不扩 CI、不再追 driver fallback 本身。全套测试中原有失败仍单独保留（keqing1_experiment 5 项、workbench 4 项），不得写成全套全绿。"
           }
-        }
+        },
+        "remaining_pending": "仅剩负责人本人的实际 play/review 消费体验验收：用 p4m11_u32 实际玩/看几盘，主观无不可接受行为后再决定是否从『K0 替代候选』提升为正式消费替代。这不再是自动化工程漏洞，且与 Gate B 完全独立。"
       }
     }
   ]

@@ -887,8 +887,8 @@
       "path": "training/docs/mortal/2026-09/2026-09-14_P4-M11_结果总览与交付索引.md",
       "description": "★ P4-M11 **唯一结果入口**（训练/两门/详细统计/模型来源+sha/复现/目录约定）",
       "exists": true,
-      "bytes": 16560,
-      "sha256": "8658f8751554bc241a5fde0de4f6bc0f913a221fc4edc87fbb855c5430ff233a"
+      "bytes": 17971,
+      "sha256": "5292dc94fac463103391057d974d7b89bff362e337f2c031a9a742ff5eadc184"
     },
     {
       "experiment": "P4-M11",
