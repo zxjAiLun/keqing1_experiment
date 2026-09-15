@@ -2860,8 +2860,10 @@
               {
                 "id": "play_acceptance",
                 "gap": "原 play 测试调用 run_replay_single_raw，沿存量牌谱推进，未证明真实 play 中 U32 动作被执行。",
-                "fix": "补真实 play 冒烟：走 /battle/start_4bot 与 /battle/advance 同一条 BotDriver.take_turn 路径，动作经 validate_and_apply 应用到 room.state。",
-                "control": "对照实验发现 driver 在 bot 返回 none 时仍会替模型弃牌，故『出现弃牌』不可归因；可归属证据为『被打出的牌 == 模型请求的牌』，两类断言均已固定。"
+                "fix": "补真实 play 冒烟：走 /battle/start_4bot 与 /battle/advance 同一条 BotDriver.take_turn 路径，动作经 validate_and_apply 应用到 room.state（workbench tests/test_p4m11_u32_candidate.py）。",
+                "control": "对照实验发现 driver 在 bot 返回 none 时仍会替模型弃牌，故『出现弃牌』不可归因；可归属证据为『被打出的牌 == 模型请求的牌』，两类断言均已固定。",
+                "attribution_repair": "第二轮验收指出归属仍有漏洞：take_turn() 返回的是过 fallback 之后的动作，而 fallback 本身也带具体牌，所以模型每次决策都抛异常时旧断言仍会通过（owner 复现：强制 12/12 异常 → 旧断言照过）。现改为读「原始模型返回值」，三层检查：① 该回合的决策调用无异常、无超时；② driver 执行的动作与模型返回值在 type/pai 上一致（识别非法动作替代）；③ 落到桌上的牌 == 模型自己返回的那张牌（tsumo:6m → dahai:9m 这类情形排除摸切）。验收函数与负向对照共用同一份实现，对照失败时验收必然失败。真实 U32 冒烟：12 次决策调用（每回合恰好 1 次）、0 异常/0 超时、3 个归因回合。",
+                "attribution_control": "负向对照（无模型、无 GPU、CI 内运行）：把每个决策调用强制抛异常，driver 走 fallback 仍会弃牌并推进手牌；同一份验收函数在旧口径下通过、在新口径下失败（13 条问题）。"
               }
             ],
             "test_suites": {
