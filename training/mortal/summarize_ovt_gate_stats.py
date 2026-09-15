@@ -175,7 +175,7 @@ def _delta(value: float, other: float, kind: str) -> str:
 
 def format_markdown(summaries: Sequence[dict[str, Any]]) -> str:
     lines: list[str] = [
-        "# P4-M11 双向门详细统计摘要（中文）",
+        "# 双向门详细统计摘要（中文）",
         "",
         "本文件由 `training/mortal/summarize_ovt_gate_stats.py` 从各方向的",
         "`detailed_stats.json` 生成，**不重打任何对局**。",
