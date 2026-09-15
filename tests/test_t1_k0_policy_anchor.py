@@ -186,8 +186,17 @@ def test_t1_registry_closure_binds_machine_adjudication() -> None:
     registry = json.loads(registry_path.read_text(encoding="utf-8"))
     record = next(row for row in registry["records"] if row["experiment_id"] == EXPERIMENT_ID)
     assert registry["current_state"]["K1"] is None
-    assert registry["current_state"]["next_experiment"] is None
-    assert registry["current_state"]["next_experiment_status"] == "not_selected"
+    # next_experiment advances with the pipeline (load_registry enforces that the
+    # pair is coherent), so pin the coherence rather than "nothing is planned".
+    state = registry["current_state"]
+    if state["next_experiment"] is None:
+        assert state["next_experiment_status"] == "not_selected"
+    else:
+        planned = next(
+            row for row in registry["records"]
+            if row["experiment_id"] == state["next_experiment"]
+        )
+        assert planned["status"] == state["next_experiment_status"]
     assert record["status"] == "closed"
     assert record["formal_adjudication"]["verdict"] == "not_supported"
     assert record["recipe_promotion"] is False and record["checkpoint_promotion"] is False

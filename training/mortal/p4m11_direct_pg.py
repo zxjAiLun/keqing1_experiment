@@ -86,6 +86,12 @@ from training.mortal.p4m10_onpolicy_pg import (
 # ---------------------------------------------------------------------------
 P4M11_CONFIG: dict[str, Any] = {
     "experiment": "P4-M11",
+    # Artifact identity lives in the frozen config rather than in literals, so a
+    # continuation can override P4M11_CONFIG and still write artifacts that name
+    # the experiment that actually produced them.  P4-M12 reuses this module
+    # through exactly that seam; without it a continuation would silently emit
+    # checkpoints claiming to be P4-M11 ones.
+    "schema_prefix": "keqing.mortal.p4m11",
     "lineage": "hard50k -> C4 -> U32",
     "parent": (
         "artifacts/experiments/student_policy_v1/P4-M10_onpolicy_pg_4x256/C4.pth"
@@ -572,16 +578,16 @@ def training_contract(*, cycle: int | None, parent: dict[str, Any]) -> dict[str,
             "num_blocks": int(parent["num_blocks"]),
         },
         "objective": str(P4M11_CONFIG["objective"]),
-        "experiment": "P4-M11",
+        "experiment": str(P4M11_CONFIG["experiment"]),
         "lineage": str(P4M11_CONFIG["lineage"]),
         "parent": str(parent["parent_path"]),
         "parent_sha256": str(parent["parent_sha256"]),
         "opponent": str(P4M11_CONFIG["champion"]),
         "opponent_sha256": str(P4M11_CONFIG["champion_sha256"]),
         "comment": (
-            "P4-M11 cycle export; only mortal + current_dqn are consumed by the "
-            "native arena. After on-policy PG these tensors are policy logits / "
-            "action scores, NOT calibrated Q estimates."
+            f"{P4M11_CONFIG['experiment']} cycle export; only mortal + current_dqn "
+            "are consumed by the native arena. After on-policy PG these tensors "
+            "are policy logits / action scores, NOT calibrated Q estimates."
         ),
         "cycle": None if cycle is None else int(cycle),
     }
@@ -1560,7 +1566,7 @@ def write_hard_stop_record(
         active_seconds = None
         merged.setdefault("active_seconds_error", repr(error))
     payload: dict[str, Any] = {
-        "schema": "keqing.mortal.p4m11_hard_stop.v1",
+        "schema": f"{P4M11_CONFIG['schema_prefix']}_hard_stop.v1",
         "reason": str(reason),
         "recorded_at_unix": time.time(),
         "phase": phase,
@@ -1673,12 +1679,14 @@ def begin_active_cycle(run_dir: Path, cycle: int) -> float:
     now = time.time()
     write_json_atomic(
         active_time_path(run_dir),
-        {"schema": "keqing.mortal.p4m11_active_time.v1", "active_seconds": already,
+        {"schema": f"{P4M11_CONFIG['schema_prefix']}_active_time.v1",
+         "active_seconds": already,
          "updated_at_unix": now},
     )
     write_json_atomic(
         heartbeat_path(run_dir),
-        {"schema": "keqing.mortal.p4m11_cycle_heartbeat.v1", "cycle": int(cycle),
+        {"schema": f"{P4M11_CONFIG['schema_prefix']}_cycle_heartbeat.v1",
+         "cycle": int(cycle),
          "active_seconds_at_start": already, "started_unix": now,
          "elapsed_seconds": 0.0, "refreshed_unix": now},
     )
@@ -1703,7 +1711,8 @@ def end_active_cycle(run_dir: Path) -> None:
         return
     write_json_atomic(
         active_time_path(run_dir),
-        {"schema": "keqing.mortal.p4m11_active_time.v1", "active_seconds": total,
+        {"schema": f"{P4M11_CONFIG['schema_prefix']}_active_time.v1",
+         "active_seconds": total,
          "updated_at_unix": time.time()},
     )
     heartbeat_path(run_dir).unlink(missing_ok=True)
@@ -2047,8 +2056,8 @@ def train_cycle(
             collection_manifest_path(attempt_dir),
             {
                 **expected_manifest,
-                "schema": "keqing.mortal.p4m11_collection_manifest.v1",
-                "experiment": "P4-M11",
+                "schema": f"{P4M11_CONFIG['schema_prefix']}_collection_manifest.v1",
+                "experiment": str(P4M11_CONFIG["experiment"]),
                 "cycle": int(cycle),
                 "attempt_dir": str(attempt_dir),
                 "decision_records": len(records),
@@ -2109,8 +2118,8 @@ def train_cycle(
     last_cycle = int(P4M11_CONFIG["cycles"])
     next_cycle = int(cycle) + 1
     payload = {
-        "schema": "keqing.mortal.p4m11_direct_pg.v1",
-        "experiment": "P4-M11",
+        "schema": f"{P4M11_CONFIG['schema_prefix']}_direct_pg.v1",
+        "experiment": str(P4M11_CONFIG["experiment"]),
         "lineage": str(P4M11_CONFIG["lineage"]),
         "mortal": brain.state_dict(),
         "current_dqn": dqn.state_dict(),
@@ -2141,8 +2150,8 @@ def train_cycle(
     # and fsynced. Writing it here would leave "checkpoint + marker exist but
     # cycles.jsonl has no U{cycle}" as a reachable state.
     report["commit_marker"] = {
-        "schema": "keqing.mortal.p4m11_cycle_commit.v1",
-        "experiment": "P4-M11",
+        "schema": f"{P4M11_CONFIG['schema_prefix']}_cycle_commit.v1",
+        "experiment": str(P4M11_CONFIG["experiment"]),
         "completed_cycles": int(cycle),
         "checkpoint": checkpoint.name,
         "checkpoint_sha256": checkpoint_sha,
@@ -2209,7 +2218,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     the command line can shorten a run.
     """
     parser = argparse.ArgumentParser(
-        description="P4-M11: continue direct on-policy PG from the P4-M10 C4"
+        description=f"{P4M11_CONFIG['experiment']}: continue direct on-policy PG from the frozen parent"
     )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--parent", type=Path, default=Path(P4M11_CONFIG["parent"]))
@@ -2285,7 +2294,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     survey = startup_survey(target_dir=run_dir)
     preflight = preflight_violations(startup_snapshot)
     result: dict[str, Any] = {
-        "schema": "keqing.mortal.p4m11_direct_pg.v1",
+        "schema": f"{P4M11_CONFIG['schema_prefix']}_direct_pg.v1",
         "created_at_unix": time.time(),
         "planned_cycles": int(planned_cycles),
         "authorised_cycles": int(P4M11_CONFIG["cycles"]),
@@ -2573,7 +2582,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         write_json_atomic(
             run_dir / "PAUSED.json",
             {
-                "schema": "keqing.mortal.p4m11_pause.v1",
+                "schema": f"{P4M11_CONFIG['schema_prefix']}_pause.v1",
                 "reason": paused_reason,
                 "completed_cycles": int(final_cycle),
                 "complete": bool(result["complete"]),
