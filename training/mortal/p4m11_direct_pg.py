@@ -92,6 +92,12 @@ P4M11_CONFIG: dict[str, Any] = {
     # through exactly that seam; without it a continuation would silently emit
     # checkpoints claiming to be P4-M11 ones.
     "schema_prefix": "keqing.mortal.p4m11",
+    # Same seam, applied to the run's own summary.  This key did not exist when
+    # P4-M12 ran, so that run's outcome landed in ``p4m11_result.json`` inside a
+    # P4-M12 run directory -- a real defect in the "artifact identity is config
+    # driven" claim, found by widening the structural test rather than by
+    # inspection.  The finished P4-M12 run is left as it was produced.
+    "result_filename": "p4m11_result.json",
     "lineage": "hard50k -> C4 -> U32",
     "parent": (
         "artifacts/experiments/student_policy_v1/P4-M10_onpolicy_pg_4x256/C4.pth"
@@ -2577,7 +2583,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     if not status["complete"]:
         result["incomplete_reason"] = status["reason"]
 
-    write_json_atomic(run_dir / "p4m11_result.json", result)
+    write_json_atomic(run_dir / P4M11_CONFIG["result_filename"], result)
     if paused_reason is not None:
         write_json_atomic(
             run_dir / "PAUSED.json",
@@ -2596,7 +2602,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         print(f"SAFE PAUSE: {paused_reason}", flush=True)
         raise SystemExit(PAUSE_EXIT_CODE)
 
-    print(f"wrote {run_dir / 'p4m11_result.json'}", flush=True)
+    print(f"wrote {run_dir / P4M11_CONFIG['result_filename']}", flush=True)
 
 
 if __name__ == "__main__":

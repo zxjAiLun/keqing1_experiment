@@ -67,6 +67,7 @@ class P4M12ContractError(RuntimeError):
 _OVERRIDES: dict[str, Any] = {
     "experiment": "P4-M12",
     "schema_prefix": "keqing.mortal.p4m12",
+    "result_filename": "p4m12_result.json",
     "lineage": "hard50k -> C4 -> U32 -> U64",
     # U32 is the frozen P4-M11 endpoint: the *training* checkpoint, which carries
     # model + Adam state at step 36.  The eval-weights export is deliberately NOT
@@ -88,9 +89,14 @@ _OVERRIDES: dict[str, Any] = {
     "sampling_seed_base": 2026091600,
     "expected_final_adam_step": 36 + 32,
     "challenger_label": "p4m12_candidate",
+    # U64 is the *model's* name -- the lineage endpoint, matching the frozen
+    # ``lineage`` string above.  It is NOT a path: checkpoints are named by cycle
+    # (``U1..U32``), so the endpoint file is ``U32.pth``.  The two names coincide
+    # for P4-M11 (32 cycles -> U32 both ways), which is why this is stated here.
     "evaluation": (
-        "final U64 checkpoint only; intermediate cycles are committed but never "
-        "evaluated and never selected on training telemetry"
+        "final U64 (lineage endpoint, stored as U32.pth) only; intermediate "
+        "cycles are committed but never evaluated and never selected on "
+        "training telemetry"
     ),
 }
 

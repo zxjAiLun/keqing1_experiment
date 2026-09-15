@@ -13,8 +13,10 @@ one-line change if that convention is ever revised.
 
 from __future__ import annotations
 
+import collections
 import copy
 import pathlib
+import re
 
 import pytest
 
@@ -22,6 +24,16 @@ from training.mortal import p4m11_direct_pg as p4m11
 from training.mortal import p4m12_direct_pg as p4m12
 
 P4M11_SOURCE = pathlib.Path(p4m11.__file__).read_text(encoding="utf-8")
+
+# Every quoted artifact name that starts with ``p4m11``.  The earlier version of
+# this check looked only for ``keqing.mortal.p4m11``, so it could not see
+# ``"p4m11_result.json"`` -- and the P4-M12 run's summary really did land in a
+# file called ``p4m11_result.json``.  Pinning the whole set means a new literal
+# fails here instead of surviving to a run directory.
+ARTIFACT_LITERAL = re.compile(r'"(?:keqing\.mortal\.)?p4m11[^"]*"')
+# The one match that is not an artifact identity: a thread name shows up in
+# thread dumps, never in an artifact, so it is not required to be config-driven.
+NON_ARTIFACT_ALLOWED = frozenset({'"p4m11-resource-watchdog"'})
 
 # Seed blocks that already belong to another experiment.  Training and evaluation
 # blocks must be disjoint: reusing P4-M11's games would make this a re-run rather
@@ -215,17 +227,57 @@ def test_the_budget_guard_accepts_the_authorised_scale(installed):
 
 
 def test_identity_is_config_driven_rather_than_a_literal():
-    """P4-M11's module must not hard-code an artifact schema anywhere.
+    """P4-M11's module must not hard-code an artifact name anywhere.
 
-    A continuation writes its own artifacts through P4-M11's code; if the schema
-    prefix were a literal, a P4-M12 checkpoint would claim to be a P4-M11 one.
+    A continuation writes its own artifacts through P4-M11's code; if a schema
+    prefix or an output filename were a literal, a P4-M12 run would emit
+    artifacts claiming to be P4-M11 ones.  The schema prefix was covered from the
+    start; the result filename was not, and P4-M12's summary was written to
+    ``p4m11_result.json`` because of it.
+
+    This asserts a *count*, not set membership.  The first version of this test
+    collected the literals into a set, and a negative control that reintroduced
+    ``"p4m11_result.json"`` at the call site stayed green -- because the config
+    line already contributed that name to the set.  One occurrence per name, on
+    the config line, is the property that actually matters.
     """
-    occurrences = [
-        line for line in P4M11_SOURCE.splitlines()
-        if "keqing.mortal.p4m11" in line
-    ]
-    assert len(occurrences) == 1, occurrences
-    assert '"schema_prefix"' in occurrences[0]
+    counts = collections.Counter(
+        match.group(0) for match in ARTIFACT_LITERAL.finditer(P4M11_SOURCE)
+    )
+    assert set(counts) - NON_ARTIFACT_ALLOWED == {
+        '"keqing.mortal.p4m11"',
+        '"p4m11_candidate"',
+        '"p4m11_result.json"',
+    }, counts
+    for literal, key in (
+        ('"keqing.mortal.p4m11"', '"schema_prefix"'),
+        ('"p4m11_candidate"', '"challenger_label"'),
+        ('"p4m11_result.json"', '"result_filename"'),
+    ):
+        assert counts[literal] == 1, (literal, counts[literal])
+        line = next(
+            candidate for candidate in P4M11_SOURCE.splitlines()
+            if literal in candidate
+        )
+        assert key in line, (literal, line.strip())
+
+
+def test_every_artifact_name_literal_is_overridden_by_the_continuation():
+    """Each pinned literal must have a matching override, or the run lies.
+
+    Deliberately *not* the ``installed`` fixture: once installed the two names
+    are the same dict object and the inequality below would be vacuous.
+    """
+    assert p4m11.P4M11_CONFIG is not p4m12.P4M12_CONFIG
+    pairs = {
+        '"keqing.mortal.p4m11"': ("schema_prefix", "keqing.mortal.p4m12"),
+        '"p4m11_candidate"': ("challenger_label", "p4m12_candidate"),
+        '"p4m11_result.json"': ("result_filename", "p4m12_result.json"),
+    }
+    for literal, (key, expected) in pairs.items():
+        assert literal in P4M11_SOURCE, literal
+        assert p4m12.P4M12_CONFIG[key] == expected, key
+        assert p4m12.P4M12_CONFIG[key] != p4m11.P4M11_CONFIG[key], key
 
 
 def test_training_contract_carries_the_p4m12_identity(installed):
